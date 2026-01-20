@@ -43,6 +43,8 @@ jobs:
             tauri_args: '--target aarch64-apple-darwin'
 
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     
     steps:
       - name: Checkout repository
