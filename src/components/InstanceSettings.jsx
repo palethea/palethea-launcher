@@ -86,7 +86,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
       });
       setLoaderVersions(vers);
       if (vers.length > 0 && !modLoaderVersion) {
-        setModLoaderVersion(vers[0]);
+        setModLoaderVersion(vers[0].version);
       }
     } catch (error) {
       console.error('Failed to load loader versions:', error);
@@ -388,6 +388,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
                       onSelect={(v) => {
                         setModLoaderVersion(v);
                       }}
+                      onRefresh={() => loadLoaderVersions(modLoader)}
                       loading={loadingLoaders}
                       showFilters={false}
                     />

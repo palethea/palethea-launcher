@@ -64,6 +64,12 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     return v.version.toLowerCase().includes(loaderSearchQuery.toLowerCase());
   });
 
+  useEffect(() => {
+    if (selectedVersion && modLoader !== 'vanilla') {
+      loadLoaderVersions();
+    }
+  }, [selectedVersion, modLoader]);
+
   const loadLoaderVersions = async () => {
     if (modLoader === 'vanilla' || !selectedVersion) {
       setLoaderVersions([]);
