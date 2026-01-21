@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PaletheaLauncher",
-  "version": "0.2.8-6",
+  "version": "0.2.9",
   "identifier": "com.palethea.launcher",
   "build": {
     "frontendDist": "../dist",
@@ -22,10 +22,12 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "img-src 'self' asset: https://asset.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": [
+          "**",
+          "$APPDATA/**",
           "$APPDATA/PaletheaLauncher/**",
           "$HOME/Library/Application Support/PaletheaLauncher/**",
           "$HOME/.palethealauncher/**"

@@ -1,7 +1,7 @@
 {
   "name": "palethealauncher",
   "private": true,
-  "version": "0.2.8-6",
+  "version": "0.2.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "release": "./scripts/release.sh",
+    "release:win": "powershell -ExecutionPolicy Bypass -File ./scripts/release.ps1",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

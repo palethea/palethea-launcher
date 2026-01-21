@@ -443,7 +443,8 @@ pub fn build_game_args(
         }
     }
     
-    args
+    // Deduplicate game arguments
+    deduplicate_game_args(args)
 }
 
 /// Process argument string with variable replacements
@@ -603,7 +604,89 @@ pub fn build_jvm_args(
         }
     }
     
-    args
+    // Deduplicate JVM arguments
+    deduplicate_jvm_args(args)
+}
+
+fn deduplicate_jvm_args(args: Vec<String>) -> Vec<String> {
+    let mut unique_args = Vec::new();
+    let mut properties = std::collections::HashMap::new();
+    let mut xmx = None;
+    let mut xms = None;
+    let mut others = Vec::new();
+    let mut cp = None;
+
+    for arg in args {
+        if arg.starts_with("-Xmx") {
+            xmx = Some(arg);
+        } else if arg.starts_with("-Xms") {
+            xms = Some(arg);
+        } else if arg.starts_with("-D") {
+            let parts: Vec<&str> = arg.splitn(2, '=').collect();
+            properties.insert(parts[0].to_string(), arg);
+        } else if arg == "-cp" || arg == "-classpath" {
+            // We just note that we saw a CP flag, the next arg will be the value
+            // But wait, the classpath value is usually a separate string.
+            // Our builder adds them as ["-cp", "path"].
+            cp = Some(arg);
+        } else if let Some(last_cp) = &cp {
+            // This is the classpath value
+            properties.insert("-cp_val".to_string(), arg);
+            cp = None;
+        } else {
+            others.push(arg);
+        }
+    }
+
+    if let Some(val) = xms { unique_args.push(val); }
+    if let Some(val) = xmx { unique_args.push(val); }
+    
+    // Sort properties to keep order stable
+    let mut prop_keys: Vec<_> = properties.keys().collect();
+    prop_keys.sort();
+    for key in prop_keys {
+        if key == "-cp_val" {
+            unique_args.push("-cp".to_string());
+            unique_args.push(properties.get(key).unwrap().clone());
+        } else {
+            unique_args.push(properties.get(key).unwrap().clone());
+        }
+    }
+    
+    unique_args.extend(others);
+    unique_args
+}
+
+fn deduplicate_game_args(args: Vec<String>) -> Vec<String> {
+    let mut flag_map = std::collections::BTreeMap::new();
+    let mut positional = Vec::new();
+    
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg.starts_with("--") {
+            let key = arg.clone();
+            if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                flag_map.insert(key, Some(args[i + 1].clone()));
+                i += 1;
+            } else {
+                flag_map.insert(key, None);
+            }
+        } else {
+            positional.push(arg.clone());
+        }
+        i += 1;
+    }
+    
+    let mut final_args = Vec::new();
+    for (flag, value) in flag_map {
+        final_args.push(flag);
+        if let Some(v) = value {
+            final_args.push(v);
+        }
+    }
+    final_args.extend(positional);
+    final_args
 }
 
 /// Launch Minecraft
@@ -650,6 +733,12 @@ pub async fn launch_game(
             let json_path = get_versions_dir().join(&id).join(format!("{}.json", id));
             if json_path.exists() {
                 if let Ok(details) = versions::load_version_details(&json_path) {
+                    // Skip double-merging if the mod loader JSON is already the primary manifest
+                    if details.id == actual_version_details.id {
+                        log::debug!("Mod loader ID {} matches primary manifest ID, skipping merge.", details.id);
+                        break;
+                    }
+
                     // Update main info
                     actual_version_details.id = details.id.clone();
                     actual_version_details.main_class = details.main_class.clone();
@@ -679,15 +768,36 @@ pub async fn launch_game(
                     
                     // Merge arguments if present
                     if let Some(mod_args) = details.arguments {
-                        // If mod loader has modern arguments, use them to replace vanilla ones.
-                        // Modern mod loader manifests (like Forge 1.13+) usually include all necessary
-                        // arguments, so replacing is safer than extending and prevents duplication.
+                        let mut merged_args = actual_version_details.arguments.clone().unwrap_or(versions::Arguments { game: None, jvm: None });
+                        
+                        // Game arguments: If mod loader provides a "full" set (detected by --username), replace vanilla's.
+                        // Otherwise, merge them.
+                        if let Some(mod_game) = mod_args.game {
+                            let is_complete_set = mod_game.iter().any(|v| v.as_str().map_or(false, |s| s == "--username"));
+                            
+                            if is_complete_set {
+                                merged_args.game = Some(mod_game);
+                            } else {
+                                let mut game_base = merged_args.game.unwrap_or_default();
+                                game_base.extend(mod_game);
+                                merged_args.game = Some(game_base);
+                            }
+                        }
+                        
+                        // JVM arguments: Usually these are increments (like Forge properties), so we merge.
+                        if let Some(mod_jvm) = mod_args.jvm {
+                            let mut jvm_base = merged_args.jvm.unwrap_or_default();
+                            jvm_base.extend(mod_jvm);
+                            merged_args.jvm = Some(jvm_base);
+                        }
+                        
+                        actual_version_details.arguments = Some(merged_args);
                         actual_version_details.minecraft_arguments = None;
-                        actual_version_details.arguments = Some(mod_args);
                     }
                     
                     if let Some(mod_legacy_args) = details.minecraft_arguments {
                         // For older Forge versions that use the legacy format
+                        // Legacy arguments are usually complete, so we still replace
                         actual_version_details.minecraft_arguments = Some(mod_legacy_args);
                         actual_version_details.arguments = None;
                     }
