@@ -1311,8 +1311,10 @@ fn rename_instance_screenshot(instance_id: String, old_filename: String, new_fil
 fn open_instance_screenshot(app: AppHandle, instance_id: String, filename: String) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
     let path = files::get_screenshots_dir(&instance).join(filename);
-    // Use opener plugin's open_path to open files with their default application
-    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    // Convert to file:// URL for reliable cross-platform opening
+    let abs_path = path.canonicalize().unwrap_or(path);
+    let file_url = format!("file://{}", abs_path.to_string_lossy());
+    app.opener().open_url(&file_url, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1348,9 +1350,14 @@ async fn open_instance_folder(app: AppHandle, instance_id: String, folder_type: 
         std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     }
 
-    // Use open_path to directly open the folder in the file manager
-    // reveal_item_in_dir shows the folder in its parent, open_path opens the folder itself
-    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    // Get absolute path and canonicalize it
+    let abs_path = path.canonicalize().unwrap_or(path);
+    
+    // Convert to file:// URL format (like PrismLauncher's QUrl::fromLocalFile approach)
+    // This is the most reliable cross-platform way to open folders
+    let file_url = format!("file://{}", abs_path.to_string_lossy());
+    
+    app.opener().open_url(&file_url, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
