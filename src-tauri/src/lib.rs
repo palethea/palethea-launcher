@@ -1311,8 +1311,8 @@ fn rename_instance_screenshot(instance_id: String, old_filename: String, new_fil
 fn open_instance_screenshot(_app: AppHandle, instance_id: String, filename: String) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
     let path = files::get_screenshots_dir(&instance).join(filename);
-    // Use the open crate directly to open the screenshot file
-    open::that_detached(&path).map_err(|e| e.to_string())
+    // Use native path opening to bypass AppImage bundled xdg-open
+    open_path_native(&path)
 }
 
 #[tauri::command]
@@ -1348,9 +1348,72 @@ async fn open_instance_folder(_app: AppHandle, instance_id: String, folder_type:
         std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     }
 
-    // Use the open crate directly - this bypasses any Tauri plugin permission issues
-    // and is the same crate that tauri-plugin-opener uses internally
-    open::that_detached(&path).map_err(|e| e.to_string())
+    // Use platform-specific commands directly to avoid AppImage bundled xdg-open issues
+    // See: https://github.com/tauri-apps/tauri/issues/10617
+    open_path_native(&path)
+}
+
+/// Opens a path using the native file manager, bypassing AppImage bundled tools
+fn open_path_native(path: &std::path::Path) -> Result<(), String> {
+    use std::process::Command;
+    
+    #[cfg(target_os = "linux")]
+    {
+        // Try /usr/bin/xdg-open first (host system), then fallback to other methods
+        // This bypasses the bundled xdg-open in AppImage which doesn't work correctly
+        let xdg_paths = ["/usr/bin/xdg-open", "/bin/xdg-open"];
+        
+        for xdg_path in &xdg_paths {
+            if std::path::Path::new(xdg_path).exists() {
+                match Command::new(xdg_path)
+                    .arg(path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(_) => return Ok(()),
+                    Err(_) => continue,
+                }
+            }
+        }
+        
+        // Fallback: try gio open
+        if let Ok(_) = Command::new("gio")
+            .args(["open", &path.to_string_lossy()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            return Ok(());
+        }
+        
+        Err("Could not find a way to open the folder. Please ensure xdg-open is installed.".to_string())
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        Err("Unsupported platform".to_string())
+    }
 }
 
 #[tauri::command]
