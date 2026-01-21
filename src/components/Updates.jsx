@@ -209,20 +209,29 @@ function Updates() {
         <div className="updates-list">
           <article className="update-item">
             <div>
-              <p className="update-title">Launcher shell refresh</p>
-              <p className="update-meta">January 2026</p>
+              <p className="update-title">Improved Instance Editor & Welcome message</p>
+              <p className="update-meta">v0.2.1 • January 2026</p>
             </div>
             <p className="update-body">
-              Smoother navigation, clearer status surfaces, and improved loading feedback.
+              A revamped instance editor with better mod management, version selection, and performance optimizations. Fixed the bug where the welcome message would not accept the toggleable switch.
             </p>
           </article>
           <article className="update-item">
             <div>
-              <p className="update-title">Account switching improvements</p>
-              <p className="update-meta">January 2026</p>
+              <p className="update-title">New and improved UI</p>
+              <p className="update-meta">v0.2.0 • January 2026</p>
             </div>
             <p className="update-body">
-              Faster avatar refreshes and better fallback handling for offline accounts.
+              A cleaner, more focused interface with simplified navigation and informative welcome screen.
+            </p>
+          </article>
+          <article className="update-item">
+            <div>
+              <p className="update-title">Modrinth modpack support</p>
+              <p className="update-meta">v0.2.0 • January 2026</p>
+            </div>
+            <p className="update-body">
+              Now you can browse and install modpacks directly from Modrinth within the launcher.
             </p>
           </article>
         </div>

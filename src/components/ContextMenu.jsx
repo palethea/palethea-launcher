@@ -1,16 +1,44 @@
+import { useLayoutEffect, useRef, useState } from 'react';
 import './ContextMenu.css';
 
 function ContextMenu({ x, y, instance, onAction }) {
-  // Adjust position to stay within viewport
-  const menuWidth = 180;
-  const menuHeight = instance ? 300 : 60;
-  const adjustedX = Math.min(x, window.innerWidth - menuWidth - 10);
-  const adjustedY = Math.min(y, window.innerHeight - menuHeight - 10);
+  const menuRef = useRef(null);
+  const [pos, setPos] = useState({ x, y });
+
+  useLayoutEffect(() => {
+    if (menuRef.current) {
+      const rect = menuRef.current.getBoundingClientRect();
+      const menuWidth = rect.width;
+      const menuHeight = rect.height;
+
+      let adjustedX = x;
+      let adjustedY = y;
+
+      // Check right edge
+      if (x + menuWidth > window.innerWidth) {
+        adjustedX = window.innerWidth - menuWidth - 8;
+      }
+      
+      // Check bottom edge
+      if (y + menuHeight > window.innerHeight) {
+        adjustedY = window.innerHeight - menuHeight - 8;
+      }
+
+      // Check left edge (failsafe)
+      if (adjustedX < 8) adjustedX = 8;
+      
+      // Check top edge (failsafe)
+      if (adjustedY < 8) adjustedY = 8;
+
+      setPos({ x: adjustedX, y: adjustedY });
+    }
+  }, [x, y]);
 
   return (
     <div 
+      ref={menuRef}
       className="context-menu"
-      style={{ left: adjustedX, top: adjustedY }}
+      style={{ left: pos.x, top: pos.y, visibility: menuRef.current ? 'visible' : 'hidden' }}
       onClick={(e) => e.stopPropagation()}
     >
       {instance ? (

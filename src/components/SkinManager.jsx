@@ -307,17 +307,6 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
     </div>
   );
 
-  if (!activeAccount?.isLoggedIn && library.length === 0) {
-    return (
-      <div className="skin-manager empty">
-        <div className="skin-empty-card">
-          <h2>Microsoft Account Required</h2>
-          <p>You need to be logged in with a Microsoft account to manage your Minecraft skin.</p>
-        </div>
-      </div>
-    );
-  }
-
   const activePreviewUrl = justUploadedUrl || currentSkinUrl;
   const activeSkin = profile?.skins?.find(s => s.state === 'ACTIVE');
   const activeVariant = justUploadedUrl ? saveVariant : (activeSkin?.variant?.toLowerCase() || 'classic');
@@ -327,6 +316,17 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
       onPreviewChange(activePreviewUrl);
     }
   }, [activePreviewUrl, onPreviewChange]);
+
+  if (!activeAccount?.isLoggedIn && library.length === 0) {
+    return (
+      <div className="skin-manager empty">
+        <div className="skin-empty-card">
+          <h2>Not Logged In</h2>
+          <p>You are not logged in and therefore cannot use the skins page.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="skin-manager">

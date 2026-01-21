@@ -6,6 +6,7 @@ import Sidebar from './components/Sidebar';
 import InstanceList from './components/InstanceList';
 import InstanceEditor from './components/InstanceEditor';
 import Settings from './components/Settings';
+import Stats from './components/Stats';
 import SkinManager from './components/SkinManager';
 import CreateInstance from './components/CreateInstance';
 import ContextMenu from './components/ContextMenu';
@@ -37,7 +38,7 @@ function App() {
   const [currentSkinUrl, setCurrentSkinUrl] = useState(null);
   const [skinCache, setSkinCache] = useState({});
   const [logs, setLogs] = useState([]);
-  const [launcherSettings, setLauncherSettings] = useState({ enable_console: false, show_welcome: true });
+  const [launcherSettings, setLauncherSettings] = useState(null);
   const [showAccountManager, setShowAccountManager] = useState(false);
 
   useEffect(() => {
@@ -115,6 +116,8 @@ function App() {
       setLauncherSettings(settings);
     } catch (error) {
       console.error('Failed to load launcher settings:', error);
+      // Set defaults on error
+      setLauncherSettings({ enable_console: false, show_welcome: true, account_preview_mode: 'simple' });
     }
   }, []);
 
@@ -267,6 +270,22 @@ function App() {
     // Listen for instance refresh events from backend
     const unlistenRefresh = listen('refresh-instances', () => {
       loadInstances();
+      loadRunningInstances();
+    });
+
+    // Listen for exit confirmation
+    const unlistenExit = listen('show-exit-confirm', () => {
+      setConfirmModal({
+        title: 'Exit Palethea?',
+        message: 'A game instance is still running. Closing the launcher will also stop the game. Are you sure you want to exit?',
+        confirmText: 'Exit Everything',
+        cancelText: 'Keep Playing',
+        variant: 'danger',
+        onConfirm: async () => {
+          await invoke('exit_app_fully');
+        },
+        onCancel: () => setConfirmModal(null)
+      });
     });
 
     return () => {
@@ -274,16 +293,28 @@ function App() {
       unlistenLog.then(fn => fn());
       unlistenProgress.then(fn => fn());
       unlistenRefresh.then(fn => fn());
+      unlistenExit.then(fn => fn());
       document.removeEventListener('contextmenu', handleContextMenu);
     };
   }, [loadInstances, loadRunningInstances, isLoading]);
+
+  // Navigation Guard: Redirect from specialized pages if state changes (eg. logout)
+  useEffect(() => {
+    if (activeTab === 'skins' && !activeAccount?.isLoggedIn) {
+      setActiveTab('instances');
+    }
+  }, [activeAccount, activeTab]);
 
   const [hasCheckedWelcome, setHasCheckedWelcome] = useState(false);
 
   useEffect(() => {
     if (!hasCheckedWelcome && launcherSettings && launcherSettings.show_welcome !== undefined) {
-      setShowWelcome(launcherSettings.show_welcome);
-      setHasCheckedWelcome(true);
+      // Small delay to prevent layout flash while other things load
+      const timer = setTimeout(() => {
+        setShowWelcome(launcherSettings.show_welcome);
+        setHasCheckedWelcome(true);
+      }, 100);
+      return () => clearTimeout(timer);
     }
   }, [launcherSettings, hasCheckedWelcome]);
 
@@ -495,6 +526,16 @@ function App() {
     setLoadingProgress(0);
   };
 
+  const performDeleteInstance = async (instanceId) => {
+    try {
+      await invoke('delete_instance', { instanceId });
+      await loadInstances();
+      showNotification('Instance deleted', 'success');
+    } catch (error) {
+      showNotification(`Failed to delete instance: ${error}`, 'error');
+    }
+  };
+
   const handleDeleteInstance = (instanceId) => {
     const instance = instances.find(i => i.id === instanceId);
     setConfirmModal({
@@ -505,19 +546,17 @@ function App() {
       variant: 'danger',
       onConfirm: async () => {
         setConfirmModal(null);
-        try {
-          await invoke('delete_instance', { instanceId });
-          await loadInstances();
-          showNotification('Instance deleted', 'success');
-        } catch (error) {
-          showNotification(`Failed to delete instance: ${error}`, 'error');
-        }
+        await performDeleteInstance(instanceId);
       },
       onCancel: () => setConfirmModal(null)
     });
   };
 
   const handleLaunchInstance = async (instanceId) => {
+    if (runningInstances.includes(instanceId)) {
+      showNotification("Instance is already running", "info");
+      return;
+    }
     setIsLoading(true);
     try {
       const result = await invoke('launch_instance', { instanceId });
@@ -589,11 +628,14 @@ function App() {
   const handleLogout = () => {
     setActiveAccount({ username: 'Player', isLoggedIn: false, uuid: null });
     setCurrentSkinUrl(null);
+    if (activeTab === 'skins') {
+      setActiveTab('instances');
+    }
     showNotification('Signed out', 'success');
   };
 
   const handleCloseWelcome = async () => {
-    if (welcomeDontShow) {
+    if (welcomeDontShow && launcherSettings) {
       const updated = {
         ...launcherSettings,
         show_welcome: false
@@ -671,6 +713,12 @@ function App() {
           onClose={handleCloseEditor}
           onUpdate={loadInstances}
           onLaunch={handleLaunchInstance}
+          onStop={handleStopInstance}
+          runningInstances={runningInstances}
+          onDelete={(id) => {
+            performDeleteInstance(id);
+            setEditingInstanceId(null);
+          }}
         />
       );
     }
@@ -711,6 +759,8 @@ function App() {
             onSettingsUpdated={loadLauncherSettings}
           />
         );
+      case 'stats':
+        return <Stats />;
       case 'skins':
         return (
           <SkinManager
@@ -761,6 +811,13 @@ function App() {
         skinCache={skinCache}
         launcherSettings={launcherSettings}
         onOpenAccountManager={() => setShowAccountManager(true)}
+        onShowInfo={(config) => {
+          setConfirmModal({
+            ...config,
+            onConfirm: () => setConfirmModal(null),
+            onCancel: () => setConfirmModal(null)
+          });
+        }}
       />
       <main className="main-content">
         {renderContent()}

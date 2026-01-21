@@ -13,9 +13,11 @@ function ConfirmModal({ isOpen = true, title, message, confirmText = 'Delete', c
           <p>{message}</p>
         </div>
         <div className="confirm-footer">
-          <button className="confirm-btn cancel" onClick={onCancel}>
-            {cancelText}
-          </button>
+          {onCancel && cancelText !== null && (
+            <button className="confirm-btn cancel" onClick={onCancel}>
+              {cancelText}
+            </button>
+          )}
           <button className={`confirm-btn ${variant}`} onClick={onConfirm}>
             {confirmText}
           </button>

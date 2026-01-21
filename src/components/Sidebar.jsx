@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { open } from '@tauri-apps/plugin-shell';
+import { User, HelpCircle, Info } from 'lucide-react';
 import './Sidebar.css';
 
 // Steve head as a data URL fallback (8x8 Steve face)
@@ -17,7 +18,8 @@ function Sidebar({
   currentSkinTexture,
   skinCache = {},
   launcherSettings,
-  onOpenAccountManager
+  onOpenAccountManager,
+  onShowInfo
 }) {
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [failedImages, setFailedImages] = useState({});
@@ -66,6 +68,7 @@ function Sidebar({
   const tabs = [
     { id: 'instances', label: 'Instances', icon: null },
     { id: 'skins', label: 'Skins', icon: null },
+    { id: 'stats', label: 'Stats', icon: null },
     { id: 'updates', label: 'Updates', icon: null },
     { id: 'settings', label: 'Settings', icon: null },
   ];
@@ -100,15 +103,35 @@ function Sidebar({
       </div>
 
       <nav className="sidebar-nav">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
-            onClick={() => onTabChange(tab.id)}
-          >
-            <span className="nav-label">{tab.label}</span>
-          </button>
-        ))}
+        {tabs.map((tab) => {
+          const isDisabled = tab.id === 'skins' && !activeAccount?.isLoggedIn;
+          return (
+            <button
+              key={tab.id}
+              className={`nav-item ${activeTab === tab.id ? 'active' : ''} ${isDisabled ? 'disabled' : ''}`}
+              onClick={() => !isDisabled && onTabChange(tab.id)}
+            >
+              <span className="nav-label">{tab.label}</span>
+              {isDisabled && (
+                <div 
+                  className="tab-info-trigger"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onShowInfo({
+                      title: 'Page Disabled',
+                      message: 'This page is disabled because you are not logged in. A Microsoft account is required to manage and sync Minecraft skins.',
+                      confirmText: 'Got it',
+                      variant: 'info'
+                    });
+                  }}
+                  title="Why is this disabled?"
+                >
+                  <Info size={14} />
+                </div>
+              )}
+            </button>
+          );
+        })}
       </nav>
 
       <div className="sidebar-footer" ref={accountMenuRef}>
@@ -139,7 +162,7 @@ function Sidebar({
           <div className="user-avatar">
             {currentSkinTexture ? (
               <SkinHead2D src={currentSkinTexture} size={32} />
-            ) : (
+            ) : activeAccount?.isLoggedIn ? (
               <img
                 src={getSkinUrl(activeAccount?.uuid, activeAccount?.isLoggedIn)}
                 alt=""
@@ -149,6 +172,10 @@ function Sidebar({
                   if (activeAccount?.uuid) handleImageError(activeAccount.uuid);
                 }}
               />
+            ) : (
+              <div className="skin-fallback-icon">
+                <User size={20} />
+              </div>
             )}
           </div>
           <div className="user-details">
@@ -176,7 +203,7 @@ function Sidebar({
                   <div className="account-option-avatar">
                     {skinCache[account.uuid] ? (
                       <SkinHead2D src={skinCache[account.uuid]} size={24} />
-                    ) : (
+                    ) : account.isLoggedIn ? (
                       <img
                         src={getSkinUrl(account.uuid, account.isLoggedIn)}
                         alt=""
@@ -186,6 +213,10 @@ function Sidebar({
                           if (account?.uuid) handleImageError(account.uuid);
                         }}
                       />
+                    ) : (
+                      <div className="skin-fallback-icon-small">
+                        <User size={14} />
+                      </div>
                     )}
                   </div>
                   <div className="account-option-info">

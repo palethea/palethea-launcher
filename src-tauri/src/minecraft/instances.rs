@@ -44,6 +44,8 @@ pub struct Instance {
     #[serde(default)]
     pub playtime_seconds: u64,
     #[serde(default)]
+    pub total_launches: u64,
+    #[serde(default)]
     pub color_accent: Option<String>,
 }
 
@@ -67,6 +69,7 @@ impl Instance {
             console_auto_update: true,
             logo_filename: None,
             playtime_seconds: 0,
+            total_launches: 0,
             color_accent: None,
         }
     }
@@ -233,6 +236,7 @@ pub fn clone_instance(instance_id: &str, new_name: String) -> Result<Instance, S
         console_auto_update: source.console_auto_update,
         logo_filename: source.logo_filename.clone(),
         playtime_seconds: 0, // Reset playtime for clone
+        total_launches: 0,
         color_accent: source.color_accent.clone(),
     };
     
@@ -301,6 +305,7 @@ fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
 pub struct GameSession {
     pub instance_id: String,
     pub start_time: u64,
+    pub pid: Option<u32>,
 }
 
 fn get_session_file_path() -> PathBuf {
@@ -308,10 +313,11 @@ fn get_session_file_path() -> PathBuf {
 }
 
 /// Write an active session to disk (called when game launches)
-pub fn write_active_session(instance_id: &str, start_time: u64) -> Result<(), String> {
+pub fn write_active_session(instance_id: &str, start_time: u64, pid: Option<u32>) -> Result<(), String> {
     let session = GameSession {
         instance_id: instance_id.to_string(),
         start_time,
+        pid,
     };
     let content = serde_json::to_string(&session)
         .map_err(|e| format!("Failed to serialize session: {}", e))?;
@@ -325,8 +331,27 @@ pub fn clear_active_session() {
     let _ = fs::remove_file(get_session_file_path());
 }
 
-/// Check for orphaned session on startup and credit playtime
-pub fn recover_orphaned_session() -> Option<(String, u64)> {
+pub fn is_process_running(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        if let Ok(out) = Command::new("tasklist").args(&["/FI", &format!("PID eq {}", pid)]).output() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            return s.contains(&pid.to_string());
+        }
+        false
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(status) = std::process::Command::new("kill").args(&["-0", &pid.to_string()]).status() {
+            return status.success();
+        }
+        false
+    }
+}
+
+/// Check for orphaned session on startup and credit playtime or recover process
+pub fn recover_orphaned_session() -> Option<(String, u64, Option<u32>, u64)> {
     let session_path = get_session_file_path();
     if !session_path.exists() {
         return None;
@@ -335,7 +360,22 @@ pub fn recover_orphaned_session() -> Option<(String, u64)> {
     let content = fs::read_to_string(&session_path).ok()?;
     let session: GameSession = serde_json::from_str(&content).ok()?;
     
-    // Calculate time since session started (assume game ran until now)
+    // Read current instance data for original playtime
+    let original_playtime = if let Ok(inst) = get_instance(&session.instance_id) {
+        inst.playtime_seconds
+    } else {
+        0
+    };
+
+    // Check if the process is still running
+    if let Some(pid) = session.pid {
+        if is_process_running(pid) {
+            // Game is still running! Return info to re-track it
+            return Some((session.instance_id, session.start_time, Some(pid), original_playtime));
+        }
+    }
+
+    // Process is not running, calculate time since session started (assume game ran until now)
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -358,5 +398,6 @@ pub fn recover_orphaned_session() -> Option<(String, u64)> {
     // Clear the session file
     clear_active_session();
     
-    Some((session.instance_id, duration))
+    // Return with None PID to indicate it's already accounted for
+    Some((session.instance_id, duration, None, original_playtime))
 }

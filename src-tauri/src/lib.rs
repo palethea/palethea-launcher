@@ -46,6 +46,49 @@ pub struct LoaderVersion {
     pub version_type: String, // "release", "beta", "recommended", "latest"
 }
 
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct GlobalStats {
+    pub total_playtime_seconds: u64,
+    pub total_launches: u64,
+    pub instance_count: u32,
+    pub most_played_instance: Option<String>,
+    pub favorite_version: Option<String>,
+}
+
+#[tauri::command]
+fn get_global_stats() -> Result<GlobalStats, String> {
+    let mut stats = GlobalStats::default();
+    let instances = instances::load_instances()?;
+    
+    stats.instance_count = instances.len() as u32;
+    
+    let mut version_counts: HashMap<String, u32> = HashMap::new();
+    let mut max_playtime = 0;
+
+    for inst in instances {
+        stats.total_playtime_seconds += inst.playtime_seconds;
+        stats.total_launches += inst.total_launches;
+        
+        // Track most played
+        if inst.playtime_seconds > max_playtime {
+            max_playtime = inst.playtime_seconds;
+            stats.most_played_instance = Some(inst.name.clone());
+        }
+        
+        // Track favorite version
+        let count = version_counts.entry(inst.version_id.clone()).or_insert(0);
+        *count += 1;
+    }
+    
+    // Find favorite version (the one with most instances created)
+    stats.favorite_version = version_counts
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(version, _)| version);
+    
+    Ok(stats)
+}
+
 #[tauri::command]
 fn log_event(level: String, message: String, app_handle: AppHandle) {
     logger::emit_log(&app_handle, &level, &message);
@@ -321,23 +364,25 @@ async fn launch_instance(
     let uuid = state.uuid.lock().map_err(|_| "Auth state corrupted")?.clone();
     let access_token = state.access_token.lock().map_err(|_| "Auth state corrupted")?.clone();
     
-    // Update last played
+    // Update last played and launch count
     let mut updated_instance = instance.clone();
     let start_time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     updated_instance.last_played = Some(start_time.to_string());
+    updated_instance.total_launches += 1;
     instances::update_instance(updated_instance)?;
-    
-    // Write session file for crash recovery
-    instances::write_active_session(&instance_id, start_time)?;
     
     // Launch the game
     let mut child = launcher::launch_game(&instance, &version_details, &username, &access_token, &uuid).await?;
     
     // Store the process ID
     let process_id = child.id();
+    
+    // Write session file for crash recovery (include PID)
+    let _ = instances::write_active_session(&instance_id, start_time, Some(process_id));
+    
     {
         let mut processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
         processes.insert(instance_id.clone(), process_id);
@@ -423,7 +468,9 @@ fn kill_game(
 #[tauri::command]
 fn get_running_instances() -> Result<Vec<String>, String> {
     let processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
-    Ok(processes.keys().cloned().collect())
+    let keys: Vec<String> = processes.keys().cloned().collect();
+    log::info!("Checking running instances: {:?}", keys);
+    Ok(keys)
 }
 
 #[tauri::command]
@@ -1301,6 +1348,28 @@ fn get_instance_details(instance_id: String) -> Result<instances::Instance, Stri
     instances::get_instance(&instance_id)
 }
 
+#[tauri::command]
+fn exit_app_fully(app: AppHandle) {
+    let mut processes = RUNNING_PROCESSES.lock().expect("Process state corrupted");
+    for (_instance_id, pid) in processes.drain() {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(&["/F", "/PID", &pid.to_string()])
+                .spawn();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = std::process::Command::new("kill")
+                .args(&["-9", &pid.to_string()])
+                .spawn();
+        }
+    }
+    // Clear session file
+    instances::clear_active_session();
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -1331,9 +1400,51 @@ pub fn run() {
                 log::warn!("Failed to initialize instance logos folder: {}", err);
             }
             let _ = fs::create_dir_all(downloader::get_skins_dir());
-            // Recover any orphaned playtime sessions from crashes
-            if let Some((instance_id, duration)) = instances::recover_orphaned_session() {
-                log::info!("Recovered orphaned session for instance {}: {}s credited", instance_id, duration);
+            // Recover any orphaned playtime sessions from crashes or re-register running processes
+            if let Some((instance_id, duration, pid, start_time)) = instances::recover_orphaned_session() {
+                if let Some(p) = pid {
+                    // Re-register
+                    {
+                        let mut processes = RUNNING_PROCESSES.lock().unwrap();
+                        processes.insert(instance_id.clone(), p);
+                    }
+                    
+                    // Spawn a watcher for the recovered process
+                    let instance_id_clone = instance_id.clone();
+                    let app_handle_clone = app.handle().clone();
+                    
+                    std::thread::spawn(move || {
+                        while instances::is_process_running(p) {
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                        }
+                        
+                        let end_time = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let session_duration = end_time.saturating_sub(start_time);
+                        
+                        // Update playtime
+                        if let Ok(mut inst) = instances::get_instance(&instance_id_clone) {
+                            inst.playtime_seconds += session_duration;
+                            let _ = instances::update_instance(inst);
+                        }
+                        
+                        // Clear the session file
+                        instances::clear_active_session();
+                        
+                        // Remove from running processes
+                        if let Ok(mut processes) = RUNNING_PROCESSES.lock() {
+                            processes.remove(&instance_id_clone);
+                        }
+                        
+                        let _ = app_handle_clone.emit("refresh-instances", ());
+                    });
+                    
+                    log::info!("Re-registered running instance {} with PID {}", instance_id, p);
+                } else {
+                    log::info!("Recovered orphaned session for instance {}: {}s credited", instance_id, duration);
+                }
             }
             Ok(())
         })
@@ -1425,8 +1536,62 @@ pub fn run() {
             add_to_skin_collection,
             delete_skin_from_collection,
             get_skin_file_path,
+            get_global_stats,
             log_event,
+            exit_app_fully,
         ])
+        .setup(|app| {
+            // Handle orphaned sessions from previous launcher run
+            if let Some((instance_id, start_time, pid, current_playtime)) = instances::recover_orphaned_session() {
+                let handle = app.handle().clone();
+                let _ = handle.emit("refresh-instances", ());
+
+                if let Some(pid_val) = pid {
+                    let mut processes = RUNNING_PROCESSES.lock().expect("Process state corrupted");
+                    processes.insert(instance_id.clone(), pid_val);
+                    
+                    let handle_clone = handle.clone();
+                    let instance_id_clone = instance_id.clone();
+                    
+                    std::thread::spawn(move || {
+                        // Wait for process to stop
+                        while instances::is_process_running(pid_val) {
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                        }
+                        
+                        // Finalize playtime
+                        let end_time = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let session_duration = end_time.saturating_sub(start_time);
+                        
+                        if let Ok(mut inst) = instances::get_instance(&instance_id_clone) {
+                            inst.playtime_seconds = current_playtime + session_duration;
+                            let _ = instances::update_instance(inst);
+                        }
+                        
+                        instances::clear_active_session();
+                        
+                        if let Ok(mut processes) = RUNNING_PROCESSES.lock() {
+                            processes.remove(&instance_id_clone);
+                        }
+                        
+                        let _ = handle_clone.emit("refresh-instances", ());
+                    });
+                }
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let processes = RUNNING_PROCESSES.lock().unwrap();
+                if !processes.is_empty() {
+                    api.prevent_close();
+                    let _ = window.emit("show-exit-confirm", ());
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

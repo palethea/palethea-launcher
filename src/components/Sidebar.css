@@ -22,15 +22,34 @@
   text-decoration: none;
 }
 
-.logo:hover .logo-text {
-  color: var(--accent);
-}
-
 .logo-text {
   font-size: 20px;
   font-weight: 600;
-  color: var(--foreground);
   letter-spacing: -0.5px;
+  background: linear-gradient(
+    to right,
+    var(--accent),
+    #ff8a71,
+    #ffb4a2,
+    var(--accent)
+  );
+  background-size: 300% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3)) drop-shadow(0 0 10px rgba(232, 156, 136, 0.4));
+  animation: shimmer 5s ease infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
 }
 
 .sidebar-nav {
@@ -64,6 +83,35 @@
 .nav-item.active {
   color: var(--accent);
   background: rgba(232, 156, 136, 0.1);
+}
+
+.nav-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
+
+.tab-info-trigger {
+  margin-left: auto;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  pointer-events: auto; /* Ensures it can be clicked even if parent is disabled */
+  transition: all 0.2s ease;
+}
+
+.tab-info-trigger:hover {
+  background: var(--border);
+  color: var(--accent);
+}
+
+.nav-item.disabled:hover {
+  background: transparent;
+  color: var(--muted);
 }
 
 .nav-label {
@@ -122,6 +170,27 @@
   height: 100%;
   object-fit: cover;
   image-rendering: pixelated;
+}
+
+.skin-fallback-icon {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+}
+
+.skin-fallback-icon-small {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--background);
+  color: var(--text-secondary);
 }
 
 .avatar-fallback {

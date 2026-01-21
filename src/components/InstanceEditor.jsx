@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { ArrowLeft, Play, Box, Cpu, FolderOpen, Square } from 'lucide-react';
 import './InstanceEditor.css';
 import InstanceSettings from './InstanceSettings';
 import InstanceMods from './InstanceMods';
@@ -10,12 +11,14 @@ import InstanceScreenshots from './InstanceScreenshots';
 import InstanceConsole from './InstanceConsole';
 import ConfirmModal from './ConfirmModal';
 
-function InstanceEditor({ instanceId, onClose, onUpdate, onLaunch }) {
+function InstanceEditor({ instanceId, onClose, onUpdate, onLaunch, onStop, runningInstances, onDelete }) {
   const [instance, setInstance] = useState(null);
   const [activeTab, setActiveTab] = useState('settings');
   const [loading, setLoading] = useState(true);
   const [confirmModal, setConfirmModal] = useState(null);
   const [launching, setLaunching] = useState(false);
+
+  const isRunning = (runningInstances || []).includes(instanceId);
 
   useEffect(() => {
     loadInstance();
@@ -51,11 +54,24 @@ function InstanceEditor({ instanceId, onClose, onUpdate, onLaunch }) {
   };
 
   const handleLaunch = async () => {
+    if (isRunning) {
+      if (onStop) await onStop(instanceId);
+      return;
+    }
+
     if (onLaunch && instance) {
       setLaunching(true);
       setActiveTab('console');
       await onLaunch(instance.id);
       setLaunching(false);
+    }
+  };
+
+  const handleOpenFolder = async () => {
+    try {
+      await invoke('open_instance_folder', { instanceId, folderType: 'root' });
+    } catch (error) {
+      console.error('Failed to open instance folder:', error);
     }
   };
 
@@ -74,7 +90,15 @@ function InstanceEditor({ instanceId, onClose, onUpdate, onLaunch }) {
 
     switch (activeTab) {
       case 'settings':
-        return <InstanceSettings instance={instance} onSave={handleSave} onInstanceUpdated={handleInstanceUpdated} />;
+        return (
+          <InstanceSettings 
+            instance={instance} 
+            onSave={handleSave} 
+            onInstanceUpdated={handleInstanceUpdated} 
+            onShowConfirm={handleShowConfirm}
+            onDelete={onDelete}
+          />
+        );
       case 'console':
         return <InstanceConsole instance={instance} onInstanceUpdated={setInstance} />;
       case 'mods':
@@ -111,20 +135,51 @@ function InstanceEditor({ instanceId, onClose, onUpdate, onLaunch }) {
   return (
     <div className="instance-editor">
       <div className="editor-header">
-        <button className="back-btn" onClick={onClose}>← Back</button>
-        <div className="header-title">
-          <h1>{instance.name}</h1>
-          <span className="version-badge">{instance.version_id}</span>
-          {instance.mod_loader && instance.mod_loader !== 'Vanilla' && (
-            <span className="loader-badge">{instance.mod_loader}</span>
-          )}
+        <div className="header-left">
+          <button className="back-btn" onClick={onClose}>
+            <ArrowLeft size={18} />
+            <span>Back</span>
+          </button>
+          <button className="folder-btn" onClick={handleOpenFolder} title="Open Instance Folder">
+            <FolderOpen size={18} />
+            <span>Files</span>
+          </button>
+        </div>
+        <div className="header-title-container">
+          <div className="title-row">
+            <h1>{instance.name}</h1>
+          </div>
+          <div className="info-row">
+            <span className="info-badge version-badge">
+              <Box size={12} />
+              {instance.version_id}
+            </span>
+            {instance.mod_loader && instance.mod_loader !== 'Vanilla' && (
+              <span className={`info-badge loader-badge ${(instance.mod_loader || '').toLowerCase()}`}>
+                <Cpu size={12} />
+                {instance.mod_loader}
+              </span>
+            )}
+          </div>
         </div>
         <button
-          className="launch-btn-large"
+          className={`launch-btn-large ${isRunning ? 'stop-mode' : ''}`}
           onClick={handleLaunch}
           disabled={launching}
         >
-          {launching ? 'Launching...' : '▶ Launch'}
+          {launching ? (
+            'Launching...'
+          ) : isRunning ? (
+            <>
+              <Square size={18} fill="currentColor" />
+              <span>Stop</span>
+            </>
+          ) : (
+            <>
+              <Play size={18} fill="currentColor" />
+              <span>Launch</span>
+            </>
+          )}
         </button>
       </div>
 
@@ -155,7 +210,7 @@ function InstanceEditor({ instanceId, onClose, onUpdate, onLaunch }) {
             setConfirmModal(null);
             confirmModal.onConfirm();
           }}
-          onCancel={() => {
+          onCancel={confirmModal.cancelText === null ? null : () => {
             setConfirmModal(null);
             if (confirmModal.onCancel) confirmModal.onCancel();
           }}
