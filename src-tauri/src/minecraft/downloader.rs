@@ -83,6 +83,7 @@ pub fn ensure_instance_logos_dir() -> Result<(), String> {
 
     let default_logo_path = logos_dir.join("minecraft_logo.png");
     if !default_logo_path.exists() {
+        println!("Writing default instance logo to: {:?}", default_logo_path);
         fs::write(&default_logo_path, DEFAULT_INSTANCE_LOGO)
             .map_err(|e| format!("Failed to write default instance logo: {}", e))?;
     }

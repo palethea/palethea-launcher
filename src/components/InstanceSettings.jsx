@@ -215,7 +215,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
 
   const handleInstallLoader = async () => {
     if (modLoader === 'Vanilla' || !modLoaderVersion) return;
-    
+
     setInstallingLoader(true);
     try {
       const command = `install_${modLoader.toLowerCase()}`;
@@ -223,7 +223,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
         instanceId: instance.id,
         loaderVersion: modLoaderVersion
       });
-      
+
       // Update the instance to reflect the new loader/version
       const updatedInstance = {
         ...instance,
@@ -232,14 +232,14 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
       };
       await onSave(updatedInstance);
       setHasChanges(false);
-      
+
       if (onShowConfirm) {
         onShowConfirm({
           title: 'Installation Successful',
           message: `${modLoader} ${modLoaderVersion} has been installed and configured for this instance.`,
           confirmText: 'Great',
           cancelText: null,
-          onConfirm: () => {}
+          onConfirm: () => { }
         });
       }
     } catch (error) {
@@ -251,7 +251,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
           confirmText: 'Understood',
           cancelText: null,
           variant: 'danger',
-          onConfirm: () => {}
+          onConfirm: () => { }
         });
       }
     }
@@ -275,7 +275,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
           </div>
           <div className="setting-row-vertical">
             <label>Game Version</label>
-            <div 
+            <div
               className={`version-changer-preview ${showVersionSelector ? 'open' : ''}`}
               onClick={() => setShowVersionSelector(!showVersionSelector)}
             >
@@ -285,7 +285,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
               </div>
               {showVersionSelector ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
             </div>
-            
+
             {showVersionSelector && (
               <div className="version-selector-expanded">
                 <VersionSelector
@@ -303,16 +303,28 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
             <label>Instance Logo</label>
             <div className="logo-settings-container">
               <div className="logo-preview-box">
-                {logoSrc ? <img src={logoSrc} alt="" /> : <div className="logo-preview-fallback" />}
+                {logoSrc ? (
+                  <img
+                    src={logoSrc}
+                    alt=""
+                    onError={(e) => {
+                      if (!e.target.src.endsWith('/minecraft_logo.png')) {
+                        e.target.src = '/minecraft_logo.png';
+                      }
+                    }}
+                  />
+                ) : (
+                  <div className="logo-preview-fallback" />
+                )}
               </div>
               <div className="logo-controls-stack">
                 <div className="logo-buttons-row">
                   <button className="btn-logo-action primary" onClick={handleChooseLogo} disabled={logoUpdating}>
                     {logoUpdating ? 'Updating...' : 'Choose PNG'}
                   </button>
-                  <button 
-                    className="btn-logo-action secondary" 
-                    onClick={handleClearLogo} 
+                  <button
+                    className="btn-logo-action secondary"
+                    onClick={handleClearLogo}
                     disabled={logoUpdating || !instance.logo_filename}
                   >
                     Clear
@@ -346,33 +358,32 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
                     </button>
                   ))}
                 </div>
-                
+
                 {modLoader !== 'Vanilla' && (
                   <div className="loader-install-action inline">
-                    <button 
-                      className={`btn-install-loader ${installingLoader ? 'loading' : ''} ${
-                        modLoader === instance.mod_loader && modLoaderVersion === instance.mod_loader_version ? 'installed' : ''
-                      }`}
+                    <button
+                      className={`btn-install-loader ${installingLoader ? 'loading' : ''} ${modLoader === instance.mod_loader && modLoaderVersion === instance.mod_loader_version ? 'installed' : ''
+                        }`}
                       onClick={handleInstallLoader}
                       disabled={
-                        installingLoader || 
-                        !modLoaderVersion || 
+                        installingLoader ||
+                        !modLoaderVersion ||
                         (modLoader === instance.mod_loader && modLoaderVersion === instance.mod_loader_version)
                       }
                     >
-                      {installingLoader ? 'Installing...' : 
-                      (modLoader === instance.mod_loader && modLoaderVersion === instance.mod_loader_version) ? 
-                      'Already Installed' : `Install ${modLoader} Version`}
+                      {installingLoader ? 'Installing...' :
+                        (modLoader === instance.mod_loader && modLoaderVersion === instance.mod_loader_version) ?
+                          'Already Installed' : `Install ${modLoader} Version`}
                     </button>
                   </div>
                 )}
               </div>
             </div>
-            
+
             {modLoader !== 'Vanilla' && (
               <div className="setting-row-vertical" style={{ marginTop: '20px' }}>
                 <label>{modLoader} Version</label>
-                <div 
+                <div
                   className={`version-changer-preview ${showLoaderSelector ? 'open' : ''}`}
                   onClick={() => setShowLoaderSelector(!showLoaderSelector)}
                 >

@@ -102,8 +102,8 @@ function InstanceList({ instances, onLaunch, onStop, onDelete, onEdit, onCreate,
           <h1>Instances</h1>
           <div className="sort-controls">
             <span className="sort-label">Sort by:</span>
-            <select 
-              value={sortBy} 
+            <select
+              value={sortBy}
               onChange={(e) => {
                 setSortBy(e.target.value);
                 localStorage.setItem('instance_sort', e.target.value);
@@ -125,13 +125,13 @@ function InstanceList({ instances, onLaunch, onStop, onDelete, onEdit, onCreate,
       {instances.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state-visual">
-            <Box 
-              className="empty-icon-main" 
-              size={56} 
-              style={{ 
+            <Box
+              className="empty-icon-main"
+              size={56}
+              style={{
                 color: 'var(--accent)',
                 opacity: 0.8
-              }} 
+              }}
             />
           </div>
           <div className="empty-state-content">
@@ -162,8 +162,16 @@ function InstanceList({ instances, onLaunch, onStop, onDelete, onEdit, onCreate,
                     src={logoMap[instance.id]}
                     alt=""
                     onError={(e) => {
-                      e.target.style.display = 'none';
-                      e.target.nextSibling.style.display = 'block';
+                      // If it's not already the fallback, try the fallback
+                      if (!e.target.src.endsWith('/minecraft_logo.png')) {
+                        e.target.src = '/minecraft_logo.png';
+                      } else {
+                        // If fallback also fails, hide it
+                        e.target.style.display = 'none';
+                        if (e.target.nextSibling) {
+                          e.target.nextSibling.style.display = 'block';
+                        }
+                      }
                     }}
                   />
                 ) : null}

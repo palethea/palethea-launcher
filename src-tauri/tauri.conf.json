@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PaletheaLauncher",
-  "version": "0.2.8-1",
+  "version": "0.2.8-2",
   "identifier": "com.palethea.launcher",
   "build": {
     "frontendDist": "../dist",
@@ -51,7 +51,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "resources": [
+      "resources/**"
+    ]
   },
   "plugins": {
     "updater": {
