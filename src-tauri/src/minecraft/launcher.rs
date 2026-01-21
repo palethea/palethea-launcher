@@ -824,19 +824,55 @@ pub async fn launch_game(
     
     // Build command
     let mut command = Command::new(&java_path);
+    command.current_dir(&game_dir);
 
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW is 0x08000000 - this prevents the Java console from appearing
         command.creation_flags(0x08000000);
+
+        let total_len: usize = jvm_args.iter().map(|a| a.len() + 3).sum::<usize>() 
+            + main_class.len() + 3
+            + game_args.iter().map(|a| a.len() + 3).sum::<usize>();
+
+        if total_len > 8000 {
+            if let Some(major) = get_java_major(&java_path) {
+                if major >= 9 {
+                    log::info!("Command line too long ({} chars), using @argfile", total_len);
+                    let mut arg_content = String::new();
+                    // In Java argfiles, you can just put one arg per line. 
+                    // Backslashes must be doubled, and spaces handled by quotes.
+                    for a in &jvm_args {
+                        arg_content.push_str(&format!("\"{}\"\n", a.replace("\\", "\\\\").replace("\"", "\\\"")));
+                    }
+                    arg_content.push_str(&format!("\"{}\"\n", main_class.replace("\\", "\\\\").replace("\"", "\\\"")));
+                    for a in &game_args {
+                        arg_content.push_str(&format!("\"{}\"\n", a.replace("\\", "\\\\").replace("\"", "\\\"")));
+                    }
+
+                    let arg_file = game_dir.join("launch_args.txt");
+                    if fs::write(&arg_file, arg_content).is_ok() {
+                        command.arg(format!("@{}", arg_file.to_string_lossy()));
+                    } else {
+                        command.args(&jvm_args).arg(&main_class).args(&game_args);
+                    }
+                } else {
+                    log::warn!("Command line too long ({} chars) and Java is too old (< 9) to use @argfile.", total_len);
+                    command.args(&jvm_args).arg(&main_class).args(&game_args);
+                }
+            } else {
+                command.args(&jvm_args).arg(&main_class).args(&game_args);
+            }
+        } else {
+            command.args(&jvm_args).arg(&main_class).args(&game_args);
+        }
     }
 
-    command
-        .current_dir(&game_dir)
-        .args(&jvm_args)
-        .arg(&main_class)
-        .args(&game_args);
+    #[cfg(not(target_os = "windows"))]
+    {
+        command.args(&jvm_args).arg(&main_class).args(&game_args);
+    }
     
     // Launch the game
     let child = command.spawn()
