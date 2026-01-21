@@ -145,7 +145,11 @@ pub async fn download_file(
     }
     
     // Download the file
-    let response = reqwest::get(url).await?;
+    let client = reqwest::Client::builder()
+        .user_agent("PaletheaLauncher/0.2.9")
+        .build()?;
+        
+    let response = client.get(url).send().await?;
     let bytes = response.bytes().await?;
     
     let mut file = File::create(path)?;

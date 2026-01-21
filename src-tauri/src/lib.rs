@@ -1505,13 +1505,13 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            let log_plugin = tauri_plugin_log::Builder::default()
+                .level(if cfg!(debug_assertions) { log::LevelFilter::Debug } else { log::LevelFilter::Info })
+                .level_for("reqwest", log::LevelFilter::Off)
+                .level_for("hyper", log::LevelFilter::Off)
+                .build();
+            app.handle().plugin(log_plugin)?;
+
             if let Err(err) = downloader::ensure_instance_logos_dir() {
                 log::warn!("Failed to initialize instance logos folder: {}", err);
             }

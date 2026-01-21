@@ -6,6 +6,14 @@ use crate::minecraft::downloader::get_minecraft_dir;
 
 // Microsoft's public Xbox Live client ID (used by many third-party launchers)
 const MICROSOFT_CLIENT_ID: &str = "000000004C12AE6F";
+const USER_AGENT: &str = "PaletheaLauncher/0.2.9";
+
+fn create_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MicrosoftAccount {
@@ -96,7 +104,7 @@ pub struct DeviceCodeInfo {
 
 /// Step 1: Start device code flow
 pub async fn start_device_code_flow() -> Result<DeviceCodeInfo, Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = create_client();
     
     let response = client
         .post("https://login.live.com/oauth20_connect.srf")
@@ -126,7 +134,7 @@ pub async fn start_device_code_flow() -> Result<DeviceCodeInfo, Box<dyn Error + 
 
 /// Step 2: Poll for token after user authenticates
 pub async fn poll_for_token(device_code: &str) -> Result<TokenResponse, Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = create_client();
     
     let response = client
         .post("https://login.live.com/oauth20_token.srf")
@@ -149,7 +157,7 @@ pub async fn poll_for_token(device_code: &str) -> Result<TokenResponse, Box<dyn 
 
 /// Step 3: Authenticate with Xbox Live
 async fn authenticate_xbox(ms_token: &str) -> Result<(String, String), Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = create_client();
     
     // Xbox Live authentication
     let xbox_response = client
@@ -195,7 +203,7 @@ async fn authenticate_xbox(ms_token: &str) -> Result<(String, String), Box<dyn E
 
 /// Step 4: Authenticate with Minecraft
 async fn authenticate_minecraft(xsts_token: &str, user_hash: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = create_client();
     
     let response = client
         .post("https://api.minecraftservices.com/authentication/login_with_xbox")
@@ -212,7 +220,7 @@ async fn authenticate_minecraft(xsts_token: &str, user_hash: &str) -> Result<Str
 
 /// Step 5: Get Minecraft profile
 async fn get_minecraft_profile(mc_token: &str) -> Result<(String, String), Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = create_client();
     
     let response = client
         .get("https://api.minecraftservices.com/minecraft/profile")

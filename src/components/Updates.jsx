@@ -209,6 +209,15 @@ function Updates() {
         <div className="updates-list">
           <article className="update-item">
             <div>
+              <p className="update-title">Fixed most issues launching mods</p>
+              <p className="update-meta">v0.2.9 • January 2026</p>
+            </div>
+            <p className="update-body">
+              Fixed a lot of issues happening on windows when trying to launch with mods.
+            </p>
+          </article>
+          <article className="update-item">
+            <div>
               <p className="update-title">Improved Instance Editor & Welcome message</p>
               <p className="update-meta">v0.2.1 • January 2026</p>
             </div>
