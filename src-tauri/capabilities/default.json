@@ -20,6 +20,35 @@
     "dialog:default",
     "updater:default",
     "process:allow-restart",
-    "process:allow-exit"
+    "process:allow-exit",
+    "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$HOME/.palethealauncher/**"
+        },
+        {
+          "path": "$HOME/Library/Application Support/PaletheaLauncher/**"
+        }
+      ]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$HOME/.palethealauncher/**"
+        },
+        {
+          "path": "$HOME/Library/Application Support/PaletheaLauncher/**"
+        }
+      ]
+    }
   ]
 }

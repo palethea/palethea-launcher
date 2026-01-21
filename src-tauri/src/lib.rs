@@ -8,6 +8,7 @@ use std::sync::{Mutex, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{State, AppHandle, Emitter};
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_opener::OpenerExt;
 
 // Global state for tracking running game processes
 static RUNNING_PROCESSES: LazyLock<Mutex<HashMap<String, u32>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -1310,7 +1311,8 @@ fn rename_instance_screenshot(instance_id: String, old_filename: String, new_fil
 fn open_instance_screenshot(app: AppHandle, instance_id: String, filename: String) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
     let path = files::get_screenshots_dir(&instance).join(filename);
-    app.shell().open(path.to_string_lossy(), None).map_err(|e| e.to_string())
+    // Use opener plugin's open_path to open files with their default application
+    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1343,16 +1345,12 @@ async fn open_instance_folder(app: AppHandle, instance_id: String, folder_type: 
     
     // Ensure directory exists before opening
     if !path.exists() {
-        let _ = std::fs::create_dir_all(&path);
+        std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     }
 
-    // Canonicalize to ensure we have a clean absolute path for the shell
-    let path_to_open = match path.canonicalize() {
-        Ok(p) => p.to_string_lossy().to_string(),
-        Err(_) => path.to_string_lossy().to_string(),
-    };
-    
-    app.shell().open(path_to_open, None).map_err(|e| e.to_string())
+    // Use the opener plugin's reveal_item_in_dir to open the folder in the file manager
+    // This is the proper Tauri 2 way to open folders (shell.open only works for URLs in production)
+    app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1400,6 +1398,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
