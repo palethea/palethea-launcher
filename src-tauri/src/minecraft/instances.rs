@@ -67,7 +67,7 @@ impl Instance {
             mod_loader: ModLoader::Vanilla,
             mod_loader_version: None,
             console_auto_update: true,
-            logo_filename: None,
+            logo_filename: Some("minecraft_logo.png".to_string()),
             playtime_seconds: 0,
             total_launches: 0,
             color_accent: None,

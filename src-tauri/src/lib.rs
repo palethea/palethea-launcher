@@ -1365,8 +1365,12 @@ fn open_path_native(path: &std::path::Path) -> Result<(), String> {
         
         for xdg_path in &xdg_paths {
             if std::path::Path::new(xdg_path).exists() {
+                // When running from an AppImage, we need to clear certain environment variables
+                // so the host's xdg-open can find the correct libraries and programs.
                 match Command::new(xdg_path)
                     .arg(path)
+                    .env_remove("LD_LIBRARY_PATH")
+                    .env_remove("LD_PRELOAD")
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -1378,9 +1382,11 @@ fn open_path_native(path: &std::path::Path) -> Result<(), String> {
             }
         }
         
-        // Fallback: try gio open
+        // Fallback: try gio open with cleared env
         if let Ok(_) = Command::new("gio")
             .args(["open", &path.to_string_lossy()])
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("LD_PRELOAD")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

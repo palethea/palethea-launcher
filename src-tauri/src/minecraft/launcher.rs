@@ -824,6 +824,14 @@ pub async fn launch_game(
     
     // Build command
     let mut command = Command::new(&java_path);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW is 0x08000000 - this prevents the Java console from appearing
+        command.creation_flags(0x08000000);
+    }
+
     command
         .current_dir(&game_dir)
         .args(&jvm_args)
