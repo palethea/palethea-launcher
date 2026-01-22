@@ -68,6 +68,16 @@
   border: 1px solid rgba(251, 191, 36, 0.4);
 }
 
+/* ---------- */
+/* Downgrade Pill Styles */
+/* Description: Blue styling for downgrade status pill */
+/* ---------- */
+.status-pill-downgrade {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+
 .update-available-box {
   margin-top: 8px;
   padding: 16px;
@@ -83,6 +93,60 @@
   margin: 0;
   color: var(--foreground);
   font-size: 14px;
+}
+
+/* ---------- */
+/* Downgrade Hint Styles */
+/* Description: Compact inline hint with link button for downgrade option */
+/* ---------- */
+.downgrade-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: rgba(56, 189, 248, 0.08);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.downgrade-hint span {
+  color: var(--text-secondary);
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #38bdf8;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.btn-link:hover {
+  color: #7dd3fc;
+  text-decoration: underline;
+}
+
+.btn-link:disabled {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+}
+
+.inline-progress {
+  flex: 1;
+  min-width: 80px;
+  max-width: 150px;
+  height: 4px;
+}
+
+.downgrade-fill {
+  background: linear-gradient(90deg, #38bdf8, #0ea5e9) !important;
 }
 
 .progress-bar {
@@ -193,6 +257,119 @@
   margin: 0;
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+/* ---------- */
+/* Prerelease Badge Styles */
+/* Description: Styling for version badges indicating prerelease status */
+/* ---------- */
+.prerelease-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(168, 85, 247, 0.15);
+  color: #a855f7;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
+.prerelease-badge-sm {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(168, 85, 247, 0.15);
+  color: #a855f7;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+/* ---------- */
+/* Channel Selector Styles */
+/* Description: Dropdown styling for update channel selection */
+/* ---------- */
+.channel-select {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  min-width: 150px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.channel-select:hover {
+  border-color: var(--primary);
+}
+
+.channel-select:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.channel-hint {
+  margin: 0;
+  padding: 8px 12px;
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+/* ---------- */
+/* Release Count Badge */
+/* Description: Shows the number of releases available */
+/* ---------- */
+.release-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--background);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+/* ---------- */
+/* Releases Section */
+/* Description: Section showing available versions for download */
+/* ---------- */
+.updates-releases {
+  margin-top: 8px;
+}
+
+.updates-releases .update-item {
+  transition: border-color 0.2s ease, transform 0.1s ease;
+}
+
+.updates-releases .update-item:hover {
+  border-color: var(--primary);
+  transform: translateX(2px);
+}
+
+.notes-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.notes-list li {
+  margin-bottom: 4px;
 }
 
 @media (max-width: 960px) {

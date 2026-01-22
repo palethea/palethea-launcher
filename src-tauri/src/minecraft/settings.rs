@@ -3,6 +3,10 @@ use std::fs;
 use std::path::PathBuf;
 use crate::minecraft::downloader::get_minecraft_dir;
 
+// ----------
+// LauncherSettings
+// Description: Global settings for the launcher, persisted to settings.json
+// ----------
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LauncherSettings {
     pub java_path: Option<String>,
@@ -11,6 +15,13 @@ pub struct LauncherSettings {
     pub enable_console: Option<bool>,
     pub account_preview_mode: Option<String>,
     pub show_welcome: Option<bool>,
+    /// Update channel preference: "stable" or "prerelease"
+    #[serde(default = "default_update_channel")]
+    pub update_channel: Option<String>,
+}
+
+fn default_update_channel() -> Option<String> {
+    Some("stable".to_string())
 }
 
 impl Default for LauncherSettings {
@@ -22,6 +33,7 @@ impl Default for LauncherSettings {
             enable_console: Some(false),
             account_preview_mode: Some("simple".to_string()),
             show_welcome: Some(true),
+            update_channel: Some("stable".to_string()),
         }
     }
 }

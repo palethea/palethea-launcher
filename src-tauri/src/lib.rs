@@ -531,6 +531,130 @@ async fn download_java_global(version: u32) -> Result<String, String> {
     Ok(java_path.to_string_lossy().to_string())
 }
 
+// ----------
+// GitHub Release Info
+// Description: Struct to hold release information from GitHub API
+// ----------
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitHubRelease {
+    pub tag_name: String,
+    pub name: Option<String>,
+    pub body: Option<String>,
+    pub prerelease: bool,
+    pub published_at: Option<String>,
+    pub html_url: String,
+}
+
+// ----------
+// get_github_releases
+// Description: Fetches releases from GitHub API, returns both stable and prerelease versions
+// ----------
+#[tauri::command]
+async fn get_github_releases(include_prerelease: bool) -> Result<Vec<GitHubRelease>, String> {
+    let client = reqwest::Client::new();
+    let url = "https://api.github.com/repos/mwsk75996/palethea-launcher/releases";
+    
+    let response = client
+        .get(url)
+        .header("User-Agent", "PaletheaLauncher/0.1.0")
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch releases: {}", e))?;
+    
+    if !response.status().is_success() {
+        return Err(format!("GitHub API returned status: {}", response.status()));
+    }
+    
+    let releases: Vec<GitHubRelease> = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse releases: {}", e))?;
+    
+    // Filter based on include_prerelease flag
+    let filtered: Vec<GitHubRelease> = if include_prerelease {
+        releases
+    } else {
+        releases.into_iter().filter(|r| !r.prerelease).collect()
+    };
+    
+    Ok(filtered)
+}
+
+// ----------
+// compare_versions
+// Description: Compares two semver versions, returns 1 if v1 > v2, -1 if v1 < v2, 0 if equal.
+//              Properly handles prerelease versions (e.g., 0.2.9-1 > 0.2.9)
+// ----------
+#[tauri::command]
+fn compare_versions(v1: String, v2: String) -> i32 {
+    // Helper to parse version components
+    fn parse_version(version: &str) -> (Vec<u32>, Option<u32>) {
+        // Remove 'v' prefix if present
+        let ver = version.strip_prefix('v').unwrap_or(version);
+        
+        // Split by '-' to separate main version from prerelease suffix
+        let parts: Vec<&str> = ver.splitn(2, '-').collect();
+        let main_version = parts[0];
+        let prerelease: Option<u32> = parts.get(1).and_then(|p| p.parse().ok());
+        
+        // Parse main version components
+        let components: Vec<u32> = main_version
+            .split('.')
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        
+        (components, prerelease)
+    }
+    
+    let (v1_main, v1_pre) = parse_version(&v1);
+    let (v2_main, v2_pre) = parse_version(&v2);
+    
+    // Compare main version components
+    let max_len = v1_main.len().max(v2_main.len());
+    for i in 0..max_len {
+        let c1 = v1_main.get(i).copied().unwrap_or(0);
+        let c2 = v2_main.get(i).copied().unwrap_or(0);
+        if c1 > c2 {
+            return 1;
+        }
+        if c1 < c2 {
+            return -1;
+        }
+    }
+    
+    // Main versions are equal - check prerelease
+    // A prerelease version is NEWER than the base version (0.2.9-1 > 0.2.9)
+    match (v1_pre, v2_pre) {
+        (Some(p1), Some(p2)) => {
+            // Both have prerelease, compare numerically
+            if p1 > p2 { 1 } else if p1 < p2 { -1 } else { 0 }
+        }
+        (Some(_), None) => {
+            // v1 has prerelease, v2 doesn't -> v1 is newer
+            1
+        }
+        (None, Some(_)) => {
+            // v2 has prerelease, v1 doesn't -> v2 is newer
+            -1
+        }
+        (None, None) => {
+            // Neither has prerelease, versions are equal
+            0
+        }
+    }
+}
+
+// ----------
+// is_prerelease_version
+// Description: Checks if a version string is a prerelease (contains a hyphen suffix like -1, -2, etc.)
+// ----------
+#[tauri::command]
+fn is_prerelease_version(version: String) -> bool {
+    let ver = version.strip_prefix('v').unwrap_or(&version);
+    ver.contains('-')
+}
+
 // ============== AUTH COMMANDS ==============
 
 #[tauri::command]
@@ -1595,6 +1719,10 @@ pub fn run() {
             save_settings,
             download_java_for_instance,
             download_java_global,
+            // Update/version comparison commands
+            get_github_releases,
+            compare_versions,
+            is_prerelease_version,
             // Auth commands
             start_microsoft_login,
             poll_microsoft_login,
