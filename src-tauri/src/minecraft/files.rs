@@ -4,6 +4,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use base64::{Engine as _, engine::general_purpose};
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use std::io::Write;
 
 use crate::minecraft::instances::Instance;
 
@@ -14,22 +17,34 @@ pub struct InstalledMod {
     pub version: Option<String>,
     pub enabled: bool,
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub version_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ModMeta {
     pub project_id: String,
+    #[serde(default)]
+    pub version_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResourcePack {
     pub filename: String,
     pub name: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub version_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ShaderPack {
     pub filename: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub version_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -113,17 +128,20 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
             if filename.ends_with(".jar") || filename.ends_with(".jar.disabled") {
                 let enabled = !filename.ends_with(".disabled");
                 
-                // Try to read project_id from metadata file
+                // Try to read project_id and version_id from metadata file
                 let base_filename = filename.trim_end_matches(".disabled");
                 let meta_path = mods_dir.join(format!("{}.meta.json", base_filename));
-                let project_id = if meta_path.exists() {
-                    fs::read_to_string(&meta_path)
-                        .ok()
-                        .and_then(|s| serde_json::from_str::<ModMeta>(&s).ok())
-                        .map(|m| m.project_id)
-                } else {
-                    None
-                };
+                let mut project_id = None;
+                let mut version_id = None;
+                
+                if meta_path.exists() {
+                    if let Ok(s) = fs::read_to_string(&meta_path) {
+                        if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
+                            project_id = Some(m.project_id);
+                            version_id = m.version_id;
+                        }
+                    }
+                }
                 
                 mods.push(InstalledMod {
                     filename: filename.clone(),
@@ -131,6 +149,7 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
                     version: None,
                     enabled,
                     project_id,
+                    version_id,
                 });
             }
         }
@@ -190,9 +209,25 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                 .to_string();
             
             if filename.ends_with(".zip") || path.is_dir() {
+                // Try to read metadata
+                let meta_path = dir.join(format!("{}.meta.json", filename));
+                let mut project_id = None;
+                let mut version_id = None;
+                
+                if meta_path.exists() {
+                    if let Ok(s) = fs::read_to_string(&meta_path) {
+                        if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
+                            project_id = Some(m.project_id);
+                            version_id = m.version_id;
+                        }
+                    }
+                }
+
                 packs.push(ResourcePack {
                     filename: filename.clone(),
                     name: Some(filename.trim_end_matches(".zip").to_string()),
+                    project_id,
+                    version_id,
                 });
             }
         }
@@ -233,7 +268,25 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                 .to_string();
             
             if filename.ends_with(".zip") || path.is_dir() {
-                packs.push(ShaderPack { filename });
+                // Try to read metadata
+                let meta_path = dir.join(format!("{}.meta.json", filename));
+                let mut project_id = None;
+                let mut version_id = None;
+                
+                if meta_path.exists() {
+                    if let Ok(s) = fs::read_to_string(&meta_path) {
+                        if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
+                            project_id = Some(m.project_id);
+                            version_id = m.version_id;
+                        }
+                    }
+                }
+
+                packs.push(ShaderPack { 
+                    filename,
+                    project_id,
+                    version_id,
+                });
             }
         }
     }
@@ -379,6 +432,71 @@ pub fn delete_world(instance: &Instance, folder_name: &str) -> Result<(), String
         fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
     }
     
+    Ok(())
+}
+
+/// Rename a world folder
+pub fn rename_world(instance: &Instance, old_name: &str, new_name: &str) -> Result<(), String> {
+    let saves_dir = get_saves_dir(instance);
+    let old_path = saves_dir.join(old_name);
+    let new_path = saves_dir.join(new_name);
+    
+    if !old_path.exists() {
+        return Err("World folder not found".to_string());
+    }
+    
+    if new_path.exists() {
+        return Err("A world with that folder name already exists".to_string());
+    }
+    
+    fs::rename(&old_path, &new_path).map_err(|e| e.to_string())?;
+    
+    // Also try to update level.dat internal name
+    let _ = update_world_level_name(&new_path, new_name);
+    
+    Ok(())
+}
+
+/// Update world's internal name in level.dat
+pub fn update_world_level_name(world_path: &Path, new_name: &str) -> Result<(), String> {
+    let level_dat = world_path.join("level.dat");
+    if !level_dat.exists() {
+        return Ok(());
+    }
+
+    let data = fs::read(&level_dat).map_err(|e| e.to_string())?;
+    
+    // Try to decode
+    let mut decoder = GzDecoder::new(&data[..]);
+    let mut decoded = Vec::new();
+    if decoder.read_to_end(&mut decoded).is_err() {
+        // If not gzipped, try raw
+        decoded = data;
+    }
+
+    let mut nbt: fastnbt::Value = fastnbt::from_bytes(&decoded).map_err(|e| e.to_string())?;
+
+    // NBT structure: Root Compound -> "Data" Compound -> "LevelName" String
+    if let fastnbt::Value::Compound(root) = &mut nbt {
+        if let Some(fastnbt::Value::Compound(data_tag)) = root.get_mut("Data") {
+            data_tag.insert("LevelName".to_string(), fastnbt::Value::String(new_name.to_string()));
+        } else if let Some(fastnbt::Value::Compound(data_tag)) = root.get_mut("") {
+            // Some versions/parsers might have an empty string root
+             if let Some(fastnbt::Value::Compound(inner_data)) = data_tag.get_mut("Data") {
+                inner_data.insert("LevelName".to_string(), fastnbt::Value::String(new_name.to_string()));
+             }
+        }
+    }
+
+    let new_nbt_bytes = fastnbt::to_bytes(&nbt).map_err(|e| e.to_string())?;
+
+    // Re-compress
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&new_nbt_bytes).map_err(|e| e.to_string())?;
+    let compressed = encoder.finish().map_err(|e| e.to_string())?;
+
+    fs::write(level_dat, compressed).map_err(|e| e.to_string())?;
+
     Ok(())
 }
 

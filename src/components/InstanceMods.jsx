@@ -172,7 +172,8 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification }) {
         fileUrl: file.url,
         filename: file.filename,
         fileType: 'mod',
-        projectId: project.project_id || project.slug
+        projectId: project.project_id || project.slug,
+        versionId: version.id
       });
 
       await loadInstalledMods();

@@ -97,30 +97,32 @@ function InstanceList({ instances, onLaunch, onStop, onDelete, onEdit, onCreate,
 
   return (
     <div className="instance-list" onContextMenu={handleContainerContextMenu}>
-      <div className="instance-header">
-        <div className="header-left">
-          <h1>Instances</h1>
-          <div className="sort-controls">
-            <span className="sort-label">Sort by:</span>
-            <select
-              value={sortBy}
-              onChange={(e) => {
-                setSortBy(e.target.value);
-                localStorage.setItem('instance_sort', e.target.value);
-              }}
-              className="sort-select"
-            >
-              <option value="name">Name</option>
-              <option value="color">Color</option>
-              <option value="age">Creation Date</option>
-              <option value="playtime">Playtime</option>
-            </select>
+      {instances.length > 0 && (
+        <div className="instance-header">
+          <div className="header-left">
+            <h1>Instances</h1>
+            <div className="sort-controls">
+              <span className="sort-label">Sort by:</span>
+              <select
+                value={sortBy}
+                onChange={(e) => {
+                  setSortBy(e.target.value);
+                  localStorage.setItem('instance_sort', e.target.value);
+                }}
+                className="sort-select"
+              >
+                <option value="name">Name</option>
+                <option value="color">Color</option>
+                <option value="age">Creation Date</option>
+                <option value="playtime">Playtime</option>
+              </select>
+            </div>
           </div>
+          <button className="btn btn-primary" onClick={onCreate} disabled={isLoading}>
+            + New Instance
+          </button>
         </div>
-        <button className="btn btn-primary" onClick={onCreate} disabled={isLoading}>
-          + New Instance
-        </button>
-      </div>
+      )}
 
       {instances.length === 0 ? (
         <div className="empty-state">

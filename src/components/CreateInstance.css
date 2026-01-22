@@ -66,9 +66,10 @@
 
 .create-body,
 .modal-body {
-  padding: 24px;
+  padding: 20px;
   flex: 1;
   min-height: 0;
+  
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -192,6 +193,245 @@
   margin-bottom: 20px;
 }
 
+/* Share Code Styling */
+.share-code-step {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.share-code-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.share-code-layout.has-preview {
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+.share-code-main .instance-name-input {
+  height: 56px;
+  font-size: 16px;
+  padding: 0 20px;
+}
+
+.share-name-group {
+  margin-top: 12px;
+}
+
+.share-code-hero {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.hero-icon {
+  font-size: 40px;
+  margin-bottom: 12px;
+  display: inline-block;
+  background: rgba(232, 156, 136, 0.1);
+  width: 72px;
+  height: 72px;
+  line-height: 72px;
+  border-radius: 20px;
+  color: var(--accent);
+}
+
+.share-code-hero h3 {
+  font-size: 22px;
+  margin: 0 0 8px;
+  color: var(--text);
+}
+
+.share-code-hero p {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0;
+}
+
+.share-code-input {
+  width: 100%;
+  height: 56px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 20px;
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.share-code-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.1);
+}
+
+.decoding-status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mini-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(var(--accent-rgb), 0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.decoding-error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.share-code-info {
+  margin-top: 32px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-style: italic;
+  text-align: center;
+  width: 100%;
+}
+
+.share-preview-card {
+  width: 320px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+  animation: slideInRight 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  flex-shrink: 0;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.preview-accent-bar {
+  height: 4px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+  width: 100%;
+}
+
+.preview-header {
+  padding: 24px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.preview-icon {
+  font-size: 24px;
+  background: rgba(var(--accent-rgb), 0.1);
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.2);
+}
+
+.preview-main h4 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--text);
+}
+
+.preview-meta {
+  font-size: 0.85rem;
+  color: var(--muted);
+  display: block;
+  margin-top: 4px;
+}
+
+.preview-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  padding: 20px;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.preview-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.stat-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted);
+  letter-spacing: 0.8px;
+  margin-top: 2px;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .search-bar {
   display: flex;
   align-items: center;
@@ -261,7 +501,7 @@
   background: rgba(255, 255, 255, 0.05);
   border-color: var(--muted);
   transform: translateY(-2px);
-  box-shadow: 0 4px 15px rgba(0,0,0,0.25);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.25);
 }
 
 .modpack-card.selected {
@@ -426,9 +666,17 @@
 }
 
 @keyframes pulse {
-  0% { opacity: 0.4; }
-  50% { opacity: 0.8; }
-  100% { opacity: 0.4; }
+  0% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 0.8;
+  }
+
+  100% {
+    opacity: 0.4;
+  }
 }
 
 .modpack-review-meta .mods-total-badge {
@@ -544,18 +792,25 @@
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Step 0 v2 Styles */
 .setup-step-v2 {
-  max-width: 600px;
+  max-width: 850px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 28px;
-  padding: 10px 0;
+  padding: 0 0;
 }
 
 .form-group {
@@ -587,9 +842,17 @@
   box-shadow: 0 0 0 1px var(--accent);
 }
 
+.instance-name-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: rgba(0, 0, 0, 0.1);
+  border-style: dashed;
+  color: var(--muted);
+}
+
 .creation-mode-cards {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   gap: 16px;
 }
 
@@ -600,18 +863,20 @@
   background: var(--surface-hover);
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 20px 24px;
+  padding: 24px;
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   text-align: left;
   width: 100%;
   position: relative;
+  height: 100%;
 }
 
 .mode-card:hover {
   background: rgba(255, 255, 255, 0.05);
-  transform: translateX(4px);
+  transform: translateY(-4px);
   border-color: var(--muted);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
 
 .mode-card.active {
@@ -629,6 +894,12 @@
   background: rgba(0, 0, 0, 0.2);
   border-radius: 12px;
   flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.mode-card:hover .mode-icon {
+  background: rgba(232, 156, 136, 0.15);
+  transform: scale(1.05);
 }
 
 .mode-details {
@@ -658,6 +929,9 @@
   justify-content: center;
   transition: all 0.2s;
   flex-shrink: 0;
+  position: absolute;
+  top: 16px;
+  right: 16px;
 }
 
 .mode-card.active .mode-check {
@@ -678,4 +952,69 @@
 .mode-card.active .check-inner {
   opacity: 1;
   transform: scale(1);
+}
+
+/* ---------- */
+/* Import Step Styles */
+/* Description: Styles for the .zip file import UI */
+/* ---------- */
+.import-step {
+  display: flex;
+  flex-direction: column;
+  max-width: 500px;
+  margin: 0 auto;
+  padding: 20px 0;
+}
+
+.import-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  border: 2px dashed var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.import-dropzone:hover {
+  border-color: var(--accent);
+  background: rgba(232, 156, 136, 0.05);
+  transform: translateY(-2px);
+}
+
+.import-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.8;
+}
+
+.import-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--foreground);
+  margin-bottom: 8px;
+}
+
+.import-filename {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+
+.import-hint {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.import-name-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 8px;
+  opacity: 0.7;
 }

@@ -139,7 +139,8 @@ function InstanceResources({ instance, onShowNotification }) {
         fileUrl: file.url,
         filename: file.filename,
         fileType: fileType,
-        projectId: project.project_id || project.slug
+        projectId: project.project_id || project.slug,
+        versionId: version.id
       });
 
       await loadResources();

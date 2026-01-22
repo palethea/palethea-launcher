@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
+import { save } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 import Sidebar from './components/Sidebar';
 import InstanceList from './components/InstanceList';
@@ -40,6 +41,7 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [launcherSettings, setLauncherSettings] = useState(null);
   const [showAccountManager, setShowAccountManager] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
     // Load all cached skins on startup
@@ -210,7 +212,7 @@ function App() {
           isLoggedIn: activeAcc.is_microsoft,
           uuid: activeAcc.uuid
         });
-        loadSkinForAccount(activeAcc.is_microsoft, activeAcc.uuid);
+        await loadSkinForAccount(activeAcc.is_microsoft, activeAcc.uuid);
       }
     } catch (error) {
       console.error('Failed to load accounts:', error);
@@ -220,10 +222,23 @@ function App() {
   }, [loadSkinForAccount]);
 
   useEffect(() => {
-    loadInstances();
-    loadAccounts();
-    loadRunningInstances();
-    loadLauncherSettings();
+    const initializeApp = async () => {
+      try {
+        await Promise.all([
+          loadInstances(),
+          loadAccounts(),
+          loadRunningInstances(),
+          loadLauncherSettings()
+        ]);
+        // Short delay to ensure state updates and transitions are smooth
+        setTimeout(() => setIsInitializing(false), 800);
+      } catch (error) {
+        console.error('Initialization failed:', error);
+        setIsInitializing(false);
+      }
+    };
+
+    initializeApp();
 
     // Poll running instances periodically (process state can change without events)
     const runningPoll = setInterval(loadRunningInstances, 2000);
@@ -376,6 +391,53 @@ function App() {
           }
         }
         break;
+      // ----------
+      // Share (Export) action
+      // Description: Exports the instance as a .zip file for sharing with others
+      // ----------
+      case 'share':
+        if (instance) {
+          try {
+            const defaultName = `${instance.name.replace(/[^a-zA-Z0-9]/g, '_')}.zip`;
+            const savePath = await save({
+              defaultPath: defaultName,
+              filters: [{
+                name: 'Zip Archive',
+                extensions: ['zip']
+              }]
+            });
+
+            if (savePath) {
+              setIsLoading(true);
+              setLoadingStatus(`Exporting ${instance.name}...`);
+              await invoke('export_instance_zip', {
+                instanceId: instance.id,
+                destinationPath: savePath
+              });
+              showNotification(`Exported "${instance.name}" successfully!`, 'success');
+            }
+          } catch (error) {
+            showNotification(`Failed to export instance: ${error}`, 'error');
+          } finally {
+            setIsLoading(false);
+            setLoadingStatus('');
+          }
+        }
+        break;
+      case 'shareCode':
+        if (instance) {
+          try {
+            const code = await invoke('get_instance_share_code', { instanceId: instance.id });
+            await navigator.clipboard.writeText(code);
+            showNotification(
+              'Share code copied! Note: Only Modrinth-sourced files are included.',
+              'success'
+            );
+          } catch (error) {
+            showNotification(`Failed to generate share code: ${error}`, 'error');
+          }
+        }
+        break;
     }
   };
 
@@ -403,6 +465,182 @@ function App() {
     setIsLoading(true);
     setLoadingProgress(0);
     try {
+      // ----------
+      // Import from .zip handler
+      // Description: Imports an instance from a shared .zip file
+      // ----------
+      if (modLoader === 'import') {
+        const { zipPath } = modLoaderVersion;
+        setLoadingStatus('Importing instance...');
+        setLoadingProgress(20);
+
+        const importedInstance = await invoke('import_instance_zip', {
+          zipPath,
+          customName: name || null
+        });
+
+        setLoadingProgress(60);
+        setLoadingStatus(`Downloading Minecraft ${importedInstance.version_id}...`);
+        await invoke('download_version', { versionId: importedInstance.version_id });
+
+        setLoadingProgress(100);
+        await loadInstances();
+        setActiveTab('instances');
+        showNotification(`Imported instance "${importedInstance.name}"!`, 'success');
+        setIsLoading(false);
+        setLoadingStatus('');
+        setLoadingProgress(0);
+        return;
+      }
+
+      // ----------
+      // Share Code Handler
+      // Description: Extracts metadata from a shared code and rebuilds the instance by downloading all assets
+      // ----------
+      if (modLoader === 'share-code') {
+        const { shareData } = modLoaderVersion;
+        const { name: originalName, version: mcVersion, loader, loader_version, mods, resourcepacks, shaders } = shareData;
+
+        setLoadingStatus(`Preparing instance "${name || originalName}"...`);
+        setLoadingProgress(5);
+
+        // 1. Create the instance
+        const newInstance = await invoke('create_instance', { 
+          name: name || originalName, 
+          versionId: mcVersion 
+        });
+
+        // 2. Download Minecraft
+        setLoadingStatus(`Downloading Minecraft ${mcVersion}...`);
+        setLoadingProgress(10);
+        await invoke('download_version', { versionId: mcVersion });
+
+        // 3. Install Mod Loader
+        if (loader !== 'vanilla') {
+          setLoadingStatus(`Installing ${loader}...`);
+          setLoadingProgress(20);
+          if (loader === 'fabric') {
+            await invoke('install_fabric', { instanceId: newInstance.id, loaderVersion: loader_version });
+          } else if (loader === 'forge') {
+            await invoke('install_forge', { instanceId: newInstance.id, loaderVersion: loader_version });
+          } else if (loader === 'neoforge') {
+            await invoke('install_neoforge', { instanceId: newInstance.id, loaderVersion: loader_version });
+          }
+        }
+
+        // 4. Download Mods
+        const totalItems = mods.length + resourcepacks.length + shaders.length;
+        let completedItems = 0;
+
+        for (const mod of mods) {
+          setLoadingStatus(`Installing mod ${++completedItems}/${totalItems}...`);
+          try {
+            let modInfo;
+            if (mod.version_id) {
+              modInfo = await invoke('get_modrinth_version', { versionId: mod.version_id });
+            } else {
+              // Fetch latest compatible version if version_id is missing
+              const versions = await invoke('get_modrinth_versions', { 
+                projectId: mod.project_id,
+                gameVersion: mcVersion,
+                loader: loader === 'vanilla' ? null : loader
+              });
+              modInfo = versions.length > 0 ? versions[0] : null;
+            }
+
+            if (modInfo) {
+              const file = modInfo.files.find(f => f.primary) || modInfo.files[0];
+              await invoke('install_modrinth_file', {
+                instanceId: newInstance.id,
+                fileUrl: file.url,
+                filename: file.filename,
+                fileType: 'mod',
+                projectId: mod.project_id,
+                versionId: modInfo.id
+              });
+            }
+          } catch (e) {
+            console.warn(`Failed to install mod ${mod.project_id}:`, e);
+          }
+          setLoadingProgress(20 + (completedItems / totalItems) * 75);
+        }
+
+        // 5. Download Resource Packs
+        for (const pack of resourcepacks) {
+          setLoadingStatus(`Installing pack ${++completedItems}/${totalItems}...`);
+          try {
+            let packInfo;
+            if (pack.version_id) {
+              packInfo = await invoke('get_modrinth_version', { versionId: pack.version_id });
+            } else {
+              const versions = await invoke('get_modrinth_versions', { 
+                projectId: pack.project_id,
+                gameVersion: mcVersion
+              });
+              packInfo = versions.length > 0 ? versions[0] : null;
+            }
+
+            if (packInfo) {
+              const file = packInfo.files.find(f => f.primary) || packInfo.files[0];
+              await invoke('install_modrinth_file', {
+                instanceId: newInstance.id,
+                fileUrl: file.url,
+                filename: file.filename,
+                fileType: 'resourcepack',
+                projectId: pack.project_id,
+                versionId: packInfo.id
+              });
+            }
+          } catch (e) {
+            console.warn(`Failed to install pack ${pack.project_id}:`, e);
+          }
+          setLoadingProgress(20 + (completedItems / totalItems) * 75);
+        }
+
+        // 6. Download Shaders
+        for (const shader of shaders) {
+          setLoadingStatus(`Installing shader ${++completedItems}/${totalItems}...`);
+          try {
+            let shaderInfo;
+            if (shader.version_id) {
+              shaderInfo = await invoke('get_modrinth_version', { versionId: shader.version_id });
+            } else {
+              // Shaders don't strictly depend on MC version/loader in Modrinth metadata usually, 
+              // but we can still filter for sanity.
+              const versions = await invoke('get_modrinth_versions', { 
+                projectId: shader.project_id,
+                gameVersion: mcVersion
+              });
+              shaderInfo = versions.length > 0 ? versions[0] : null;
+            }
+
+            if (shaderInfo) {
+              const file = shaderInfo.files.find(f => f.primary) || shaderInfo.files[0];
+              await invoke('install_modrinth_file', {
+                instanceId: newInstance.id,
+                fileUrl: file.url,
+                filename: file.filename,
+                fileType: 'shader',
+                projectId: shader.project_id,
+                versionId: shaderInfo.id
+              });
+            }
+          } catch (e) {
+            console.warn(`Failed to install shader ${shader.project_id}:`, e);
+          }
+          setLoadingProgress(20 + (completedItems / totalItems) * 75);
+        }
+
+        setLoadingProgress(100);
+        await loadInstances();
+        setActiveTab('instances');
+        showNotification(`Share code applied! Instance "${name || originalName}" created.`, 'success');
+        setIsLoading(false);
+        setLoadingStatus('');
+        setLoadingProgress(0);
+        return;
+      }
+
       if (modLoader === 'modpack') {
         const { modpackId, versionId: modpackVersionId, modpackName, modpackIcon } = modLoaderVersion;
 
@@ -965,6 +1203,15 @@ function App() {
         skinCache={skinCache}
         skinRefreshKey={skinRefreshKey}
       />
+
+      {isInitializing && (
+        <div className="app-initializing">
+          <div className="init-spinner-container">
+            <div className="init-spinner"></div>
+            <span className="init-text">Initializing Launcher</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

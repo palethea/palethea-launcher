@@ -441,6 +441,58 @@ pub async fn install_modpack(
         
         if !downloaded {
             crate::log_warn!(app_handle, "Failed to download file: {}", mp_file.path);
+        } else {
+            // Try to extract project and version IDs from the successful download URL for metadata
+            // Modrinth URLs patterns:
+            // 1. https://api.modrinth.com/v2/project/PID/version/VID/file/FILENAME
+            // 2. https://cdn.modrinth.com/data/PID/versions/VID/FILENAME
+            
+            let mut project_id = None;
+            let mut version_id = None;
+            
+            for url in &mp_file.downloads {
+                if url.contains("cdn.modrinth.com/data/") {
+                    let parts: Vec<&str> = url.split("/data/").collect();
+                    if parts.len() > 1 {
+                        let sub_parts: Vec<&str> = parts[1].split('/').collect();
+                        if sub_parts.len() >= 3 {
+                            project_id = Some(sub_parts[0].to_string());
+                            version_id = Some(sub_parts[2].to_string());
+                            break;
+                        }
+                    }
+                } else if url.contains("/project/") && url.contains("/version/") {
+                    // Try to parse api.modrinth.com style
+                    if let Some(p_idx) = url.find("/project/") {
+                        let after_p = &url[p_idx + 9..];
+                        if let Some(slash_idx) = after_p.find('/') {
+                            project_id = Some(after_p[..slash_idx].to_string());
+                            
+                            if let Some(v_idx) = url.find("/version/") {
+                                let after_v = &url[v_idx + 9..];
+                                if let Some(slash_idx_v) = after_v.find('/') {
+                                    version_id = Some(after_v[..slash_idx_v].to_string());
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if let Some(pid) = project_id {
+                let meta = crate::minecraft::files::ModMeta {
+                    project_id: pid,
+                    version_id,
+                };
+                let meta_path = dest.with_extension(format!("{}.meta.json", dest.extension().and_then(|e| e.to_str()).unwrap_or("jar")));
+                // Actually, our list_mods expects filename.meta.json
+                let meta_path = PathBuf::from(format!("{}.meta.json", dest.to_string_lossy()));
+                
+                if let Ok(json) = serde_json::to_string(&meta) {
+                    let _ = std::fs::write(meta_path, json);
+                }
+            }
         }
     }
     

@@ -258,6 +258,331 @@ fn clear_instance_logo(instance_id: String) -> Result<instances::Instance, Strin
     Ok(instance)
 }
 
+// ----------
+// export_instance_zip
+// Description: Exports an instance as a .zip file for sharing with others.
+//              Includes the instance metadata and all game files (mods, configs, worlds, etc.)
+// ----------
+#[tauri::command]
+async fn export_instance_zip(instance_id: String, destination_path: String, app_handle: AppHandle) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use zip::write::SimpleFileOptions;
+    
+    logger::emit_log(&app_handle, "info", &format!("Exporting instance {} to {}", instance_id, destination_path));
+    
+    let instance = instances::get_instance(&instance_id)?;
+    let game_dir = instance.get_game_directory();
+    
+    if !game_dir.exists() {
+        return Err("Instance game directory not found".to_string());
+    }
+    
+    // Create the zip file
+    let zip_path = std::path::PathBuf::from(&destination_path);
+    let file = fs::File::create(&zip_path)
+        .map_err(|e| format!("Failed to create zip file: {}", e))?;
+    let mut zip = zip::ZipWriter::new(file);
+    
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(6));
+    
+    // Write instance metadata as palethea_instance.json
+    let metadata = serde_json::json!({
+        "name": instance.name,
+        "version_id": instance.version_id,
+        "mod_loader": instance.mod_loader,
+        "mod_loader_version": instance.mod_loader_version,
+        "memory_min": instance.memory_min,
+        "memory_max": instance.memory_max,
+        "jvm_args": instance.jvm_args,
+        "resolution_width": instance.resolution_width,
+        "resolution_height": instance.resolution_height,
+        "color_accent": instance.color_accent,
+        "exported_at": SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        "palethea_version": "1.0"
+    });
+    
+    zip.start_file("palethea_instance.json", options)
+        .map_err(|e| format!("Failed to add metadata: {}", e))?;
+    zip.write_all(serde_json::to_string_pretty(&metadata).unwrap().as_bytes())
+        .map_err(|e| format!("Failed to write metadata: {}", e))?;
+    
+    // Recursively add all files from game directory
+    fn add_dir_to_zip<W: Write + std::io::Seek>(
+        zip: &mut zip::ZipWriter<W>,
+        base_path: &std::path::Path,
+        current_path: &std::path::Path,
+        options: SimpleFileOptions,
+    ) -> Result<(), String> {
+        for entry in fs::read_dir(current_path).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            let relative = path.strip_prefix(base_path).map_err(|e| e.to_string())?;
+            let name = format!("minecraft/{}", relative.to_string_lossy().replace("\\", "/"));
+            
+            if path.is_dir() {
+                zip.add_directory(&name, options)
+                    .map_err(|e| format!("Failed to add directory {}: {}", name, e))?;
+                add_dir_to_zip(zip, base_path, &path, options)?;
+            } else {
+                zip.start_file(&name, options)
+                    .map_err(|e| format!("Failed to start file {}: {}", name, e))?;
+                let mut file = fs::File::open(&path).map_err(|e| e.to_string())?;
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
+                zip.write_all(&buffer).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+    
+    add_dir_to_zip(&mut zip, &game_dir, &game_dir, options)?;
+    
+    zip.finish().map_err(|e| format!("Failed to finalize zip: {}", e))?;
+    
+    logger::emit_log(&app_handle, "info", &format!("Successfully exported instance to {}", destination_path));
+    
+    Ok(destination_path)
+}
+
+// ----------
+// import_instance_zip
+// Description: Imports an instance from a .zip file created by export_instance_zip.
+//              Creates a new instance with the imported settings and files.
+// ----------
+#[tauri::command]
+async fn import_instance_zip(zip_path: String, custom_name: Option<String>, app_handle: AppHandle) -> Result<instances::Instance, String> {
+    use std::io::Read;
+    
+    logger::emit_log(&app_handle, "info", &format!("Importing instance from {}", zip_path));
+    
+    let zip_file = fs::File::open(&zip_path)
+        .map_err(|e| format!("Failed to open zip file: {}", e))?;
+    let mut archive = zip::ZipArchive::new(zip_file)
+        .map_err(|e| format!("Failed to read zip archive: {}", e))?;
+    
+    // Read the metadata file
+    let metadata: serde_json::Value = {
+        let mut metadata_file = archive.by_name("palethea_instance.json")
+            .map_err(|_| "This doesn't appear to be a valid Palethea instance export (missing palethea_instance.json)")?;
+        let mut contents = String::new();
+        metadata_file.read_to_string(&mut contents)
+            .map_err(|e| format!("Failed to read metadata: {}", e))?;
+        serde_json::from_str(&contents)
+            .map_err(|e| format!("Failed to parse metadata: {}", e))?
+    };
+    
+    // Extract instance info from metadata
+    let original_name = metadata["name"].as_str().unwrap_or("Imported Instance").to_string();
+    let version_id = metadata["version_id"].as_str().unwrap_or("1.21").to_string();
+    let mod_loader_str = metadata["mod_loader"].as_str().unwrap_or("Vanilla");
+    let mod_loader_version = metadata["mod_loader_version"].as_str().map(|s| s.to_string());
+    
+    // Use custom name if provided, otherwise use original name
+    let instance_name = custom_name.unwrap_or_else(|| format!("{} (Imported)", original_name));
+    
+    // Create new instance
+    let mut new_instance = instances::create_instance(instance_name.clone(), version_id.clone())?;
+    
+    // Set mod loader
+    new_instance.mod_loader = match mod_loader_str {
+        "Fabric" => instances::ModLoader::Fabric,
+        "Forge" => instances::ModLoader::Forge,
+        "NeoForge" => instances::ModLoader::NeoForge,
+        _ => instances::ModLoader::Vanilla,
+    };
+    new_instance.mod_loader_version = mod_loader_version;
+    
+    // Copy other settings from metadata
+    if let Some(mem_min) = metadata["memory_min"].as_u64() {
+        new_instance.memory_min = Some(mem_min as u32);
+    }
+    if let Some(mem_max) = metadata["memory_max"].as_u64() {
+        new_instance.memory_max = Some(mem_max as u32);
+    }
+    if let Some(jvm_args) = metadata["jvm_args"].as_str() {
+        new_instance.jvm_args = Some(jvm_args.to_string());
+    }
+    if let Some(width) = metadata["resolution_width"].as_u64() {
+        new_instance.resolution_width = Some(width as u32);
+    }
+    if let Some(height) = metadata["resolution_height"].as_u64() {
+        new_instance.resolution_height = Some(height as u32);
+    }
+    if let Some(color) = metadata["color_accent"].as_str() {
+        new_instance.color_accent = Some(color.to_string());
+    }
+    
+    // Extract game files to the new instance's minecraft directory
+    let game_dir = new_instance.get_game_directory();
+    fs::create_dir_all(&game_dir).map_err(|e| format!("Failed to create game directory: {}", e))?;
+    
+    // Re-open archive to extract files (we consumed it reading metadata)
+    let zip_file = fs::File::open(&zip_path)
+        .map_err(|e| format!("Failed to reopen zip file: {}", e))?;
+    let mut archive = zip::ZipArchive::new(zip_file)
+        .map_err(|e| format!("Failed to read zip archive: {}", e))?;
+    
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name().to_string();
+        
+        // Skip the metadata file
+        if name == "palethea_instance.json" {
+            continue;
+        }
+        
+        // Extract files that are in the minecraft/ directory
+        if name.starts_with("minecraft/") {
+            let relative_path = name.strip_prefix("minecraft/").unwrap_or(&name);
+            if relative_path.is_empty() {
+                continue;
+            }
+            
+            let dest_path = game_dir.join(relative_path);
+            
+            if file.is_dir() {
+                fs::create_dir_all(&dest_path).map_err(|e| e.to_string())?;
+            } else {
+                // Ensure parent directory exists
+                if let Some(parent) = dest_path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                let mut out_file = fs::File::create(&dest_path)
+                    .map_err(|e| format!("Failed to create file {}: {}", dest_path.display(), e))?;
+                std::io::copy(&mut file, &mut out_file)
+                    .map_err(|e| format!("Failed to extract file {}: {}", name, e))?;
+            }
+        }
+    }
+    
+    // ----------
+    // Install mod loader if specified
+    // Description: Mod loader version files are stored globally, not in the instance folder,
+    //              so we need to install the mod loader after importing
+    // ----------
+    if let Some(ref loader_version) = new_instance.mod_loader_version {
+        let loader_version_clone = loader_version.clone();
+        match new_instance.mod_loader {
+            instances::ModLoader::Fabric => {
+                logger::emit_log(&app_handle, "info", &format!("Installing Fabric {} for imported instance", loader_version_clone));
+                fabric::install_fabric(&new_instance, &loader_version_clone)
+                    .await
+                    .map_err(|e| format!("Failed to install Fabric: {}", e))?;
+            }
+            instances::ModLoader::Forge => {
+                logger::emit_log(&app_handle, "info", &format!("Installing Forge {} for imported instance", loader_version_clone));
+                forge::install_forge(&new_instance, &loader_version_clone)
+                    .await
+                    .map_err(|e| format!("Failed to install Forge: {}", e))?;
+            }
+            instances::ModLoader::NeoForge => {
+                logger::emit_log(&app_handle, "info", &format!("Installing NeoForge {} for imported instance", loader_version_clone));
+                forge::install_neoforge(&new_instance, &loader_version_clone)
+                    .await
+                    .map_err(|e| format!("Failed to install NeoForge: {}", e))?;
+            }
+            instances::ModLoader::Vanilla => {
+                // No mod loader to install
+            }
+        }
+    }
+    
+    // Update the instance in the config
+    instances::update_instance(new_instance.clone())?;
+    
+    logger::emit_log(&app_handle, "info", &format!("Successfully imported instance: {}", instance_name));
+    
+    let _ = app_handle.emit("refresh-instances", ());
+    
+    Ok(new_instance)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InstanceShareCode {
+    pub name: String,
+    pub version: String,
+    pub loader: String,
+    pub loader_version: Option<String>,
+    pub mods: Vec<ShareItem>,
+    pub resourcepacks: Vec<ShareItem>,
+    pub shaders: Vec<ShareItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ShareItem {
+    pub project_id: String,
+    pub version_id: Option<String>,
+}
+
+#[tauri::command]
+fn get_instance_share_code(instance_id: String) -> Result<String, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    
+    let mods = files::list_mods(&instance)
+        .into_iter()
+        .filter(|m| m.project_id.is_some())
+        .map(|m| ShareItem {
+            project_id: m.project_id.unwrap(),
+            version_id: m.version_id,
+        })
+        .collect();
+        
+    let resourcepacks = files::list_resourcepacks(&instance)
+        .into_iter()
+        .filter(|p| p.project_id.is_some())
+        .map(|p| ShareItem {
+            project_id: p.project_id.unwrap(),
+            version_id: p.version_id,
+        })
+        .collect();
+        
+    let shaders = files::list_shaderpacks(&instance)
+        .into_iter()
+        .filter(|s| s.project_id.is_some())
+        .map(|s| ShareItem {
+            project_id: s.project_id.unwrap(),
+            version_id: s.version_id,
+        })
+        .collect();
+
+    let share_data = InstanceShareCode {
+        name: instance.name,
+        version: instance.version_id,
+        loader: match instance.mod_loader {
+            instances::ModLoader::Vanilla => "vanilla".to_string(),
+            instances::ModLoader::Fabric => "fabric".to_string(),
+            instances::ModLoader::Forge => "forge".to_string(),
+            instances::ModLoader::NeoForge => "neoforge".to_string(),
+        },
+        loader_version: instance.mod_loader_version,
+        mods,
+        resourcepacks,
+        shaders,
+    };
+    
+    let json = serde_json::to_string(&share_data).map_err(|e| e.to_string())?;
+    
+    // Simple Base64 encoding using general_purpose engine (which we already imported in files.rs)
+    // Actually base64 engine is in files.rs, let's use it here too.
+    use base64::{Engine as _, engine::general_purpose};
+    let code = general_purpose::STANDARD_NO_PAD.encode(json);
+    
+    Ok(code)
+}
+
+#[tauri::command]
+fn decode_instance_share_code(code: String) -> Result<InstanceShareCode, String> {
+    use base64::{Engine as _, engine::general_purpose};
+    let json_bytes = general_purpose::STANDARD_NO_PAD.decode(code.trim()).map_err(|e| e.to_string())?;
+    let share_data: InstanceShareCode = serde_json::from_slice(&json_bytes).map_err(|e| e.to_string())?;
+    Ok(share_data)
+}
+
 // ============== FABRIC/MOD LOADER COMMANDS ==============
 
 #[tauri::command]
@@ -1324,12 +1649,22 @@ async fn get_modrinth_versions(
 }
 
 #[tauri::command]
+async fn get_modrinth_version(
+    version_id: String,
+) -> Result<modrinth::ModrinthVersion, String> {
+    modrinth::get_version(&version_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn install_modrinth_file(
     instance_id: String,
     file_url: String,
     filename: String,
     file_type: String, // "mod", "resourcepack", "shader", "datapack"
     project_id: Option<String>,
+    version_id: Option<String>,
     world_name: Option<String>,
 ) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
@@ -1371,10 +1706,13 @@ async fn install_modrinth_file(
     
     // Save metadata with project_id if provided
     if let Some(pid) = project_id {
-        let meta = files::ModMeta { project_id: pid };
+        let meta = files::ModMeta { 
+            project_id: pid,
+            version_id,
+        };
         let meta_path = dest_dir.join(format!("{}.meta.json", filename));
         if let Ok(json) = serde_json::to_string(&meta) {
-            let _ = std::fs::write(&meta_path, json);
+            let _ = std::fs::write(meta_path, json);
         }
     }
     
@@ -1432,9 +1770,40 @@ fn get_instance_worlds(instance_id: String) -> Result<Vec<files::World>, String>
 }
 
 #[tauri::command]
-fn delete_instance_world(instance_id: String, folder_name: String) -> Result<(), String> {
+fn delete_instance_world(instance_id: String, world_name: String) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
-    files::delete_world(&instance, &folder_name)
+    files::delete_world(&instance, &world_name)
+}
+
+#[tauri::command]
+fn rename_instance_world(instance_id: String, folder_name: String, new_name: String) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    files::rename_world(&instance, &folder_name, &new_name)
+}
+
+#[tauri::command]
+fn open_instance_world_folder(_app: AppHandle, instance_id: String, folder_name: String) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let path = files::get_saves_dir(&instance).join(folder_name);
+    
+    if !path.exists() {
+        return Err("World folder not found".to_string());
+    }
+
+    open_path_native(&path)
+}
+
+#[tauri::command]
+fn open_instance_datapacks_folder(_app: AppHandle, instance_id: String, folder_name: String) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let path = files::get_saves_dir(&instance).join(folder_name).join("datapacks");
+    
+    // Ensure directory exists
+    if !path.exists() {
+        std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    }
+
+    open_path_native(&path)
 }
 
 #[tauri::command]
@@ -1710,6 +2079,8 @@ pub fn run() {
             set_instance_logo,
             set_instance_logo_from_url,
             clear_instance_logo,
+            export_instance_zip,
+            import_instance_zip,
             // Download commands
             download_version,
             is_version_downloaded,
@@ -1761,6 +2132,7 @@ pub fn run() {
             search_modrinth,
             get_modrinth_project,
             get_modrinth_versions,
+            get_modrinth_version,
             get_modpack_total_size,
             install_modpack,
             install_modrinth_file,
@@ -1774,6 +2146,9 @@ pub fn run() {
             delete_instance_shaderpack,
             get_instance_worlds,
             delete_instance_world,
+            rename_instance_world,
+            open_instance_world_folder,
+            open_instance_datapacks_folder,
             get_world_datapacks,
             delete_instance_datapack,
             get_instance_screenshots,
@@ -1784,6 +2159,8 @@ pub fn run() {
             clear_instance_log,
             get_instance_servers,
             open_instance_folder,
+            get_instance_share_code,
+            decode_instance_share_code,
             // Skin collection commands
             get_skin_collection,
             add_to_skin_collection,

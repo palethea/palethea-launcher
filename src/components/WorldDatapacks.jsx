@@ -103,6 +103,7 @@ function WorldDatapacks({ instance, world, onShowNotification, onBack }) {
                 filename: file.filename,
                 fileType: 'datapack',
                 projectId: project.project_id || project.slug,
+                versionId: version.id,
                 worldName: world.folder_name
             });
 

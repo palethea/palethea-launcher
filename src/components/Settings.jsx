@@ -20,10 +20,26 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
   const [javaDownloadError, setJavaDownloadError] = useState('');
 
   useEffect(() => {
-    checkJava();
-    getDataDirectory();
-    loadCustomJavaPath();
-    loadStorageInfo();
+    // Throttle settings load to prevent repeated calls on tab switch
+    const lastLoad = sessionStorage.getItem('last_settings_load');
+    const now = Date.now();
+    const shouldRefresh = !lastLoad || now - parseInt(lastLoad) > 30000;
+
+    if (shouldRefresh) {
+      sessionStorage.setItem('last_settings_load', now.toString());
+      checkJava();
+      getDataDirectory();
+      loadCustomJavaPath();
+      loadStorageInfo();
+    } else {
+      // Load from session cache if available
+      const cachedJavaPath = sessionStorage.getItem('cached_java_path');
+      const cachedDataDir = sessionStorage.getItem('cached_data_dir');
+      const cachedCustomJava = sessionStorage.getItem('cached_custom_java');
+      if (cachedJavaPath) setJavaPath(cachedJavaPath);
+      if (cachedDataDir) setDataDir(cachedDataDir);
+      if (cachedCustomJava) setCustomJavaPath(cachedCustomJava);
+    }
     getVersion().then(setAppVersion);
   }, []);
 
@@ -35,8 +51,10 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
     try {
       const path = await invoke('check_java');
       setJavaPath(path);
+      sessionStorage.setItem('cached_java_path', path);
     } catch (error) {
       setJavaPath('Not found');
+      sessionStorage.setItem('cached_java_path', 'Not found');
     }
   };
 
@@ -44,6 +62,7 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
     try {
       const dir = await invoke('get_data_directory');
       setDataDir(dir);
+      sessionStorage.setItem('cached_data_dir', dir);
     } catch (error) {
       console.error('Failed to get data directory:', error);
     }
@@ -54,6 +73,7 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
       const path = await invoke('get_java_path');
       if (path) {
         setCustomJavaPath(path);
+        sessionStorage.setItem('cached_custom_java', path);
       }
     } catch (error) {
       console.error('Failed to load Java path:', error);

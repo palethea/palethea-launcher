@@ -4,14 +4,27 @@ import { BarChart3, Clock, Play, Box, Star, Calendar } from 'lucide-react';
 import './Stats.css';
 
 const Stats = () => {
-    const [stats, setStats] = useState(null);
-    const [loading, setLoading] = useState(true);
+    const [stats, setStats] = useState(() => {
+        const cached = sessionStorage.getItem('cached_stats');
+        return cached ? JSON.parse(cached) : null;
+    });
+    const [loading, setLoading] = useState(!sessionStorage.getItem('cached_stats'));
 
     useEffect(() => {
         const fetchStats = async () => {
+            // Throttle: only fetch if 30s have passed since last fetch
+            const lastFetch = sessionStorage.getItem('last_stats_fetch');
+            const now = Date.now();
+            if (lastFetch && now - parseInt(lastFetch) < 30000 && stats) {
+                setLoading(false);
+                return;
+            }
+
             try {
                 const data = await invoke('get_global_stats');
                 setStats(data);
+                sessionStorage.setItem('cached_stats', JSON.stringify(data));
+                sessionStorage.setItem('last_stats_fetch', now.toString());
             } catch (error) {
                 console.error('Failed to fetch global stats:', error);
             } finally {

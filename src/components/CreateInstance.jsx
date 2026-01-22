@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import './CreateInstance.css';
 import VersionSelector from './VersionSelector';
 
 function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
-  const [creationMode, setCreationMode] = useState('version'); // 'version' or 'modpack'
+  const [creationMode, setCreationMode] = useState('version'); // 'version', 'modpack', 'import', or 'share-code'
   const [name, setName] = useState('');
   const [selectedVersion, setSelectedVersion] = useState('');
   const [modLoader, setModLoader] = useState('vanilla');
@@ -25,6 +26,16 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
   const [modpackVersionsLoading, setModpackVersionsLoading] = useState(false);
   const [modpackTotalSize, setModpackTotalSize] = useState(null);
   const [sizeLoading, setSizeLoading] = useState(false);
+
+  // Import state
+  const [importZipPath, setImportZipPath] = useState('');
+  const [importInfo, setImportInfo] = useState(null); // { name, version_id, mod_loader }
+
+  // Share code state
+  const [shareCode, setShareCode] = useState('');
+  const [decodedShareData, setDecodedShareData] = useState(null);
+  const [decodingError, setDecodingError] = useState('');
+  const [isDecoding, setIsDecoding] = useState(false);
 
   // Filters
   const [enabledTypes, setEnabledTypes] = useState(['release']);
@@ -167,12 +178,61 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     setModpackVersionsLoading(false);
   };
 
+  // ----------
+  // handleSelectZipFile
+  // Description: Opens a file dialog to select a .zip file for importing
+  // ----------
+  const handleSelectZipFile = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{
+          name: 'Palethea Instance',
+          extensions: ['zip']
+        }]
+      });
+
+      if (selected) {
+        setImportZipPath(selected);
+        // Extract name from filename for default name suggestion
+        const filename = selected.split(/[/\\]/).pop()?.replace('.zip', '') || 'Imported Instance';
+        if (!name) {
+          setName(filename);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to select file:', error);
+    }
+  };
+
+  const handleDecodeShareCode = async (code) => {
+    setShareCode(code);
+    if (!code.trim()) {
+      setDecodedShareData(null);
+      setDecodingError('');
+      return;
+    }
+
+    setIsDecoding(true);
+    setDecodingError('');
+    try {
+      const result = await invoke('decode_instance_share_code', { code: code.trim() });
+      setDecodedShareData(result);
+      if (!name) setName(result.name);
+    } catch (error) {
+      console.error('Failed to decode share code:', error);
+      setDecodingError('Invalid or corrupted share code.');
+      setDecodedShareData(null);
+    }
+    setIsDecoding(false);
+  };
+
   const handleCreate = () => {
     if (creationMode === 'version') {
       if (name.trim() && selectedVersion) {
         onCreate(name.trim(), selectedVersion, modLoader, selectedLoaderVersion || null);
       }
-    } else {
+    } else if (creationMode === 'modpack') {
       if (name.trim() && selectedModpack && selectedModpackVersion) {
         // Pass specialized data for modpack creation
         onCreate(name.trim(), 'modpack', 'modpack', {
@@ -182,14 +242,41 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
           modpackIcon: selectedModpack.icon_url
         });
       }
+    } else if (creationMode === 'import') {
+      if (importZipPath) {
+        // Pass import data
+        onCreate(name.trim() || null, 'import', 'import', {
+          zipPath: importZipPath
+        });
+      }
+    } else if (creationMode === 'share-code') {
+      if (decodedShareData) {
+        onCreate(name.trim() || decodedShareData.name, 'share-code', 'share-code', {
+          shareData: decodedShareData
+        });
+      }
     }
   };
 
-  const canNextFromName = name.trim().length > 0;
-  const canNextFromVersion = creationMode === 'version' ? !!selectedVersion : !!selectedModpack;
+  // ----------
+  // Validation logic
+  // Description: Determines when user can proceed to next step or create instance
+  // ----------
+  const canNextFromName = (creationMode === 'import' || creationMode === 'share-code') ? true : name.trim().length > 0;
+  const canNextFromVersion = creationMode === 'version'
+    ? !!selectedVersion
+    : creationMode === 'modpack'
+      ? !!selectedModpack
+      : creationMode === 'share-code'
+        ? !!decodedShareData
+        : !!importZipPath;
   const canCreate = creationMode === 'version'
     ? (name.trim() && selectedVersion && (modLoader === 'vanilla' || selectedLoaderVersion))
-    : (name.trim() && selectedModpack && selectedModpackVersion);
+    : creationMode === 'modpack'
+      ? (name.trim() && selectedModpack && selectedModpackVersion)
+      : creationMode === 'share-code'
+        ? !!decodedShareData
+        : !!importZipPath;
 
   const isPage = mode === 'page';
 
@@ -203,14 +290,23 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
   const content = (
     <div className={isPage ? 'create-page' : 'modal'} onClick={(e) => e.stopPropagation()}>
       <div className={isPage ? 'create-header' : 'modal-header'}>
-        <h2>{step === 0 ? 'Instance Identity' : step === 1 ? 'Minecraft Version' : 'Modifications'}</h2>
+        <h2>{creationMode === 'import'
+          ? (step === 0 ? 'Instance Identity' : 'Select File')
+          : (step === 0 ? 'Instance Identity' : step === 1 ? 'Minecraft Version' : 'Modifications')
+        }</h2>
         {!isPage && <button className="close-btn" onClick={onClose}>×</button>}
       </div>
 
       <div className="create-steps">
         <div className={`create-step ${step === 0 ? 'active' : ''}`}>Setup</div>
-        <div className={`create-step ${step === 1 ? 'active' : ''}`}>{creationMode === 'version' ? 'Version' : 'Modpack'}</div>
-        <div className={`create-step ${step === 2 ? 'active' : ''}`}>{creationMode === 'version' ? 'Loader' : 'Review'}</div>
+        {creationMode === 'import' ? (
+          <div className={`create-step ${step === 1 ? 'active' : ''}`}>Select File</div>
+        ) : (
+          <>
+            <div className={`create-step ${step === 1 ? 'active' : ''}`}>{creationMode === 'version' ? 'Version' : 'Modpack'}</div>
+            <div className={`create-step ${step === 2 ? 'active' : ''}`}>{creationMode === 'version' ? 'Loader' : 'Review'}</div>
+          </>
+        )}
       </div>
 
       <div className={isPage ? 'create-body' : 'modal-body'}>
@@ -222,8 +318,13 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Name your new instance..."
+                placeholder={
+                  (creationMode === 'import' || creationMode === 'share-code')
+                    ? "Name will be detected automatically..."
+                    : "Name your new instance..."
+                }
                 className="instance-name-input"
+                disabled={creationMode === 'import' || creationMode === 'share-code'}
                 autoFocus
               />
             </div>
@@ -253,9 +354,41 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
                 >
                   <div className="mode-icon">⚡</div>
                   <div className="mode-details">
-                    <div className="mode-title">Modrinth Modpack</div>
+                    <div className="mode-title">Preconfigured Modpack</div>
                     <div className="mode-description">
-                      Browse and install thousands of community-made modpacks with all mods pre-configured.
+                      Browse Modrinth and install thousands of community-made modpacks with all mods pre-configured.
+                    </div>
+                  </div>
+                  <div className="mode-check">
+                    <div className="check-inner" />
+                  </div>
+                </button>
+
+                <button
+                  className={`mode-card ${creationMode === 'import' ? 'active' : ''}`}
+                  onClick={() => setCreationMode('import')}
+                >
+                  <div className="mode-icon">📁</div>
+                  <div className="mode-details">
+                    <div className="mode-title">Import from .zip</div>
+                    <div className="mode-description">
+                      Import an instance shared by a friend. Simply select the .zip file they shared with you.
+                    </div>
+                  </div>
+                  <div className="mode-check">
+                    <div className="check-inner" />
+                  </div>
+                </button>
+
+                <button
+                  className={`mode-card ${creationMode === 'share-code' ? 'active' : ''}`}
+                  onClick={() => setCreationMode('share-code')}
+                >
+                  <div className="mode-icon">🔗</div>
+                  <div className="mode-details">
+                    <div className="mode-title">Use Share Code</div>
+                    <div className="mode-description">
+                      Paste a code from a friend to automatically set name, version, mod loader, and all mods/resourcepacks.
                     </div>
                   </div>
                   <div className="mode-check">
@@ -275,6 +408,114 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
             onRefresh={loadVersions}
             loading={loadingVersions}
           />
+        )}
+
+        {/* ---------- */}
+        {/* Import Step */}
+        {/* Description: File selection UI for importing a shared instance .zip */}
+        {/* ---------- */}
+        {step === 1 && creationMode === 'import' && (
+          <div className="import-step">
+            <div className="import-dropzone" onClick={handleSelectZipFile}>
+              <div className="import-icon">📁</div>
+              {importZipPath ? (
+                <>
+                  <div className="import-filename">{importZipPath.split(/[/\\]/).pop()}</div>
+                  <div className="import-hint">Click to select a different file</div>
+                </>
+              ) : (
+                <>
+                  <div className="import-title">Select Instance File</div>
+                  <div className="import-hint">Click here to browse for a .zip file shared with you</div>
+                </>
+              )}
+            </div>
+            <div className="form-group" style={{ marginTop: '24px' }}>
+              <label className="section-label">Instance Name (Optional)</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Leave blank for original name..."
+                className="instance-name-input"
+              />
+              <div className="import-name-hint">If left blank, the original instance name will be used</div>
+            </div>
+          </div>
+        )}
+
+        {step === 1 && creationMode === 'share-code' && (
+          <div className="share-code-step">
+            <div className="share-code-hero">
+              <div className="hero-icon">🔗</div>
+              <h3>Import from Code</h3>
+              <p>Paste the share code below to reconstruct a shared instance.</p>
+            </div>
+
+            <div className={`share-code-layout ${decodedShareData ? 'has-preview' : ''}`}>
+              <div className="share-code-main">
+                <div className="form-group">
+                  <label className="section-label">Paste Share Code</label>
+                  <input
+                    className="share-code-input"
+                    type="text"
+                    placeholder="Paste the code your friend sent you here..."
+                    value={shareCode}
+                    onChange={(e) => handleDecodeShareCode(e.target.value)}
+                  />
+                  {isDecoding && <div className="decoding-status">
+                    <div className="mini-spinner"></div>
+                    Decoding...
+                  </div>}
+                  {decodingError && <div className="decoding-error">{decodingError}</div>}
+                </div>
+
+                <div className="form-group share-name-group">
+                  <label className="section-label">Instance Name (Optional)</label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Leave blank for pack name"
+                    className="instance-name-input"
+                  />
+                </div>
+              </div>
+
+              {decodedShareData && (
+                <div className="share-preview-card">
+                  <div className="preview-accent-bar" />
+                  <div className="preview-header">
+                    <div className="preview-icon">📦</div>
+                    <div className="preview-main">
+                      <h4>{decodedShareData.name}</h4>
+                      <span className="preview-meta">
+                        Minecraft {decodedShareData.version} • {decodedShareData.loader.charAt(0).toUpperCase() + decodedShareData.loader.slice(1)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="preview-stats">
+                    <div className="preview-stat">
+                      <span className="stat-value">{decodedShareData.mods.length}</span>
+                      <span className="stat-label">Mods</span>
+                    </div>
+                    <div className="preview-stat">
+                      <span className="stat-value">{decodedShareData.resourcepacks.length}</span>
+                      <span className="stat-label">Packs</span>
+                    </div>
+                    <div className="preview-stat">
+                      <span className="stat-value">{decodedShareData.shaders.length}</span>
+                      <span className="stat-label">Shaders</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="share-code-info">
+              Note: Shares only include files from Modrinth. Manually added files won't be synced.
+            </div>
+          </div>
         )}
 
         {step === 1 && creationMode === 'modpack' && (
@@ -477,7 +718,11 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
             Back
           </button>
         )}
-        {step < 2 ? (
+        {/* ---------- */}
+        {/* Step Navigation */}
+        {/* Description: Next/Create buttons, import mode has only 2 steps */}
+        {/* ---------- */}
+        {(creationMode === 'import' || creationMode === 'share-code' ? step < 1 : step < 2) ? (
           <button
             className="btn btn-primary"
             onClick={() => setStep(step + 1)}
@@ -491,7 +736,7 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
             onClick={handleCreate}
             disabled={!canCreate || isLoading}
           >
-            {isLoading ? 'Creating...' : 'Create Instance'}
+            {isLoading ? (creationMode === 'import' || creationMode === 'share-code' ? 'Processing...' : 'Creating...') : (creationMode === 'import' ? 'Import Instance' : creationMode === 'share-code' ? 'Create Instance' : 'Create Instance')}
           </button>
         )}
       </div>

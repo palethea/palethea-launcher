@@ -14,9 +14,28 @@ function Updates() {
   const [currentVersion, setCurrentVersion] = useState('0.1.2');
   const [isPrerelease, setIsPrerelease] = useState(false);
   const [updateChannel, setUpdateChannel] = useState('stable');
-  const [updateInfo, setUpdateInfo] = useState(null);
+  const [updateInfo, setUpdateInfo] = useState(() => {
+    const cached = localStorage.getItem('cached_update_info');
+    return cached ? JSON.parse(cached) : null;
+  });
   const [downgradeInfo, setDowngradeInfo] = useState(null); // For downgrading from prerelease to stable
-  const [allReleases, setAllReleases] = useState([]);
+  const [allReleases, setAllReleases] = useState(() => {
+    const cached = localStorage.getItem('cached_all_releases');
+    return cached ? JSON.parse(cached) : [];
+  });
+
+  // Effect to clear stale cached update info if version has changed
+  useEffect(() => {
+    const checkVersion = async () => {
+      const version = await getVersion();
+      if (updateInfo && updateInfo.version === version) {
+        // App was updated to the version we had cached as "new"
+        setUpdateInfo(null);
+        localStorage.removeItem('cached_update_info');
+      }
+    };
+    checkVersion();
+  }, [updateInfo]);
   const [isChecking, setIsChecking] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -60,7 +79,7 @@ function Updates() {
     setUpdateChannel(newChannel);
     await saveUpdateChannel(newChannel);
     // Re-check updates with new channel
-    checkUpdates(newChannel);
+    checkUpdates(newChannel, true);
   };
 
   // ----------
@@ -68,8 +87,19 @@ function Updates() {
   // Description: Check for available updates using custom version comparison logic
   //              that properly handles prerelease versions and downgrade opportunities
   // ----------
-  const checkUpdates = async (channel = updateChannel) => {
+  const checkUpdates = async (channel = updateChannel, force = false) => {
+    // Throttle automatic checks (only allow if 30s have passed)
+    if (!force) {
+      const lastCheck = localStorage.getItem('last_update_check');
+      const now = Date.now();
+      if (lastCheck && now - parseInt(lastCheck) < 30000) {
+        console.log('Skipping throttled update check');
+        return;
+      }
+    }
+
     setIsChecking(true);
+    localStorage.setItem('last_update_check', Date.now().toString());
     setError(null);
     setDowngradeInfo(null); // Reset downgrade info
     try {
@@ -117,10 +147,13 @@ function Updates() {
       });
 
       setAllReleases(sortedReleases);
+      localStorage.setItem('cached_all_releases', JSON.stringify(sortedReleases));
 
       if (sortedReleases.length === 0) {
         await invoke('log_event', { level: 'info', message: 'No releases found on GitHub' });
         setUpdateInfo(null);
+        localStorage.removeItem('cached_update_info');
+        localStorage.removeItem('cached_all_releases');
         return;
       }
 
@@ -136,6 +169,7 @@ function Updates() {
       if (!latestRelease) {
         await invoke('log_event', { level: 'info', message: 'No applicable releases found' });
         setUpdateInfo(null);
+        localStorage.removeItem('cached_update_info');
         return;
       }
 
@@ -154,15 +188,18 @@ function Updates() {
       if (comparison > 0) {
         // There's a newer version available
         await invoke('log_event', { level: 'info', message: `Update found: v${latestVersion}` });
-        setUpdateInfo({
+        const info = {
           version: latestVersion,
           body: latestRelease.body,
           date: latestRelease.published_at,
           isPrerelease: latestRelease.prerelease,
           htmlUrl: latestRelease.html_url,
-        });
+        };
+        setUpdateInfo(info);
+        localStorage.setItem('cached_update_info', JSON.stringify(info));
       } else {
         setUpdateInfo(null);
+        localStorage.removeItem('cached_update_info');
 
         // ----------
         // Downgrade Detection
@@ -291,7 +328,7 @@ function Updates() {
         <div className="updates-actions">
           <button
             className={`btn ${isChecking ? 'btn-secondary' : 'btn-primary'}`}
-            onClick={() => checkUpdates()}
+            onClick={() => checkUpdates(updateChannel, true)}
             disabled={isChecking || isDownloading}
           >
             {isChecking ? 'Checking...' : 'Check for updates'}
@@ -463,6 +500,15 @@ function Updates() {
           <h2>Recent highlights</h2>
         </div>
         <div className="updates-list">
+          <article className="update-item">
+            <div>
+              <p className="update-title">Removed CMD popups</p>
+              <p className="update-meta">v0.2.11 • January 2026</p>
+            </div>
+            <p className="update-body">
+              Removed the annoying CMD popups when launching and downloading files.
+            </p>
+          </article>
           <article className="update-item">
             <div>
               <p className="update-title">Fixed most issues launching mods</p>

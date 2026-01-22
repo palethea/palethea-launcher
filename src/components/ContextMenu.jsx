@@ -57,6 +57,12 @@ function ContextMenu({ x, y, instance, onAction }) {
           <button className="context-menu-item" onClick={() => onAction('openFolder')}>
             Open Folder
           </button>
+          <button className="context-menu-item" onClick={() => onAction('share')}>
+            Share (Export .zip)
+          </button>
+          <button className="context-menu-item" onClick={() => onAction('shareCode')}>
+            Copy Share Code
+          </button>
           <div className="context-menu-divider" />
           <div className="context-menu-label">Set Color</div>
           <div className="color-quick-select">
