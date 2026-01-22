@@ -1,7 +1,7 @@
 {
   "name": "palethealauncher",
   "private": true,
-  "version": "0.2.12-1",
+  "version": "0.2.13",
   "type": "module",
   "scripts": {
     "dev": "vite",

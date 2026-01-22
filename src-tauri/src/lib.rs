@@ -947,19 +947,19 @@ fn compare_versions(v1: String, v2: String) -> i32 {
     }
     
     // Main versions are equal - check prerelease
-    // A prerelease version is NEWER than the base version (0.2.9-1 > 0.2.9)
+    // Standard SemVer: A prerelease version (with -suffix) is OLDER than the base version
     match (v1_pre, v2_pre) {
         (Some(p1), Some(p2)) => {
             // Both have prerelease, compare numerically
             if p1 > p2 { 1 } else if p1 < p2 { -1 } else { 0 }
         }
         (Some(_), None) => {
-            // v1 has prerelease, v2 doesn't -> v1 is newer
-            1
+            // v1 has prerelease (0.2.13-1), v2 doesn't (0.2.13) -> v1 is OLDER
+            -1
         }
         (None, Some(_)) => {
-            // v2 has prerelease, v1 doesn't -> v2 is newer
-            -1
+            // v1 doesn't (0.2.13), v2 has prerelease (0.2.13-1) -> v1 is NEWER
+            1
         }
         (None, None) => {
             // Neither has prerelease, versions are equal

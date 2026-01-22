@@ -156,10 +156,10 @@ function Updates() {
           const cB = pB.main[i] || 0;
           if (cA !== cB) return cB - cA; // Descending
         }
-        // Main versions equal, prerelease is newer than base
-        if (pA.pre !== null && pB.pre === null) return -1; // A is prerelease, B is base -> A first
-        if (pA.pre === null && pB.pre !== null) return 1;  // A is base, B is prerelease -> B first
-        if (pA.pre !== null && pB.pre !== null) return pB.pre - pA.pre; // Both prerelease, higher number first
+        // Main versions equal, follow Standard SemVer: Base version is NEWER than prerelease
+        if (pA.pre === null && pB.pre !== null) return -1; // A is base, B is pre -> A first (newest)
+        if (pA.pre !== null && pB.pre === null) return 1;  // A is pre, B is base -> B first (newest)
+        if (pA.pre !== null && pB.pre !== null) return pB.pre - pA.pre; // Both pre, higher is newest
         return 0;
       });
 
