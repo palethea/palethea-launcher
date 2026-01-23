@@ -85,7 +85,7 @@
 }
 
 .account-card.active {
-    background: rgba(232, 156, 136, 0.05);
+    background: rgba(var(--accent-rgb), 0.05);
     border-color: var(--accent);
 }
 
@@ -93,6 +93,17 @@
     width: 64px;
     height: 64px;
     position: relative;
+}
+
+.skin-fallback-icon-modal {
+    width: 64px;
+    height: 64px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
 }
 
 .modal-head-2d {
@@ -192,7 +203,7 @@
 .add-account-card:hover {
     border-color: var(--accent);
     color: var(--accent);
-    background: rgba(232, 156, 136, 0.03);
+    background: rgba(var(--accent-rgb), 0.03);
 }
 
 .add-icon {

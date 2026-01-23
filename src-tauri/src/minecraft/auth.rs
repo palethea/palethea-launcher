@@ -42,7 +42,7 @@ struct DeviceCodeResponse {
     user_code: String,
     verification_uri: String,
     #[serde(default)]
-    expires_in: Option<u32>,
+    _expires_in: Option<u32>,
     #[serde(default)]
     interval: Option<u32>,
     #[serde(default)]
@@ -60,7 +60,7 @@ pub struct TokenResponse {
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
-    pub error_description: Option<String>,
+    pub _error_description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

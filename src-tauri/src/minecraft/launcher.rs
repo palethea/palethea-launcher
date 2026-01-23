@@ -336,6 +336,7 @@ fn get_lib_identity(name: &str) -> String {
 }
 
 /// Build the classpath for launching Minecraft
+#[allow(dead_code)]
 pub fn build_classpath(version_details: &VersionDetails) -> String {
     let libraries_dir = get_libraries_dir();
     let versions_dir = get_versions_dir();

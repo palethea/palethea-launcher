@@ -308,6 +308,7 @@ pub async fn install_neoforge(
 }
 
 /// Load saved Forge info from instance
+#[allow(dead_code)]
 pub fn load_forge_info(instance: &Instance) -> Option<ForgeVersionInfo> {
     let forge_json_path = instance.get_directory().join("forge.json");
     if !forge_json_path.exists() {
@@ -319,6 +320,7 @@ pub fn load_forge_info(instance: &Instance) -> Option<ForgeVersionInfo> {
 }
 
 /// Load saved NeoForge info from instance
+#[allow(dead_code)]
 pub fn load_neoforge_info(instance: &Instance) -> Option<ForgeVersionInfo> {
     let neoforge_json_path = instance.get_directory().join("neoforge.json");
     if !neoforge_json_path.exists() {

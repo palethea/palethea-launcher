@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { User, X, Trash2 } from 'lucide-react';
 import './AccountManagerModal.css';
 
 const STEVE_HEAD_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAARklEQVQI12NgoAbghLD+I4kwBqOjo+O/f/8YGBj+MzD8Z2D4z8Dwnwmq7P9/BoYL5y8g0/8hHP7/x0b/Y2D4D5b5/58ZAME2EVcxlvGVAAAAAElFTkSuQmCC';
@@ -55,7 +56,7 @@ function AccountManagerModal({
             <div className="account-modal-content" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
                     <h2>Account Manager</h2>
-                    <button className="close-btn" onClick={onClose}>×</button>
+                    <button className="close-btn" onClick={onClose}><X size={24} /></button>
                 </div>
 
                 <div className="account-grid">
@@ -71,7 +72,7 @@ function AccountManagerModal({
                             <div className="account-card-avatar">
                                 {skinCache[account.uuid] ? (
                                     <SkinHead2D src={skinCache[account.uuid]} size={64} />
-                                ) : (
+                                ) : account.isLoggedIn ? (
                                     <img
                                         src={getSkinUrl(account.uuid, account.isLoggedIn)}
                                         alt=""
@@ -81,6 +82,10 @@ function AccountManagerModal({
                                             setFailedImages(prev => ({ ...prev, [account.uuid]: true }));
                                         }}
                                     />
+                                ) : (
+                                    <div className="skin-fallback-icon-modal">
+                                        <User size={32} />
+                                    </div>
                                 )}
                                 {account.username === activeAccount?.username && (
                                     <div className="active-badge">✓</div>
@@ -98,9 +103,7 @@ function AccountManagerModal({
                                 }}
                                 title="Remove account"
                             >
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                                </svg>
+                                <Trash2 size={16} />
                             </button>
                         </div>
                     ))}

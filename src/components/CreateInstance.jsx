@@ -105,7 +105,7 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
       console.error('Failed to load loader versions:', error);
       setLoaderVersions([]);
       setSelectedLoaderVersion('');
-      setLoaderError('Failed to load loader versions');
+      setLoaderError(error.toString());
     }
     setLoaderLoading(false);
   };
@@ -507,6 +507,12 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
                       <span className="stat-value">{decodedShareData.shaders.length}</span>
                       <span className="stat-label">Shaders</span>
                     </div>
+                    {decodedShareData.datapacks && decodedShareData.datapacks.length > 0 && (
+                      <div className="preview-stat">
+                        <span className="stat-value">{decodedShareData.datapacks.length}</span>
+                        <span className="stat-label">Data</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -622,14 +628,24 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
 
             {modLoader !== 'vanilla' && (
               <div style={{ marginTop: '16px', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                <VersionSelector
-                  versions={loaderVersions}
-                  selectedVersion={selectedLoaderVersion}
-                  onSelect={setSelectedLoaderVersion}
-                  onRefresh={loadLoaderVersions}
-                  loading={loaderLoading}
-                  showFilters={false}
-                />
+                {loaderError ? (
+                  <div className="loader-error-container">
+                    <div className="loader-error-icon">⚠️</div>
+                    <div className="loader-error-text">
+                      <h4>Loader Unavailable</h4>
+                      <p>{loaderError}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <VersionSelector
+                    versions={loaderVersions}
+                    selectedVersion={selectedLoaderVersion}
+                    onSelect={setSelectedLoaderVersion}
+                    onRefresh={loadLoaderVersions}
+                    loading={loaderLoading}
+                    showFilters={false}
+                  />
+                )}
               </div>
             )}
           </div>

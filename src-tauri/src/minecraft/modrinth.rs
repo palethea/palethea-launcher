@@ -22,10 +22,14 @@ static MODRINTH_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new
 pub struct ModrinthProject {
     pub slug: String,
     pub title: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub project_type: String,
+    #[serde(default)]
     pub downloads: u64,
     pub icon_url: Option<String>,
+    #[serde(alias = "id")]
     pub project_id: String,
     #[serde(default)]
     pub author: String,
@@ -80,11 +84,11 @@ pub struct ModrinthDependency {
 #[derive(Debug, Deserialize)]
 pub struct ModpackIndex {
     #[serde(rename = "formatVersion")]
-    pub format_version: u32,
-    pub game: String,
+    pub _format_version: u32,
+    pub _game: String,
     #[serde(rename = "versionId")]
-    pub version_id: String,
-    pub name: String,
+    pub _version_id: String,
+    pub _name: String,
     pub dependencies: std::collections::HashMap<String, String>,
     pub files: Vec<ModpackFile>,
 }
@@ -92,8 +96,8 @@ pub struct ModpackIndex {
 #[derive(Debug, Deserialize)]
 pub struct ModpackFile {
     pub path: String,
-    pub hashes: std::collections::HashMap<String, String>,
-    pub env: Option<ModpackEnv>,
+    pub _hashes: std::collections::HashMap<String, String>,
+    pub _env: Option<ModpackEnv>,
     pub downloads: Vec<String>,
     #[serde(rename = "fileSize")]
     pub file_size: u64,
@@ -101,8 +105,8 @@ pub struct ModpackFile {
 
 #[derive(Debug, Deserialize)]
 pub struct ModpackEnv {
-    pub client: String,
-    pub server: String,
+    pub _client: String,
+    pub _server: String,
 }
 
 /// Search for projects on Modrinth
@@ -238,8 +242,53 @@ pub async fn get_project(project_id: &str) -> Result<ModrinthProject, Box<dyn Er
         .send()
         .await?;
     
-    let project: ModrinthProject = response.json().await?;
-    Ok(project)
+    let status = response.status();
+    let body = response.text().await?;
+    
+    if !status.is_success() {
+        return Err(format!("Modrinth API error ({}): {}", status, body).into());
+    }
+
+    match serde_json::from_str::<ModrinthProject>(&body) {
+        Ok(project) => Ok(project),
+        Err(e) => {
+            println!("Failed to decode Modrinth project JSON: {}", e);
+            println!("Body: {}", body);
+            Err(format!("Failed to decode project data: {}", e).into())
+        }
+    }
+}
+
+/// Get multiple projects at once
+pub async fn get_projects(project_ids: Vec<String>) -> Result<Vec<ModrinthProject>, Box<dyn Error + Send + Sync>> {
+    if project_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Acquire rate limit permit
+    let _permit = MODRINTH_SEMAPHORE.acquire().await?;
+    
+    let client = reqwest::Client::new();
+    
+    // Modrinth allows bulk projects via /projects?ids=["id1","id2"]
+    let ids_json = serde_json::to_string(&project_ids).unwrap();
+    let url = format!("{}/projects?ids={}", MODRINTH_API_BASE, urlencoding::encode(&ids_json));
+    
+    let response = client
+        .get(&url)
+        .header("User-Agent", get_user_agent())
+        .send()
+        .await?;
+    
+    let status = response.status();
+    let body = response.text().await?;
+    
+    if !status.is_success() {
+        return Err(format!("Modrinth API error ({}): {}", status, body).into());
+    }
+    
+    let projects: Vec<ModrinthProject> = serde_json::from_str(&body)?;
+    Ok(projects)
 }
 
 /// Calculate total download size for a modpack
@@ -486,6 +535,9 @@ pub async fn install_modpack(
                 let meta = crate::minecraft::files::ModMeta {
                     project_id: pid,
                     version_id,
+                    name: None,
+                    icon_url: None,
+                    version_name: None,
                 };
                 // Actually, our list_mods expects filename.meta.json
                 let meta_path = PathBuf::from(format!("{}.meta.json", dest.to_string_lossy()));

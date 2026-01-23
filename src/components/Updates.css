@@ -372,6 +372,26 @@
   margin-bottom: 4px;
 }
 
+.discord-redirect {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 16px;
+}
+
+.btn-discord {
+  margin-top: auto;
+  text-decoration: none;
+  text-align: center;
+  justify-content: center;
+  background: #5865F2 !important;
+  border: none !important;
+}
+
+.btn-discord:hover {
+  background: #4752C4 !important;
+}
+
 @media (max-width: 960px) {
   .updates-status-grid {
     grid-template-columns: 1fr;

@@ -11,10 +11,67 @@ html, body, #root {
 .app {
   display: flex;
   height: 100vh;
-  background: radial-gradient(1200px 800px at 10% 0%, rgba(232, 156, 136, 0.08), transparent 60%),
+  overflow: hidden;
+  position: relative;
+}
+
+.app.bg-gradient {
+  background: radial-gradient(1200px 800px at 10% 0%, rgba(var(--accent-rgb), 0.08), transparent 60%),
               radial-gradient(900px 700px at 90% 10%, rgba(120, 160, 255, 0.08), transparent 55%),
               var(--background);
-  overflow: hidden;
+}
+
+.app.bg-dynamic::before,
+.app.bg-dynamic::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(50px);
+  opacity: 0.04;
+  pointer-events: none;
+  z-index: -1; /* Keep behind content but above background */
+}
+
+.app.bg-dynamic::before {
+  width: 1200px;
+  height: 800px;
+  background: rgba(var(--accent-rgb), 1);
+  top: -400px;
+  left: -500px;
+  animation: float1 25s ease-in-out infinite;
+}
+
+.app.bg-dynamic::after {
+  width: 900px;
+  height: 700px;
+  background: rgba(var(--accent-rgb), 1);
+  top: -300px;
+  right: -400px;
+  animation: float2 20s ease-in-out infinite;
+}
+
+@keyframes float1 {
+  0%, 100% {
+    transform: translate(0, 0);
+  }
+  33% {
+    transform: translate(600px, 400px);
+  }
+  66% {
+    transform: translate(200px, 600px);
+  }
+}
+
+@keyframes float2 {
+  0%, 100% {
+    transform: translate(0, 0);
+  }
+  33% {
+    transform: translate(-500px, 500px);
+  }
+  66% {
+    transform: translate(-200px, 300px);
+  }
 }
 
 .main-content {
@@ -135,7 +192,7 @@ html, body, #root {
 .init-spinner {
   width: 40px;
   height: 40px;
-  border: 3px solid rgba(232, 156, 136, 0.1);
+  border: 3px solid rgba(var(--accent-rgb), 0.1);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
@@ -404,6 +461,7 @@ html, body, #root {
   transition: all 0.15s ease;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
 }
 

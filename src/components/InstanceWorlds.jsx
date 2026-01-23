@@ -78,7 +78,7 @@ function InstanceWorlds({ instance, onShowNotification }) {
     try {
       await invoke('open_instance_datapacks_folder', {
         instanceId: instance.id,
-        folderName: world.folder_name
+        worldName: world.folder_name
       });
     } catch (error) {
       console.error('Failed to open datapacks folder:', error);
@@ -229,9 +229,9 @@ function InstanceWorlds({ instance, onShowNotification }) {
                   className="open-btn"
                   onClick={() => setSelectedWorld(world)}
                   style={{ 
-                    background: 'rgba(232, 156, 136, 0.1)', 
+                    background: 'rgba(var(--accent-rgb), 0.1)', 
                     color: 'var(--accent)', 
-                    border: '1px solid rgba(232, 156, 136, 0.2)',
+                    border: '1px solid rgba(var(--accent-rgb), 0.2)',
                     borderRight: 'none',
                     borderRadius: '6px 0 0 6px'
                   }}
@@ -243,9 +243,9 @@ function InstanceWorlds({ instance, onShowNotification }) {
                   onClick={() => handleOpenDatapacksFolder(world)}
                   title="Open Datapacks Folder"
                   style={{ 
-                    background: 'rgba(232, 156, 136, 0.1)', 
+                    background: 'rgba(var(--accent-rgb), 0.1)', 
                     color: 'var(--accent)', 
-                    border: '1px solid rgba(232, 156, 136, 0.2)',
+                    border: '1px solid rgba(var(--accent-rgb), 0.2)',
                     borderRadius: '0 6px 6px 0',
                     padding: '0 8px',
                     display: 'flex',

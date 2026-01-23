@@ -28,27 +28,25 @@
   letter-spacing: -0.5px;
   background: linear-gradient(
     to right,
-    var(--accent),
-    #ff8a71,
-    #ffb4a2,
-    var(--accent)
+    var(--accent) 0%,
+    var(--accent) 40%,
+    color-mix(in srgb, var(--accent), white 40%) 50%,
+    var(--accent) 60%,
+    var(--accent) 100%
   );
   background-size: 300% auto;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3)) drop-shadow(0 0 10px rgba(232, 156, 136, 0.4));
-  animation: shimmer 5s ease infinite;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3)) drop-shadow(0 0 10px rgba(var(--accent-rgb), 0.3));
+  animation: shimmer 5s linear infinite;
 }
 
 @keyframes shimmer {
   0% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
+    background-position: 150% 50%;
   }
   100% {
-    background-position: 0% 50%;
+    background-position: -150% 50%;
   }
 }
 
@@ -82,7 +80,7 @@
 
 .nav-item.active {
   color: var(--accent);
-  background: rgba(232, 156, 136, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
 }
 
 .nav-item.disabled {
@@ -269,7 +267,7 @@
 }
 
 .account-option.active {
-  background: rgba(232, 156, 136, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
 }
 
 .account-option-main {
@@ -380,9 +378,9 @@
 }
 
 .console-sidebar-btn.active {
-  background: rgba(232, 156, 136, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
   color: var(--accent);
-  border-color: rgba(232, 156, 136, 0.2);
+  border-color: rgba(var(--accent-rgb), 0.2);
 }
 
 .console-sidebar-btn svg {

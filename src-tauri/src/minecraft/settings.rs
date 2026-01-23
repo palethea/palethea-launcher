@@ -18,6 +18,8 @@ pub struct LauncherSettings {
     /// Update channel preference: "stable" or "prerelease"
     #[serde(default = "default_update_channel")]
     pub update_channel: Option<String>,
+    pub accent_color: Option<String>,
+    pub background_style: Option<String>,
 }
 
 fn default_update_channel() -> Option<String> {
@@ -34,6 +36,8 @@ impl Default for LauncherSettings {
             account_preview_mode: Some("simple".to_string()),
             show_welcome: Some(true),
             update_channel: Some("stable".to_string()),
+            accent_color: Some("#E89C88".to_string()),
+            background_style: Some("gradient".to_string()),
         }
     }
 }

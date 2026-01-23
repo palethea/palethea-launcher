@@ -310,21 +310,6 @@ function Updates() {
   const hasUpdate = updateInfo !== null;
 
   // ----------
-  // parseNotes
-  // Description: Parse markdown-style release notes into a list of bullet points
-  // ----------
-  const parseNotes = (body) => {
-    if (!body) return [];
-    return body
-      .split('\n')
-      .filter(line => line.trim().startsWith('-') || line.trim().startsWith('*'))
-      .map(line => line.replace(/^[-*]\s*/, '').trim())
-      .filter(line => line.length > 0);
-  };
-
-  const notes = updateInfo ? parseNotes(updateInfo.body) : [];
-
-  // ----------
   // getChannelDescription
   // Description: Get helpful description text for the selected channel
   // ----------
@@ -461,21 +446,19 @@ function Updates() {
 
         <div className="updates-card updates-next">
           <h2>Latest Release Notes</h2>
-          {updateInfo ? (
-            notes.length > 0 ? (
-              <ul className="notes-list">
-                {notes.map((note, i) => (
-                  <li key={i}>{note}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="status-hint">{updateInfo.body || 'No release notes available.'}</p>
-            )
-          ) : (
+          <div className="discord-redirect">
             <p className="status-hint">
-              {isChecking ? 'Fetching details...' : 'You are running the latest version.'}
+              Detailed changelogs and community updates are now posted on our official Discord server.
             </p>
-          )}
+            <a 
+              href="https://discord.gg/jcPbFWnZMM" 
+              target="_blank" 
+              rel="noreferrer"
+              className="btn btn-primary btn-discord"
+            >
+              Join Discord for Updates
+            </a>
+          </div>
         </div>
       </section>
 

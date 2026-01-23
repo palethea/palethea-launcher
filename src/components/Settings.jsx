@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import CustomColorPicker from './CustomColorPicker';
 import './Settings.css';
 
 function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, launcherSettings, onSettingsUpdated }) {
@@ -14,16 +15,35 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
   const [diskUsage, setDiskUsage] = useState(null);
   const [downloadedVersions, setDownloadedVersions] = useState([]);
   const [isCleaning, setIsCleaning] = useState(false);
+  const [isLoadingStorage, setIsLoadingStorage] = useState(false);
   const [appVersion, setAppVersion] = useState('0.2.0');
   const [javaDownloadVersion, setJavaDownloadVersion] = useState('21');
   const [javaDownloading, setJavaDownloading] = useState(false);
   const [javaDownloadError, setJavaDownloadError] = useState('');
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const colorPickerRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (colorPickerRef.current && !colorPickerRef.current.contains(event.target)) {
+        setShowColorPicker(false);
+      }
+    };
+
+    if (showColorPicker) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showColorPicker]);
 
   useEffect(() => {
     // Throttle settings load to prevent repeated calls on tab switch
     const lastLoad = sessionStorage.getItem('last_settings_load');
+    const cachedDiskUsage = sessionStorage.getItem('cached_disk_usage');
     const now = Date.now();
-    const shouldRefresh = !lastLoad || now - parseInt(lastLoad) > 30000;
+    const shouldRefresh = !lastLoad || now - parseInt(lastLoad) > 30000 || !cachedDiskUsage;
 
     if (shouldRefresh) {
       sessionStorage.setItem('last_settings_load', now.toString());
@@ -36,9 +56,14 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
       const cachedJavaPath = sessionStorage.getItem('cached_java_path');
       const cachedDataDir = sessionStorage.getItem('cached_data_dir');
       const cachedCustomJava = sessionStorage.getItem('cached_custom_java');
+      const cachedDiskUsage = sessionStorage.getItem('cached_disk_usage');
+      const cachedVersions = sessionStorage.getItem('cached_downloaded_versions');
+
       if (cachedJavaPath) setJavaPath(cachedJavaPath);
       if (cachedDataDir) setDataDir(cachedDataDir);
       if (cachedCustomJava) setCustomJavaPath(cachedCustomJava);
+      if (cachedDiskUsage) setDiskUsage(JSON.parse(cachedDiskUsage));
+      if (cachedVersions) setDownloadedVersions(JSON.parse(cachedVersions));
     }
     getVersion().then(setAppVersion);
   }, []);
@@ -176,14 +201,19 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
   };
 
   const loadStorageInfo = async () => {
+    setIsLoadingStorage(true);
     try {
       const usage = await invoke('get_disk_usage');
       setDiskUsage(usage);
+      sessionStorage.setItem('cached_disk_usage', JSON.stringify(usage));
 
       const versions = await invoke('get_downloaded_versions');
       setDownloadedVersions(versions);
+      sessionStorage.setItem('cached_downloaded_versions', JSON.stringify(versions));
     } catch (error) {
       console.error('Failed to load storage info:', error);
+    } finally {
+      setIsLoadingStorage(false);
     }
   };
 
@@ -373,14 +403,21 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
 
         <section className="settings-section">
           <h2>Storage</h2>
-          <div className="setting-item">
-            <label>Data Directory</label>
-            <div className="info-box">
-              <span className="info-text">{dataDir}</span>
+          {isLoadingStorage ? (
+            <div className="settings-loading">
+              <div className="loading-spinner"></div>
+              <span>Analysing storage...</span>
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="setting-item">
+                <label>Data Directory</label>
+                <div className="info-box">
+                  <span className="info-text">{dataDir}</span>
+                </div>
+              </div>
 
-          {diskUsage && (
+              {diskUsage && (
             <div className="disk-usage">
               <div className="disk-usage-summary">
                 <div className="disk-usage-item">
@@ -462,6 +499,8 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
               </div>
             )}
           </div>
+            </>
+          )}
         </section>
 
         <section className="settings-section">
@@ -514,6 +553,30 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
 
           <div className="setting-item">
             <div className="checkbox-row">
+              <label>Background Style</label>
+              <select
+                value={launcherSettings?.background_style || 'gradient'}
+                onChange={async (e) => {
+                  const updated = {
+                    ...launcherSettings,
+                    background_style: e.target.value
+                  };
+                  await invoke('save_settings', { newSettings: updated });
+                  onSettingsUpdated();
+                }}
+                className="setting-select"
+              >
+                <option value="gradient">Static Gradient</option>
+                <option value="dynamic">Animated Aura</option>
+              </select>
+            </div>
+            <p className="setting-hint">
+              Choose between a subtle static gradient or an animated atmospheric aura.
+            </p>
+          </div>
+
+          <div className="setting-item">
+            <div className="checkbox-row">
               <label>Show Welcome Screen</label>
               <input
                 type="checkbox"
@@ -532,6 +595,68 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
             <p className="setting-hint">
               Show the welcome screen overlay on startup.
             </p>
+          </div>
+
+          <div className="setting-item">
+            <label>Accent Color</label>
+            <div className="color-input-container">
+              <div 
+                className="color-picker-trigger-wrapper" 
+                ref={colorPickerRef}
+              >
+                <button 
+                  className="color-picker-swatch"
+                  style={{ backgroundColor: launcherSettings?.accent_color || '#E89C88' }}
+                  onClick={() => setShowColorPicker(!showColorPicker)}
+                />
+                
+                {showColorPicker && (
+                  <div className="color-picker-popover">
+                    <CustomColorPicker
+                      value={launcherSettings?.accent_color || '#E89C88'}
+                      onChange={async (color) => {
+                        const updated = {
+                          ...launcherSettings,
+                          accent_color: color
+                        };
+                        await invoke('save_settings', { newSettings: updated });
+                        onSettingsUpdated();
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+              <p className="setting-hint" style={{ margin: 0 }}>
+                Choose a custom color for the launcher's highlights and buttons.
+              </p>
+            </div>
+            <div className="color-presets">
+              {[
+                { name: 'Palethea', color: '#E89C88' },
+                { name: 'Azure', color: '#88aae8' },
+                { name: 'Emerald', color: '#88e8a1' },
+                { name: 'Amethyst', color: '#e888e0' },
+                { name: 'Amber', color: '#e8d488' },
+                { name: 'Rose', color: '#fb7185' },
+                { name: 'Lavender', color: '#a78bfa' },
+                { name: 'Cyan', color: '#22d3ee' },
+              ].map((preset) => (
+                <button
+                  key={preset.color}
+                  className={`preset-btn ${launcherSettings?.accent_color === preset.color ? 'active' : ''}`}
+                  style={{ backgroundColor: preset.color }}
+                  title={preset.name}
+                  onClick={async () => {
+                    const updated = {
+                      ...launcherSettings,
+                      accent_color: preset.color
+                    };
+                    await invoke('save_settings', { newSettings: updated });
+                    onSettingsUpdated();
+                  }}
+                />
+              ))}
+            </div>
           </div>
         </section>
 

@@ -105,7 +105,8 @@ pub async fn get_fabric_loader_info(
 }
 
 /// Convert maven coordinate to file path
-fn maven_to_path(maven: &str) -> String {
+/// Convert a maven coordinate (group:artifact:version) to a file path
+pub fn maven_to_path(maven: &str) -> String {
     let parts: Vec<&str> = maven.split(':').collect();
     if parts.len() < 3 {
         return maven.to_string();

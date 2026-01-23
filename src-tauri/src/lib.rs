@@ -509,12 +509,17 @@ pub struct InstanceShareCode {
     pub mods: Vec<ShareItem>,
     pub resourcepacks: Vec<ShareItem>,
     pub shaders: Vec<ShareItem>,
+    pub datapacks: Vec<ShareItem>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ShareItem {
     pub project_id: String,
     pub version_id: Option<String>,
+    pub filename: Option<String>,
+    pub name: Option<String>,
+    pub icon_url: Option<String>,
+    pub version_name: Option<String>,
 }
 
 #[tauri::command]
@@ -527,6 +532,10 @@ fn get_instance_share_code(instance_id: String) -> Result<String, String> {
         .map(|m| ShareItem {
             project_id: m.project_id.unwrap(),
             version_id: m.version_id,
+            filename: Some(m.filename),
+            name: m.name,
+            icon_url: m.icon_url,
+            version_name: m.version,
         })
         .collect();
         
@@ -536,6 +545,10 @@ fn get_instance_share_code(instance_id: String) -> Result<String, String> {
         .map(|p| ShareItem {
             project_id: p.project_id.unwrap(),
             version_id: p.version_id,
+            filename: Some(p.filename),
+            name: p.name,
+            icon_url: p.icon_url,
+            version_name: p.version,
         })
         .collect();
         
@@ -545,8 +558,40 @@ fn get_instance_share_code(instance_id: String) -> Result<String, String> {
         .map(|s| ShareItem {
             project_id: s.project_id.unwrap(),
             version_id: s.version_id,
+            filename: Some(s.filename),
+            name: s.name,
+            icon_url: s.icon_url,
+            version_name: s.version,
         })
         .collect();
+
+    let mut datapacks = Vec::new();
+    let saves_dir = files::get_saves_dir(&instance);
+    if saves_dir.exists() {
+        if let Ok(entries) = fs::read_dir(saves_dir) {
+            for world_entry in entries.flatten() {
+                if world_entry.path().is_dir() {
+                    let world_name = world_entry.file_name().to_string_lossy().to_string();
+                    let world_dps = files::list_datapacks(&instance, &world_name);
+                    for d in world_dps {
+                        if let Some(pid) = d.project_id {
+                            // Only add if not already in list
+                            if !datapacks.iter().any(|existing: &ShareItem| existing.project_id == pid) {
+                                datapacks.push(ShareItem { 
+                                    project_id: pid,
+                                    version_id: d.version_id,
+                                    filename: Some(d.filename),
+                                    name: d.name,
+                                    icon_url: d.icon_url,
+                                    version_name: d.version,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let share_data = InstanceShareCode {
         name: instance.name,
@@ -561,12 +606,54 @@ fn get_instance_share_code(instance_id: String) -> Result<String, String> {
         mods,
         resourcepacks,
         shaders,
+        datapacks,
     };
     
     let json = serde_json::to_string(&share_data).map_err(|e| e.to_string())?;
     
     // Simple Base64 encoding using general_purpose engine (which we already imported in files.rs)
     // Actually base64 engine is in files.rs, let's use it here too.
+    use base64::{Engine as _, engine::general_purpose};
+    let code = general_purpose::STANDARD_NO_PAD.encode(json);
+    
+    Ok(code)
+}
+
+#[tauri::command]
+fn get_instance_mods_share_code(instance_id: String) -> Result<String, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    
+    let mods = files::list_mods(&instance)
+        .into_iter()
+        .filter(|m| m.project_id.is_some())
+        .map(|m| ShareItem {
+            project_id: m.project_id.unwrap(),
+            version_id: m.version_id,
+            filename: Some(m.filename),
+            name: m.name,
+            icon_url: m.icon_url,
+            version_name: m.version,
+        })
+        .collect();
+        
+    let share_data = InstanceShareCode {
+        name: instance.name,
+        version: instance.version_id,
+        loader: match instance.mod_loader {
+            instances::ModLoader::Vanilla => "vanilla".to_string(),
+            instances::ModLoader::Fabric => "fabric".to_string(),
+            instances::ModLoader::Forge => "forge".to_string(),
+            instances::ModLoader::NeoForge => "neoforge".to_string(),
+        },
+        loader_version: instance.mod_loader_version,
+        mods,
+        resourcepacks: Vec::new(),
+        shaders: Vec::new(),
+        datapacks: Vec::new(),
+    };
+    
+    let json = serde_json::to_string(&share_data).map_err(|e| e.to_string())?;
+    
     use base64::{Engine as _, engine::general_purpose};
     let code = general_purpose::STANDARD_NO_PAD.encode(json);
     
@@ -798,20 +885,22 @@ fn get_running_instances() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn check_java() -> Result<String, String> {
-    // First check custom java path from settings
-    if let Some(custom_path) = settings::get_java_path() {
-        let path = std::path::PathBuf::from(&custom_path);
-        if path.exists() {
-            return Ok(custom_path);
+async fn check_java() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| {
+        // First check custom java path from settings
+        if let Some(custom_path) = settings::get_java_path() {
+            let path = std::path::PathBuf::from(&custom_path);
+            if path.exists() {
+                return Ok(custom_path);
+            }
         }
-    }
-    
-    // Fall back to auto-detection
-    match launcher::find_java() {
-        Some(path) => Ok(path.to_string_lossy().to_string()),
-        None => Err("Java not found".to_string()),
-    }
+        
+        // Fall back to auto-detection
+        match launcher::find_java() {
+            Some(path) => Ok(path.to_string_lossy().to_string()),
+            None => Err("Java not found".to_string()),
+        }
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1335,73 +1424,98 @@ fn get_dir_size(path: &std::path::Path) -> u64 {
 }
 
 #[tauri::command]
-fn get_disk_usage() -> Result<DiskUsageInfo, String> {
-    let base_dir = downloader::get_minecraft_dir();
-    
-    let versions_size = get_dir_size(&base_dir.join("versions"));
-    let libraries_size = get_dir_size(&base_dir.join("libraries"));
-    let assets_size = get_dir_size(&base_dir.join("assets"));
-    let instances_size = get_dir_size(&base_dir.join("instances"));
-    let java_size = get_dir_size(&base_dir.join("java"));
-    
-    Ok(DiskUsageInfo {
-        versions: versions_size,
-        libraries: libraries_size,
-        assets: assets_size,
-        instances: instances_size,
-        java: java_size,
-        total: versions_size + libraries_size + assets_size + instances_size + java_size,
-    })
+async fn get_disk_usage() -> Result<DiskUsageInfo, String> {
+    tokio::task::spawn_blocking(|| {
+        let base_dir = downloader::get_minecraft_dir();
+        
+        let versions_size = get_dir_size(&base_dir.join("versions"));
+        let libraries_size = get_dir_size(&base_dir.join("libraries"));
+        let assets_size = get_dir_size(&base_dir.join("assets"));
+        let instances_size = get_dir_size(&base_dir.join("instances"));
+        let java_size = get_dir_size(&base_dir.join("java"));
+        
+        Ok(DiskUsageInfo {
+            versions: versions_size,
+            libraries: libraries_size,
+            assets: assets_size,
+            instances: instances_size,
+            java: java_size,
+            total: versions_size + libraries_size + assets_size + instances_size + java_size,
+        })
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn get_downloaded_versions() -> Result<Vec<DownloadedVersion>, String> {
-    let versions_dir = downloader::get_versions_dir();
-    let mut versions = Vec::new();
-    
-    // 1. Scan the versions directory (Vanilla versions)
-    if let Ok(entries) = fs::read_dir(&versions_dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                if let Some(name) = entry.file_name().to_str() {
-                    let size = get_dir_size(&entry.path());
-                    versions.push(DownloadedVersion {
-                        id: name.to_string(),
-                        size,
-                    });
-                }
-            }
-        }
-    }
-
-    // 2. Scan instances for active mod loaders
-    if let Ok(all_instances) = instances::load_instances() {
-        for inst in all_instances {
-            if inst.mod_loader != instances::ModLoader::Vanilla {
-                if let Some(loader_ver) = inst.mod_loader_version {
-                    let loader_name = match inst.mod_loader {
-                        instances::ModLoader::Fabric => "Fabric",
-                        instances::ModLoader::Forge => "Forge",
-                        instances::ModLoader::NeoForge => "NeoForge",
-                        _ => "ModLoader",
-                    };
-                    
-                    let id = format!("{} {} ({})", loader_name, loader_ver, inst.version_id);
-                    if !versions.iter().any(|v| v.id == id) {
+async fn get_downloaded_versions() -> Result<Vec<DownloadedVersion>, String> {
+    tokio::task::spawn_blocking(|| {
+        let versions_dir = downloader::get_versions_dir();
+        let mut versions = Vec::new();
+        
+        // 1. Scan the versions directory (Vanilla versions)
+        if let Ok(entries) = fs::read_dir(&versions_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        let size = get_dir_size(&entry.path());
                         versions.push(DownloadedVersion {
-                            id,
-                            size: 0, // Metadata only, libraries are shared and listed separately
+                            id: name.to_string(),
+                            size,
                         });
                     }
                 }
             }
         }
-    }
-    
-    // Sort by ID to keep it clean
-    versions.sort_by(|a, b| a.id.cmp(&b.id));
-    
-    Ok(versions)
+
+        // 2. Scan instances for active mod loaders
+        if let Ok(all_instances) = instances::load_instances() {
+            for inst in all_instances {
+                if inst.mod_loader != instances::ModLoader::Vanilla {
+                    if let Some(ref loader_ver) = inst.mod_loader_version {
+                        let loader_name = match inst.mod_loader {
+                            instances::ModLoader::Fabric => "Fabric",
+                            instances::ModLoader::Forge => "Forge",
+                            instances::ModLoader::NeoForge => "NeoForge",
+                            _ => "ModLoader",
+                        };
+                        
+                        let id = format!("{} {} ({})", loader_name, loader_ver, inst.version_id);
+                        if !versions.iter().any(|v| v.id == id) {
+                            let mut size = 0;
+
+                            // Calculate specific size for Fabric if possible
+                            if inst.mod_loader == instances::ModLoader::Fabric {
+                                if let Some(fabric_info) = fabric::load_fabric_info(&inst) {
+                                    let lib_dir = downloader::get_libraries_dir();
+                                    
+                                    // Check loader jar
+                                    let loader_jar = lib_dir.join(fabric::maven_to_path(&fabric_info.loader.maven));
+                                    if let Ok(m) = fs::metadata(loader_jar) {
+                                        size += m.len();
+                                    }
+                                    
+                                    // Check intermediary jar
+                                    let int_jar = lib_dir.join(fabric::maven_to_path(&fabric_info.intermediary.maven));
+                                    if let Ok(m) = fs::metadata(int_jar) {
+                                        size += m.len();
+                                    }
+                                }
+                            }
+
+                            versions.push(DownloadedVersion {
+                                id,
+                                size,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Sort by ID to keep it clean
+        versions.sort_by(|a, b| a.id.cmp(&b.id));
+        
+        Ok(versions)
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1455,10 +1569,14 @@ async fn get_loader_versions(loader: String, game_version: String) -> Result<Vec
                 .header("User-Agent", "PaletheaLauncher/0.1.3")
                 .send()
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("Network error connecting to Fabric API: {}", e))?;
             
             if !response.status().is_success() {
-                return Ok(vec![]);
+                let status = response.status();
+                if status == reqwest::StatusCode::NOT_FOUND {
+                    return Err(format!("Fabric does not yet support Minecraft version {}. It might be too new or invalid.", game_version));
+                }
+                return Err(format!("Fabric API returned error status: {} ({})", status.as_u16(), status.canonical_reason().unwrap_or("Unknown")));
             }
             
             #[derive(Deserialize)]
@@ -1469,13 +1587,14 @@ async fn get_loader_versions(loader: String, game_version: String) -> Result<Vec
             #[derive(Deserialize)]
             struct FabricLoader {
                 version: String,
-                stable: bool,
+                #[serde(rename = "stable")]
+                _stable: bool,
             }
             
             let versions: Vec<FabricLoaderVersion> = response
                 .json()
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("Failed to parse Fabric API response: {}. The version '{}' might not have loader support yet.", e, game_version))?;
             
             Ok(versions.into_iter().map(|v| {
                 let lower_v = v.loader.version.to_lowercase();
@@ -1636,6 +1755,13 @@ async fn get_modrinth_project(project_id: String) -> Result<modrinth::ModrinthPr
 }
 
 #[tauri::command]
+async fn get_modrinth_projects(project_ids: Vec<String>) -> Result<Vec<modrinth::ModrinthProject>, String> {
+    modrinth::get_projects(project_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_modrinth_versions(
     project_id: String,
     game_version: Option<String>,
@@ -1664,6 +1790,9 @@ async fn install_modrinth_file(
     project_id: Option<String>,
     version_id: Option<String>,
     world_name: Option<String>,
+    name: Option<String>,
+    icon_url: Option<String>,
+    version_name: Option<String>,
 ) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
     
@@ -1687,7 +1816,7 @@ async fn install_modrinth_file(
     let client = reqwest::Client::new();
     let response = client
         .get(&file_url)
-        .header("User-Agent", "PaletheaLauncher/0.1.0 (github.com/PaletheaLauncher)")
+        .header("User-Agent", format!("PaletheaLauncher/{}", minecraft::get_launcher_version()))
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?
@@ -1707,6 +1836,9 @@ async fn install_modrinth_file(
         let meta = files::ModMeta { 
             project_id: pid,
             version_id,
+            name,
+            icon_url,
+            version_name,
         };
         let meta_path = dest_dir.join(format!("{}.meta.json", filename));
         if let Ok(json) = serde_json::to_string(&meta) {
@@ -1792,9 +1924,9 @@ fn open_instance_world_folder(_app: AppHandle, instance_id: String, folder_name:
 }
 
 #[tauri::command]
-fn open_instance_datapacks_folder(_app: AppHandle, instance_id: String, folder_name: String) -> Result<(), String> {
+fn open_instance_datapacks_folder(_app: AppHandle, instance_id: String, world_name: String) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
-    let path = files::get_saves_dir(&instance).join(folder_name).join("datapacks");
+    let path = files::get_saves_dir(&instance).join(world_name).join("datapacks");
     
     // Ensure directory exists
     if !path.exists() {
@@ -1858,6 +1990,116 @@ fn clear_instance_log(instance_id: String) -> Result<(), String> {
 fn get_instance_servers(instance_id: String) -> Result<Vec<files::Server>, String> {
     let instance = instances::get_instance(&instance_id)?;
     Ok(files::list_servers(&instance))
+}
+
+#[tauri::command]
+fn add_instance_server(instance_id: String, name: String, ip: String, icon: Option<String>) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let mut servers = files::list_servers(&instance);
+    
+    // Minecraft icon in servers.dat is raw base64 without the prefix
+    let processed_icon = icon.map(|i| {
+        if i.starts_with("data:image/png;base64,") {
+            i.replace("data:image/png;base64,", "")
+        } else {
+            i
+        }
+    });
+
+    servers.push(files::Server {
+        name,
+        ip,
+        icon: processed_icon,
+        accept_textures: 0,
+    });
+    
+    files::save_servers(&instance, servers)
+}
+
+#[tauri::command]
+fn delete_instance_server(instance_id: String, index: usize) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let mut servers = files::list_servers(&instance);
+    
+    if index >= servers.len() {
+        return Err("Server index out of bounds".to_string());
+    }
+    
+    servers.remove(index);
+    files::save_servers(&instance, servers)
+}
+
+#[tauri::command]
+fn update_instance_server(
+    instance_id: String, 
+    index: usize, 
+    name: String, 
+    ip: String, 
+    accept_textures: i8
+) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let mut servers = files::list_servers(&instance);
+    
+    if index >= servers.len() {
+        return Err("Server index out of bounds".to_string());
+    }
+    
+    servers[index].name = name;
+    servers[index].ip = ip;
+    servers[index].accept_textures = accept_textures;
+    
+    files::save_servers(&instance, servers)
+}
+
+#[tauri::command]
+fn set_server_resource_packs(instance_id: String, index: usize, mode: i8) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let mut servers = files::list_servers(&instance);
+    
+    if index >= servers.len() {
+        return Err("Server index out of bounds".to_string());
+    }
+    
+    servers[index].accept_textures = mode;
+    files::save_servers(&instance, servers)
+}
+
+#[tauri::command]
+async fn ping_server(address: String) -> Result<minecraft::ping::PingResponse, String> {
+    minecraft::ping::ping_server(&address).await
+}
+
+#[tauri::command]
+fn import_instance_file(instance_id: String, source_path: String, folder_type: String, world_name: Option<String>) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let dest_dir = match folder_type.as_str() {
+        "mods" => files::get_mods_dir(&instance),
+        "resourcepacks" => files::get_resourcepacks_dir(&instance),
+        "shaderpacks" => files::get_shaderpacks_dir(&instance),
+        "datapacks" => {
+            if let Some(wn) = world_name {
+                files::get_saves_dir(&instance).join(wn).join("datapacks")
+            } else {
+                return Err("World name required for datapacks".to_string())
+            }
+        },
+        _ => return Err("Invalid folder type".to_string()),
+    };
+
+    if !dest_dir.exists() {
+        fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+    }
+
+    let source = std::path::Path::new(&source_path);
+    if !source.exists() {
+        return Err("Source file not found".to_string());
+    }
+
+    let filename = source.file_name().ok_or("Invalid filename")?;
+    let dest_path = dest_dir.join(filename);
+
+    fs::copy(source, dest_path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1933,8 +2175,11 @@ fn open_path_native(path: &std::path::Path) -> Result<(), String> {
     
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer")
-            .arg(path)
+        // Use 'start' via cmd to open folders. This is much faster as it signals the existing
+        // explorer process instead of spawning a new heavy explorer.exe process.
+        // The empty string "" is for the 'title' argument of start which is required if the path has spaces.
+        Command::new("cmd")
+            .args(["/c", "start", "", &path.to_string_lossy()])
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -2133,6 +2378,7 @@ pub fn run() {
             // Modrinth commands
             search_modrinth,
             get_modrinth_project,
+            get_modrinth_projects,
             get_modrinth_versions,
             get_modrinth_version,
             get_modpack_total_size,
@@ -2150,6 +2396,7 @@ pub fn run() {
             delete_instance_world,
             rename_instance_world,
             open_instance_world_folder,
+            import_instance_file,
             open_instance_datapacks_folder,
             get_world_datapacks,
             delete_instance_datapack,
@@ -2160,8 +2407,14 @@ pub fn run() {
             get_instance_log,
             clear_instance_log,
             get_instance_servers,
+            add_instance_server,
+            delete_instance_server,
+            update_instance_server,
+            set_server_resource_packs,
+            ping_server,
             open_instance_folder,
             get_instance_share_code,
+            get_instance_mods_share_code,
             decode_instance_share_code,
             // Skin collection commands
             get_skin_collection,

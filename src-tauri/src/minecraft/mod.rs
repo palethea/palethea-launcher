@@ -10,6 +10,7 @@ pub mod fabric;
 pub mod forge;
 pub mod java;
 pub mod logger;
+pub mod ping;
 
 use std::sync::Mutex;
 static LAUNCHER_VERSION: Mutex<String> = Mutex::new(String::new());

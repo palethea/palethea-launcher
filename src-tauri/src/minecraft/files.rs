@@ -19,6 +19,12 @@ pub struct InstalledMod {
     pub project_id: Option<String>,
     #[serde(default)]
     pub version_id: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub provider: String, // "Modrinth", "Manual", etc.
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -26,32 +32,64 @@ pub struct ModMeta {
     pub project_id: String,
     #[serde(default)]
     pub version_id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub version_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResourcePack {
     pub filename: String,
     pub name: Option<String>,
+    pub version: Option<String>,
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
     pub version_id: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub provider: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ShaderPack {
     pub filename: String,
+    pub name: Option<String>,
+    pub version: Option<String>,
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
     pub version_id: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub provider: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Datapack {
     pub filename: String,
     pub name: Option<String>,
+    pub version: Option<String>,
     pub enabled: bool,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub version_id: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub provider: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -69,6 +107,8 @@ pub struct Server {
     pub name: String,
     pub ip: String,
     pub icon: Option<String>,
+    #[serde(default)]
+    pub accept_textures: i8, // 0: prompt, 1: enabled, 2: disabled
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -127,29 +167,42 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
             
             if filename.ends_with(".jar") || filename.ends_with(".jar.disabled") {
                 let enabled = !filename.ends_with(".disabled");
+                let metadata = fs::metadata(&path).ok();
+                let size = metadata.map(|m| m.len()).unwrap_or(0);
                 
                 // Try to read project_id and version_id from metadata file
                 let base_filename = filename.trim_end_matches(".disabled");
                 let meta_path = mods_dir.join(format!("{}.meta.json", base_filename));
                 let mut project_id = None;
                 let mut version_id = None;
+                let mut name = Some(filename.trim_end_matches(".disabled").trim_end_matches(".jar").to_string());
+                let mut icon_url = None;
+                let mut version = None;
+                let mut provider = "Manual".to_string();
                 
                 if meta_path.exists() {
                     if let Ok(s) = fs::read_to_string(&meta_path) {
                         if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
                             project_id = Some(m.project_id);
                             version_id = m.version_id;
+                            if let Some(n) = m.name { name = Some(n); }
+                            icon_url = m.icon_url;
+                            version = m.version_name;
+                            provider = "Modrinth".to_string();
                         }
                     }
                 }
                 
                 mods.push(InstalledMod {
                     filename: filename.clone(),
-                    name: Some(filename.trim_end_matches(".disabled").trim_end_matches(".jar").to_string()),
-                    version: None,
+                    name,
+                    version,
                     enabled,
                     project_id,
                     version_id,
+                    icon_url,
+                    size,
+                    provider,
                 });
             }
         }
@@ -187,6 +240,13 @@ pub fn delete_mod(instance: &Instance, filename: &str) -> Result<(), String> {
     if path.exists() {
         fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
+
+    // Also delete metadata if it exists
+    let base_filename = filename.trim_end_matches(".disabled");
+    let meta_path = mods_dir.join(format!("{}.meta.json", base_filename));
+    if meta_path.exists() {
+        let _ = fs::remove_file(meta_path);
+    }
     
     Ok(())
 }
@@ -209,25 +269,40 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                 .to_string();
             
             if filename.ends_with(".zip") || path.is_dir() {
+                let metadata = fs::metadata(&path).ok();
+                let size = metadata.map(|m| m.len()).unwrap_or(0);
+
                 // Try to read metadata
                 let meta_path = dir.join(format!("{}.meta.json", filename));
                 let mut project_id = None;
                 let mut version_id = None;
+                let mut icon_url = None;
+                let mut version = None;
+                let mut name = Some(filename.trim_end_matches(".zip").to_string());
+                let mut provider = "Manual".to_string();
                 
                 if meta_path.exists() {
                     if let Ok(s) = fs::read_to_string(&meta_path) {
                         if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
                             project_id = Some(m.project_id);
                             version_id = m.version_id;
+                            if let Some(n) = m.name { name = Some(n); }
+                            icon_url = m.icon_url;
+                            version = m.version_name;
+                            provider = "Modrinth".to_string();
                         }
                     }
                 }
 
                 packs.push(ResourcePack {
                     filename: filename.clone(),
-                    name: Some(filename.trim_end_matches(".zip").to_string()),
+                    name,
+                    version,
                     project_id,
                     version_id,
+                    icon_url,
+                    size,
+                    provider,
                 });
             }
         }
@@ -245,6 +320,12 @@ pub fn delete_resourcepack(instance: &Instance, filename: &str) -> Result<(), St
         fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
     } else if path.exists() {
         fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+
+    // Also delete metadata
+    let meta_path = dir.join(format!("{}.meta.json", filename));
+    if meta_path.exists() {
+        let _ = fs::remove_file(meta_path);
     }
     
     Ok(())
@@ -268,24 +349,40 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                 .to_string();
             
             if filename.ends_with(".zip") || path.is_dir() {
+                let metadata = fs::metadata(&path).ok();
+                let size = metadata.map(|m| m.len()).unwrap_or(0);
+
                 // Try to read metadata
                 let meta_path = dir.join(format!("{}.meta.json", filename));
                 let mut project_id = None;
                 let mut version_id = None;
+                let mut icon_url = None;
+                let mut version = None;
+                let mut name = Some(filename.trim_end_matches(".zip").to_string());
+                let mut provider = "Manual".to_string();
                 
                 if meta_path.exists() {
                     if let Ok(s) = fs::read_to_string(&meta_path) {
                         if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
                             project_id = Some(m.project_id);
                             version_id = m.version_id;
+                            if let Some(n) = m.name { name = Some(n); }
+                            icon_url = m.icon_url;
+                            version = m.version_name;
+                            provider = "Modrinth".to_string();
                         }
                     }
                 }
 
-                packs.push(ShaderPack { 
-                    filename,
+                packs.push(ShaderPack {
+                    filename: filename.clone(),
+                    name,
+                    version,
                     project_id,
                     version_id,
+                    icon_url,
+                    size,
+                    provider,
                 });
             }
         }
@@ -303,6 +400,12 @@ pub fn delete_shaderpack(instance: &Instance, filename: &str) -> Result<(), Stri
         fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
     } else if path.exists() {
         fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+
+    // Also delete metadata
+    let meta_path = dir.join(format!("{}.meta.json", filename));
+    if meta_path.exists() {
+        let _ = fs::remove_file(meta_path);
     }
     
     Ok(())
@@ -519,14 +622,40 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
             
             // Allow .zip, .jar (some hybrid datapacks), and directories
             if filename.ends_with(".zip") || filename.ends_with(".jar") || path.is_dir() {
-                let name = filename
-                    .trim_end_matches(".zip")
-                    .trim_end_matches(".jar")
-                    .to_string();
+                let metadata = fs::metadata(&path).ok();
+                let size = metadata.map(|m| m.len()).unwrap_or(0);
+
+                // Try to read metadata
+                let meta_path = datapacks_dir.join(format!("{}.meta.json", filename));
+                let mut project_id = None;
+                let mut version_id = None;
+                let mut icon_url = None;
+                let mut version = None;
+                let mut name = Some(filename.trim_end_matches(".zip").trim_end_matches(".jar").to_string());
+                let mut provider = "Manual".to_string();
+                
+                if meta_path.exists() {
+                    if let Ok(s) = fs::read_to_string(&meta_path) {
+                        if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
+                            project_id = Some(m.project_id);
+                            version_id = m.version_id;
+                            if let Some(n) = m.name { name = Some(n); }
+                            icon_url = m.icon_url;
+                            version = m.version_name;
+                            provider = "Modrinth".to_string();
+                        }
+                    }
+                }
 
                 datapacks.push(Datapack {
                     filename: filename.clone(),
-                    name: Some(name),
+                    name,
+                    version,
+                    project_id,
+                    version_id,
+                    icon_url,
+                    size,
+                    provider,
                     enabled: true,
                 });
             }
@@ -545,6 +674,12 @@ pub fn delete_datapack(instance: &Instance, world_name: &str, filename: &str) ->
         fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
     } else if path.exists() {
         fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+
+    // Also delete metadata
+    let meta_path = datapacks_dir.join(format!("{}.meta.json", filename));
+    if meta_path.exists() {
+        let _ = fs::remove_file(meta_path);
     }
     
     Ok(())
@@ -650,6 +785,7 @@ pub fn list_servers(instance: &Instance) -> Vec<Server> {
                         name: s.name.unwrap_or_else(|| "Unnamed Server".to_string()),
                         ip: s.ip,
                         icon: s.icon,
+                        accept_textures: s.accept_textures.unwrap_or(0),
                     }).collect()
                 }
                 Err(e) => {
@@ -665,16 +801,39 @@ pub fn list_servers(instance: &Instance) -> Vec<Server> {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ServersNbt {
     servers: Vec<ServerEntry>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ServerEntry {
     name: Option<String>,
     ip: String,
     icon: Option<String>,
+    #[serde(rename = "acceptTextures")]
+    accept_textures: Option<i8>,
+}
+
+/// Save servers to servers.dat
+pub fn save_servers(instance: &Instance, servers: Vec<Server>) -> Result<(), String> {
+    let servers_dat = instance.get_game_directory().join("servers.dat");
+    
+    let entries: Vec<ServerEntry> = servers.into_iter().map(|s| ServerEntry {
+        name: Some(s.name),
+        ip: s.ip,
+        icon: s.icon,
+        accept_textures: Some(s.accept_textures),
+    }).collect();
+    
+    let nbt = ServersNbt { servers: entries };
+    
+    match fastnbt::to_bytes(&nbt) {
+        Ok(data) => {
+            std::fs::write(&servers_dat, data).map_err(|e| format!("Failed to write servers.dat: {}", e))
+        }
+        Err(e) => Err(format!("Failed to encode servers NBT: {}", e))
+    }
 }
 
 /// Rename a screenshot
@@ -702,6 +861,7 @@ pub fn rename_screenshot(instance: &Instance, old_filename: &str, new_filename: 
 }
 
 /// Open path (file or folder) in system default handler
+#[allow(dead_code)]
 pub fn open_path(path: &PathBuf) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {

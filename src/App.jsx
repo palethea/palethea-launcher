@@ -43,6 +43,24 @@ function App() {
   const [showAccountManager, setShowAccountManager] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
 
+  // Apply accent color from settings
+  useEffect(() => {
+    if (launcherSettings?.accent_color) {
+      const root = document.documentElement;
+      root.style.setProperty('--accent', launcherSettings.accent_color);
+      
+      // Convert hex to rgb for transparency support
+      const hex = launcherSettings.accent_color.replace('#', '');
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      
+      if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+        root.style.setProperty('--accent-rgb', `${r}, ${g}, ${b}`);
+      }
+    }
+  }, [launcherSettings]);
+
   useEffect(() => {
     // Load all cached skins on startup
     const cache = {};
@@ -499,10 +517,44 @@ function App() {
       // ----------
       if (modLoader === 'share-code') {
         const { shareData } = modLoaderVersion;
-        const { name: originalName, version: mcVersion, loader, loader_version, mods, resourcepacks, shaders } = shareData;
+        const { 
+          name: originalName, 
+          version: mcVersion, 
+          loader, 
+          loader_version, 
+          mods, 
+          resourcepacks, 
+          shaders,
+          datapacks = [] 
+        } = shareData;
 
         setLoadingStatus(`Preparing instance "${name || originalName}"...`);
         setLoadingProgress(5);
+
+        // 0. Pre-fetch all project metadata for better speed and UI fidelity
+        setLoadingStatus("Fetching metadata...");
+        const allProjectIds = [
+          ...mods.map(m => m.project_id || m.projectId),
+          ...resourcepacks.map(p => p.project_id || p.projectId),
+          ...shaders.map(s => s.project_id || s.projectId),
+          ...datapacks.map(d => d.project_id || d.projectId)
+        ].filter(Boolean);
+        
+        const uniqueIds = [...new Set(allProjectIds)];
+        let projectMap = {};
+        
+        try {
+          if (uniqueIds.length > 0) {
+            const projects = await invoke('get_modrinth_projects', { projectIds: uniqueIds });
+            projects.forEach(p => {
+              const id = p.project_id || p.id;
+              if (id) projectMap[id] = p;
+              if (p.slug) projectMap[p.slug] = p;
+            });
+          }
+        } catch (e) {
+          console.warn("Failed to bulk fetch project metadata:", e);
+        }
 
         // 1. Create the instance
         const newInstance = await invoke('create_instance', { 
@@ -528,107 +580,70 @@ function App() {
           }
         }
 
-        // 4. Download Mods
-        const totalItems = mods.length + resourcepacks.length + shaders.length;
+        // 4. Download Everything
+        const totalItems = mods.length + resourcepacks.length + shaders.length + datapacks.length;
         let completedItems = 0;
 
-        for (const mod of mods) {
-          setLoadingStatus(`Installing mod ${++completedItems}/${totalItems}...`);
-          try {
-            let modInfo;
-            if (mod.version_id) {
-              modInfo = await invoke('get_modrinth_version', { versionId: mod.version_id });
-            } else {
-              // Fetch latest compatible version if version_id is missing
-              const versions = await invoke('get_modrinth_versions', { 
-                projectId: mod.project_id,
-                gameVersion: mcVersion,
-                loader: loader === 'vanilla' ? null : loader
-              });
-              modInfo = versions.length > 0 ? versions[0] : null;
-            }
+        // Helper to process items
+        const processItems = async (items, type, worldName = null) => {
+          for (const item of items) {
+            const mid = item.project_id || item.projectId;
+            const vid = item.version_id || item.versionId;
+            setLoadingStatus(`Installing ${type} ${++completedItems}/${totalItems}...`);
+            try {
+              let info;
+              if (vid) {
+                info = await invoke('get_modrinth_version', { versionId: vid });
+              } else {
+                const versions = await invoke('get_modrinth_versions', { 
+                  projectId: mid,
+                  gameVersion: mcVersion,
+                  loader: type === 'mod' ? (loader === 'vanilla' ? null : loader) : null
+                });
+                info = versions.length > 0 ? versions[0] : null;
+              }
 
-            if (modInfo) {
-              const file = modInfo.files.find(f => f.primary) || modInfo.files[0];
-              await invoke('install_modrinth_file', {
-                instanceId: newInstance.id,
-                fileUrl: file.url,
-                filename: file.filename,
-                fileType: 'mod',
-                projectId: mod.project_id,
-                versionId: modInfo.id
-              });
+              if (info) {
+                let project = projectMap[mid];
+                
+                // Fallback for individual fetch if bulk failed or item was slug
+                if (!project) {
+                  try {
+                    project = await invoke('get_modrinth_project', { projectId: mid });
+                  } catch (e) {
+                    console.warn(`Failed to fetch project metadata for ${mid}:`, e);
+                  }
+                }
+
+                const file = info.files.find(f => f.primary) || info.files[0];
+                
+                await invoke('install_modrinth_file', {
+                  instanceId: newInstance.id,
+                  fileUrl: file.url,
+                  filename: file.filename,
+                  fileType: type,
+                  projectId: mid,
+                  versionId: info.id,
+                  name: project?.title || item.name || null,
+                  iconUrl: project?.icon_url || item.icon_url || item.iconUrl || null,
+                  versionName: info.name || item.version_name || item.versionName,
+                  worldName: worldName
+                });
+              }
+            } catch (e) {
+              console.warn(`Failed to install ${type} ${mid}:`, e);
             }
-          } catch (e) {
-            console.warn(`Failed to install mod ${mod.project_id}:`, e);
+            setLoadingProgress(20 + (completedItems / totalItems) * 75);
           }
-          setLoadingProgress(20 + (completedItems / totalItems) * 75);
-        }
+        };
 
-        // 5. Download Resource Packs
-        for (const pack of resourcepacks) {
-          setLoadingStatus(`Installing pack ${++completedItems}/${totalItems}...`);
-          try {
-            let packInfo;
-            if (pack.version_id) {
-              packInfo = await invoke('get_modrinth_version', { versionId: pack.version_id });
-            } else {
-              const versions = await invoke('get_modrinth_versions', { 
-                projectId: pack.project_id,
-                gameVersion: mcVersion
-              });
-              packInfo = versions.length > 0 ? versions[0] : null;
-            }
-
-            if (packInfo) {
-              const file = packInfo.files.find(f => f.primary) || packInfo.files[0];
-              await invoke('install_modrinth_file', {
-                instanceId: newInstance.id,
-                fileUrl: file.url,
-                filename: file.filename,
-                fileType: 'resourcepack',
-                projectId: pack.project_id,
-                versionId: packInfo.id
-              });
-            }
-          } catch (e) {
-            console.warn(`Failed to install pack ${pack.project_id}:`, e);
-          }
-          setLoadingProgress(20 + (completedItems / totalItems) * 75);
-        }
-
-        // 6. Download Shaders
-        for (const shader of shaders) {
-          setLoadingStatus(`Installing shader ${++completedItems}/${totalItems}...`);
-          try {
-            let shaderInfo;
-            if (shader.version_id) {
-              shaderInfo = await invoke('get_modrinth_version', { versionId: shader.version_id });
-            } else {
-              // Shaders don't strictly depend on MC version/loader in Modrinth metadata usually, 
-              // but we can still filter for sanity.
-              const versions = await invoke('get_modrinth_versions', { 
-                projectId: shader.project_id,
-                gameVersion: mcVersion
-              });
-              shaderInfo = versions.length > 0 ? versions[0] : null;
-            }
-
-            if (shaderInfo) {
-              const file = shaderInfo.files.find(f => f.primary) || shaderInfo.files[0];
-              await invoke('install_modrinth_file', {
-                instanceId: newInstance.id,
-                fileUrl: file.url,
-                filename: file.filename,
-                fileType: 'shader',
-                projectId: shader.project_id,
-                versionId: shaderInfo.id
-              });
-            }
-          } catch (e) {
-            console.warn(`Failed to install shader ${shader.project_id}:`, e);
-          }
-          setLoadingProgress(20 + (completedItems / totalItems) * 75);
+        await processItems(mods, 'mod');
+        await processItems(resourcepacks, 'resourcepack');
+        await processItems(shaders, 'shader');
+        
+        if (datapacks.length > 0) {
+          // For datapacks, we create a default world since they must belong to a world
+          await processItems(datapacks, 'datapack', 'Shared World');
         }
 
         setLoadingProgress(100);
@@ -1040,7 +1055,7 @@ function App() {
   };
 
   return (
-    <div className="app">
+    <div className={`app bg-${launcherSettings?.background_style || 'gradient'}`}>
       <Sidebar
         activeTab={activeTab}
         onTabChange={(tab) => {

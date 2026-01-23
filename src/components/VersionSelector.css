@@ -65,7 +65,7 @@
 }
 
 .version-row.selected {
-    background: rgba(232, 156, 136, 0.1);
+    background: rgba(var(--accent-rgb), 0.1);
     color: var(--accent);
 }
 
@@ -161,7 +161,7 @@
 .spinner-ring {
     width: 28px;
     height: 28px;
-    border: 2px solid rgba(232, 156, 136, 0.1);
+    border: 2px solid rgba(var(--accent-rgb), 0.1);
     border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin-v 1s linear infinite;

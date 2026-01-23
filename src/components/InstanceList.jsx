@@ -7,6 +7,11 @@ import './InstanceList.css';
 function InstanceList({ instances, onLaunch, onStop, onDelete, onEdit, onCreate, onContextMenu, isLoading, runningInstances = [] }) {
   const [logoMap, setLogoMap] = useState({});
   const [sortBy, setSortBy] = useState(localStorage.getItem('instance_sort') || 'name');
+  const [scrolled, setScrolled] = useState(false);
+
+  const handleScroll = (e) => {
+    setScrolled(e.target.scrollTop > 20);
+  };
 
   const sortedInstances = useMemo(() => {
     return [...instances].sort((a, b) => {
@@ -96,9 +101,9 @@ function InstanceList({ instances, onLaunch, onStop, onDelete, onEdit, onCreate,
   }, [logoKey]);
 
   return (
-    <div className="instance-list" onContextMenu={handleContainerContextMenu}>
+    <div className="instance-list" onScroll={handleScroll} onContextMenu={handleContainerContextMenu}>
       {instances.length > 0 && (
-        <div className="instance-header">
+        <div className={`instance-header ${scrolled ? 'scrolled' : ''}`}>
           <div className="header-left">
             <h1>Instances</h1>
             <div className="sort-controls">
