@@ -1067,6 +1067,118 @@ fn is_prerelease_version(version: String) -> bool {
     ver.contains('-')
 }
 
+// ----------
+// download_and_run_installer
+// Description: Downloads a release installer from GitHub and runs it directly.
+//              Used for pre-releases when Tauri's built-in updater doesn't work.
+// ----------
+#[tauri::command]
+async fn download_and_run_installer(version: String, window: tauri::Window) -> Result<(), String> {
+    use std::env;
+    use tokio::io::AsyncWriteExt;
+    use futures::StreamExt;
+    
+    // Determine the correct asset name based on the platform
+    let asset_name = if cfg!(target_os = "windows") {
+        format!("PaletheaLauncher_{}_x64-setup.exe", version)
+    } else if cfg!(target_os = "macos") {
+        format!("PaletheaLauncher_{}_x64.dmg", version)
+    } else {
+        // Linux - use AppImage
+        format!("PaletheaLauncher_{}_amd64.AppImage", version)
+    };
+    
+    let download_url = format!(
+        "https://github.com/mwsk75996/palethea-launcher/releases/download/v{}/{}",
+        version, asset_name
+    );
+    
+    println!("[INFO] Downloading installer from: {}", download_url);
+    
+    // Create temp directory for download
+    let temp_dir = env::temp_dir();
+    let installer_path = temp_dir.join(&asset_name);
+    
+    // Download the installer
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&download_url)
+        .header("User-Agent", "PaletheaLauncher/0.1.0")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download installer: {}", e))?;
+    
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status: {}", response.status()));
+    }
+    
+    let total_size = response.content_length().unwrap_or(0);
+    let mut downloaded: u64 = 0;
+    
+    let mut file = tokio::fs::File::create(&installer_path)
+        .await
+        .map_err(|e| format!("Failed to create installer file: {}", e))?;
+    
+    let mut stream = response.bytes_stream();
+    
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("Failed to write installer: {}", e))?;
+        
+        downloaded += chunk.len() as u64;
+        if total_size > 0 {
+            let progress = ((downloaded as f64 / total_size as f64) * 100.0) as u32;
+            let _ = window.emit("installer-download-progress", progress);
+        }
+    }
+    
+    file.flush().await.map_err(|e| format!("Failed to flush file: {}", e))?;
+    drop(file);
+    
+    println!("[INFO] Installer downloaded to: {:?}", installer_path);
+    
+    // Run the installer
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        Command::new(&installer_path)
+            .spawn()
+            .map_err(|e| format!("Failed to run installer: {}", e))?;
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        // Open the DMG
+        Command::new("open")
+            .arg(&installer_path)
+            .spawn()
+            .map_err(|e| format!("Failed to open installer: {}", e))?;
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        use std::os::unix::fs::PermissionsExt;
+        // Make AppImage executable
+        let mut perms = std::fs::metadata(&installer_path)
+            .map_err(|e| format!("Failed to get file metadata: {}", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&installer_path, perms)
+            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+        
+        Command::new(&installer_path)
+            .spawn()
+            .map_err(|e| format!("Failed to run installer: {}", e))?;
+    }
+    
+    // Exit the current app so the installer can replace it
+    std::process::exit(0);
+}
+
 // ============== AUTH COMMANDS ==============
 
 #[tauri::command]
@@ -2347,6 +2459,7 @@ pub fn run() {
             get_github_releases,
             compare_versions,
             is_prerelease_version,
+            download_and_run_installer,
             // Auth commands
             start_microsoft_login,
             poll_microsoft_login,

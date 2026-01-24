@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { open } from '@tauri-apps/plugin-shell';
@@ -255,22 +256,46 @@ function Updates() {
   // ----------
   // downloadAndInstall
   // Description: Download and install the available update or downgrade using Tauri's updater
+  //              Falls back to direct installer download for pre-releases
   // ----------
   const downloadAndInstall = async () => {
     // Works for both updates and downgrades
     if (!updateInfo && !downgradeInfo) return;
 
+    const targetVersion = updateInfo?.version || downgradeInfo?.version;
+    const isPreRelease = updateInfo?.isPrerelease || false;
+
     setIsDownloading(true);
     setUpdateStatus('downloading');
     setDownloadProgress(0);
+    setError(null);
 
     try {
       const update = await check();
       
       if (!update) {
-        // Fallback: If Tauri's updater doesn't find it, it's usually because the 
-        // GitHub "latest.json" only points to stable versions.
-        throw new Error('Update manifest not found. This common with Pre-releases. Please download manually from GitHub.');
+        // Fallback: Direct download for pre-releases when Tauri updater doesn't work
+        if (isPreRelease && targetVersion) {
+          await invoke('log_event', { 
+            level: 'info', 
+            message: `Tauri updater unavailable, using direct installer download for v${targetVersion}` 
+          });
+          
+          // Listen for download progress
+          const unlisten = await listen('installer-download-progress', (event) => {
+            setDownloadProgress(event.payload);
+          });
+          
+          try {
+            await invoke('download_and_run_installer', { version: targetVersion });
+            // If successful, the app will exit and installer will run
+          } finally {
+            unlisten();
+          }
+          return;
+        }
+        
+        throw new Error('Update manifest not found. This is common with Pre-releases. Please download manually from GitHub.');
       }
 
       let downloaded = 0;
@@ -345,16 +370,14 @@ function Updates() {
 
       {error && (
         <div className="error-notice">
-          {error}
-          {error.includes('GitHub') && updateInfo?.htmlUrl && (
-            <a 
-              href={updateInfo.htmlUrl} 
-              target="_blank" 
-              rel="noreferrer" 
-              style={{ marginLeft: '10px', color: 'inherit', textDecoration: 'underline' }}
+          <span>{error}</span>
+          {updateInfo?.htmlUrl && (
+            <button 
+              className="btn-link error-link"
+              onClick={() => open(updateInfo.htmlUrl)}
             >
               Go to Download Page
-            </a>
+            </button>
           )}
         </div>
       )}

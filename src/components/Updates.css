@@ -16,6 +16,18 @@
   font-size: 14px;
   display: flex;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.error-link {
+  color: #fbbf24 !important;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.error-link:hover {
+  color: #fcd34d !important;
 }
 
 .updates-header {
