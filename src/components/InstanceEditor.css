@@ -458,94 +458,6 @@
   margin-top: 8px;
 }
 
-/* Logo Settings Style */
-.logo-settings-container {
-  display: flex;
-  align-items: flex-start;
-  gap: 20px;
-  flex: 1;
-}
-
-.logo-preview-box {
-  width: 80px;
-  height: 80px;
-  border-radius: 12px;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--surface);
-  flex-shrink: 0;
-}
-
-.logo-preview-box img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.logo-preview-fallback {
-  width: 40px;
-  height: 40px;
-  background: var(--surface-hover);
-  border-radius: 8px;
-  opacity: 0.5;
-}
-
-.logo-controls-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.logo-buttons-row {
-  display: flex;
-  gap: 8px;
-}
-
-.btn-logo-action {
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 1px solid var(--border);
-}
-
-.btn-logo-action.primary {
-  background: var(--surface-hover);
-  color: var(--foreground);
-}
-
-.btn-logo-action.primary:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
-}
-
-.btn-logo-action.secondary {
-  background: transparent;
-  color: var(--text-secondary);
-}
-
-.btn-logo-action.secondary:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
-  border-color: #ef4444;
-}
-
-.btn-logo-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.logo-hint-text {
-  font-size: 12px;
-  color: var(--text-secondary);
-  opacity: 0.7;
-}
-
 .version-changer-preview {
   display: flex;
   align-items: center;
@@ -658,6 +570,91 @@
 .setting-row select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.logo-settings-container {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  margin-top: 8px;
+}
+
+.logo-preview-box {
+  width: 96px;
+  height: 96px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.logo-preview-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.logo-preview-fallback {
+  width: 48px;
+  height: 48px;
+  background-image: url('/minecraft_logo.png');
+  background-size: contain;
+  background-repeat: no-repeat;
+  opacity: 0.2;
+  image-rendering: pixelated;
+}
+
+.logo-controls-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+}
+
+.logo-buttons-row {
+  display: flex;
+  gap: 10px;
+}
+
+.btn-logo-action {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-logo-action.primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+}
+
+.btn-logo-action.secondary {
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.btn-logo-action:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn-logo-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.logo-hint-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  opacity: 0.7;
 }
 
 .setting-row-vertical {

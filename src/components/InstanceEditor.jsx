@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Play, Box, Cpu, FolderOpen, Square, X, ExternalLink } from 'lucide-react';
 import './InstanceEditor.css';
@@ -38,11 +38,21 @@ function InstanceEditor({
   // ----------
   const [consoleClearKey, setConsoleClearKey] = useState(0);
 
-  const isRunning = (runningInstances || []).includes(instanceId);
+  const isRunning = !!(runningInstances && runningInstances[instanceId]);
+
+  const loadInstance = useCallback(async () => {
+    try {
+      const result = await invoke('get_instance_details', { instanceId });
+      setInstance(result);
+    } catch (error) {
+      console.error('Failed to load instance:', error);
+    }
+    setLoading(false);
+  }, [instanceId]);
 
   useEffect(() => {
     loadInstance();
-  }, [instanceId]);
+  }, [loadInstance]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -61,16 +71,6 @@ function InstanceEditor({
   useEffect(() => {
     setScrolled(false);
   }, [activeTab]);
-
-  const loadInstance = async () => {
-    try {
-      const result = await invoke('get_instance_details', { instanceId });
-      setInstance(result);
-    } catch (error) {
-      console.error('Failed to load instance:', error);
-    }
-    setLoading(false);
-  };
 
   const handleScroll = (e) => {
     setScrolled(e.target.scrollTop > 10);

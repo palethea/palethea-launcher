@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Loader2 } from 'lucide-react';
@@ -28,34 +28,21 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
   const [modpackTotalSize, setModpackTotalSize] = useState(null);
   const [sizeLoading, setSizeLoading] = useState(false);
 
+  // Import state
+  const [importZipPath, setImportZipPath] = useState('');
+  const [importInfo, setImportInfo] = useState(null);
+
+  // Share code state
+  const [shareCode, setShareCode] = useState('');
+  const [decodedShareData, setDecodedShareData] = useState(null);
+  const [isDecoding, setIsDecoding] = useState(false);
+  const [decodingError, setDecodingError] = useState('');
+
   // Pagination states
   const [modpackOffset, setModpackOffset] = useState(0);
   const [hasMoreModpacks, setHasMoreModpacks] = useState(true);
   const [loadingMoreModpacks, setLoadingMoreModpacks] = useState(false);
   const modpackObserver = useRef();
-
-  const lastModpackRef = useCallback(node => {
-    if (modpacksLoading || loadingMoreModpacks) return;
-    if (modpackObserver.current) modpackObserver.current.disconnect();
-    
-    modpackObserver.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasMoreModpacks) {
-        handleLoadMoreModpacks();
-      }
-    });
-    
-    if (node) modpackObserver.current.observe(node);
-  }, [modpacksLoading, loadingMoreModpacks, hasMoreModpacks]);
-
-  // Import state
-  const [importZipPath, setImportZipPath] = useState('');
-  const [importInfo, setImportInfo] = useState(null); // { name, version_id, mod_loader }
-
-  // Share code state
-  const [shareCode, setShareCode] = useState('');
-  const [decodedShareData, setDecodedShareData] = useState(null);
-  const [decodingError, setDecodingError] = useState('');
-  const [isDecoding, setIsDecoding] = useState(false);
 
   // Java recommendation state
   const [selectedJava, setSelectedJava] = useState(21);
@@ -66,16 +53,11 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
 
   // Filters
   const [enabledTypes, setEnabledTypes] = useState(['release']);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [loaderSearchQuery, setLoaderSearchQuery] = useState('');
+  const [searchQuery] = useState('');
+  const [loaderSearchQuery] = useState('');
   const [loadingVersions, setLoadingVersions] = useState(true);
 
-  useEffect(() => {
-    loadVersions();
-    handleSearchModpacks(""); // Load popular modpacks by default
-  }, []);
-
-  const loadVersions = async () => {
+  const loadVersions = useCallback(async () => {
     setLoadingVersions(true);
     try {
       const result = await invoke('get_versions');
@@ -90,25 +72,52 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
       console.error('Failed to load versions:', error);
     }
     setLoadingVersions(false);
-  };
+  }, [selectedVersion]);
 
-  const filteredVersions = versions.filter((v) => {
-    const matchesFilter = enabledTypes.length === 0 || enabledTypes.includes(v.version_type);
-    const matchesSearch = v.id.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesFilter && matchesSearch;
-  });
-
-  const filteredLoaderVersions = loaderVersions.filter((v) => {
-    return v.version.toLowerCase().includes(loaderSearchQuery.toLowerCase());
-  });
-
-  useEffect(() => {
-    if (selectedVersion && modLoader !== 'vanilla') {
-      loadLoaderVersions();
+  const handleSearchModpacks = useCallback(async (queryOverride) => {
+    const query = queryOverride !== undefined ? queryOverride : modpackSearch;
+    setModpacksLoading(true);
+    setModpackOffset(0);
+    setHasMoreModpacks(true);
+    try {
+      const result = await invoke('search_modrinth', {
+        query: query,
+        projectType: 'modpack',
+        limit: 20,
+        offset: 0
+      });
+      setModpacks(result.hits);
+      setHasMoreModpacks(result.hits.length === 20 && result.total_hits > 20);
+      setModpackOffset(result.hits.length);
+    } catch (error) {
+      console.error('Failed to search modpacks:', error);
     }
-  }, [selectedVersion, modLoader]);
+    setModpacksLoading(false);
+  }, [modpackSearch]);
 
-  const loadLoaderVersions = async () => {
+  const handleLoadMoreModpacks = useCallback(async () => {
+    if (loadingMoreModpacks || !hasMoreModpacks) return;
+    setLoadingMoreModpacks(true);
+    try {
+      const result = await invoke('search_modrinth', {
+        query: modpackSearch,
+        projectType: 'modpack',
+        limit: 20,
+        offset: modpackOffset
+      });
+      const newHits = result.hits || [];
+      if (newHits.length > 0) {
+        setModpacks(prev => [...prev, ...newHits]);
+        setModpackOffset(prev => prev + newHits.length);
+      }
+      setHasMoreModpacks(newHits.length === 20 && (modpackOffset + newHits.length) < result.total_hits);
+    } catch (error) {
+      console.error('Failed to load more modpacks:', error);
+    }
+    setLoadingMoreModpacks(false);
+  }, [loadingMoreModpacks, hasMoreModpacks, modpackSearch, modpackOffset]);
+
+  const loadLoaderVersions = useCallback(async () => {
     if (modLoader === 'vanilla' || !selectedVersion) {
       setLoaderVersions([]);
       setSelectedLoaderVersion('');
@@ -135,17 +144,9 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
       setLoaderError(error.toString());
     }
     setLoaderLoading(false);
-  };
+  }, [modLoader, selectedVersion]);
 
-  useEffect(() => {
-    if (selectedModpackVersion) {
-      calculateTotalSize(selectedModpackVersion.id);
-    } else {
-      setModpackTotalSize(null);
-    }
-  }, [selectedModpackVersion]);
-
-  const calculateTotalSize = async (versionId) => {
+  const calculateTotalSize = useCallback(async (versionId) => {
     setSizeLoading(true);
     try {
       const size = await invoke('get_modpack_total_size', { versionId });
@@ -155,15 +156,57 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
       setModpackTotalSize(null);
     }
     setSizeLoading(false);
-  };
+  }, []);
 
-  const toggleType = (type) => {
+  const lastModpackRef = useCallback(node => {
+    if (modpacksLoading || loadingMoreModpacks) return;
+    if (modpackObserver.current) modpackObserver.current.disconnect();
+    
+    modpackObserver.current = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && hasMoreModpacks) {
+        handleLoadMoreModpacks();
+      }
+    });
+    
+    if (node) modpackObserver.current.observe(node);
+  }, [modpacksLoading, loadingMoreModpacks, hasMoreModpacks, handleLoadMoreModpacks]);
+
+  useEffect(() => {
+    loadVersions();
+    handleSearchModpacks(""); // Load popular modpacks by default
+  }, [loadVersions, handleSearchModpacks]);
+
+  const filteredVersions = useMemo(() => versions.filter((v) => {
+    const matchesFilter = enabledTypes.length === 0 || enabledTypes.includes(v.version_type);
+    const matchesSearch = v.id.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesFilter && matchesSearch;
+  }), [versions, enabledTypes, searchQuery]);
+
+  const filteredLoaderVersions = useMemo(() => loaderVersions.filter((v) => {
+    return v.version.toLowerCase().includes(loaderSearchQuery.toLowerCase());
+  }), [loaderVersions, loaderSearchQuery]);
+
+  useEffect(() => {
+    if (selectedVersion && modLoader !== 'vanilla') {
+      loadLoaderVersions();
+    }
+  }, [selectedVersion, modLoader, loadLoaderVersions]);
+
+  useEffect(() => {
+    if (selectedModpackVersion) {
+      calculateTotalSize(selectedModpackVersion.id);
+    } else {
+      setModpackTotalSize(null);
+    }
+  }, [selectedModpackVersion, calculateTotalSize]);
+
+  const toggleType = useCallback((type) => {
     setEnabledTypes(prev =>
       prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
     );
-  };
+  }, []);
 
-  const formatDate = (isoStr) => {
+  const formatDate = useCallback((isoStr) => {
     if (!isoStr) return 'Unknown';
     try {
       const date = new Date(isoStr);
@@ -171,9 +214,9 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     } catch {
       return isoStr;
     }
-  };
+  }, []);
 
-  const getRecommendedJava = (mcVersion) => {
+  const getRecommendedJava = useCallback((mcVersion) => {
     if (!mcVersion) return 21;
     try {
       // Extract major/minor version
@@ -196,7 +239,7 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     } catch (e) {
       return 17;
     }
-  };
+  }, []);
 
   useEffect(() => {
     const checkJava = async () => {
@@ -231,52 +274,9 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     if (mcVersion) {
       setSelectedJava(getRecommendedJava(mcVersion));
     }
-  }, [selectedVersion, selectedModpackVersion, decodedShareData, importInfo, creationMode]);
+  }, [selectedVersion, selectedModpackVersion, decodedShareData, importInfo, creationMode, getRecommendedJava]);
 
-  const handleSearchModpacks = async (queryOverride) => {
-    const query = queryOverride !== undefined ? queryOverride : modpackSearch;
-    setModpacksLoading(true);
-    setModpackOffset(0);
-    setHasMoreModpacks(true);
-    try {
-      const result = await invoke('search_modrinth', {
-        query: query,
-        projectType: 'modpack',
-        limit: 20,
-        offset: 0
-      });
-      setModpacks(result.hits);
-      setHasMoreModpacks(result.hits.length === 20 && result.total_hits > 20);
-      setModpackOffset(result.hits.length);
-    } catch (error) {
-      console.error('Failed to search modpacks:', error);
-    }
-    setModpacksLoading(false);
-  };
-
-  const handleLoadMoreModpacks = async () => {
-    if (loadingMoreModpacks || !hasMoreModpacks) return;
-    setLoadingMoreModpacks(true);
-    try {
-      const result = await invoke('search_modrinth', {
-        query: modpackSearch,
-        projectType: 'modpack',
-        limit: 20,
-        offset: modpackOffset
-      });
-      const newHits = result.hits || [];
-      if (newHits.length > 0) {
-        setModpacks(prev => [...prev, ...newHits]);
-        setModpackOffset(prev => prev + newHits.length);
-      }
-      setHasMoreModpacks(newHits.length === 20 && (modpackOffset + newHits.length) < result.total_hits);
-    } catch (error) {
-      console.error('Failed to load more modpacks:', error);
-    }
-    setLoadingMoreModpacks(false);
-  };
-
-  const handleSelectModpack = async (mp) => {
+  const handleSelectModpack = useCallback(async (mp) => {
     setSelectedModpack(mp);
     setModpackVersionsLoading(true);
     try {
@@ -289,13 +289,13 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
       console.error('Failed to load modpack versions:', error);
     }
     setModpackVersionsLoading(false);
-  };
+  }, []);
 
   // ----------
   // handleSelectZipFile
   // Description: Opens a file dialog to select a .zip file for importing
   // ----------
-  const handleSelectZipFile = async () => {
+  const handleSelectZipFile = useCallback(async () => {
     try {
       const selected = await open({
         multiple: false,
@@ -323,9 +323,9 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     } catch (error) {
       console.error('Failed to select file:', error);
     }
-  };
+  }, [name]);
 
-  const handleDecodeShareCode = async (code) => {
+  const handleDecodeShareCode = useCallback(async (code) => {
     setShareCode(code);
     if (!code.trim()) {
       setDecodedShareData(null);
@@ -345,9 +345,9 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
       setDecodedShareData(null);
     }
     setIsDecoding(false);
-  };
+  }, [name]);
 
-  const handleCreate = async () => {
+  const handleCreate = useCallback(async () => {
     // If Java is not installed, we download it first
     if (!isJavaInstalled) {
       setIsJavaDownloading(true);
@@ -391,32 +391,32 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
         }, selectedJava);
       }
     }
-  };
+  }, [isJavaInstalled, selectedJava, creationMode, name, selectedVersion, modLoader, selectedLoaderVersion, selectedModpack, selectedModpackVersion, importZipPath, decodedShareData, onCreate]);
 
   // ----------
   // Validation logic
   // Description: Determines when user can proceed to next step or create instance
   // ----------
-  const canNextFromName = (creationMode === 'import' || creationMode === 'share-code') ? true : name.trim().length > 0;
-  const canNextFromVersion = creationMode === 'version'
+  const canNextFromName = useMemo(() => (creationMode === 'import' || creationMode === 'share-code') ? true : name.trim().length > 0, [creationMode, name]);
+  const canNextFromVersion = useMemo(() => creationMode === 'version'
     ? !!selectedVersion
     : creationMode === 'modpack'
       ? !!selectedModpack
       : creationMode === 'share-code'
         ? !!decodedShareData
-        : !!importZipPath;
-  const canNextFromLoader = creationMode === 'version'
+        : !!importZipPath, [creationMode, selectedVersion, selectedModpack, decodedShareData, importZipPath]);
+  const canNextFromLoader = useMemo(() => creationMode === 'version'
     ? (modLoader === 'vanilla' || !!selectedLoaderVersion)
     : creationMode === 'modpack'
       ? !!selectedModpackVersion
-      : true; // import/share-code don't have a loader step before java
-  const canCreate = creationMode === 'version'
+      : true, [creationMode, modLoader, selectedLoaderVersion, selectedModpackVersion]);
+  const canCreate = useMemo(() => creationMode === 'version'
     ? (name.trim() && selectedVersion && (modLoader === 'vanilla' || selectedLoaderVersion))
     : creationMode === 'modpack'
       ? (name.trim() && selectedModpack && selectedModpackVersion)
       : creationMode === 'share-code'
         ? !!decodedShareData
-        : !!importZipPath;
+        : !!importZipPath, [creationMode, name, selectedVersion, modLoader, selectedLoaderVersion, selectedModpack, selectedModpackVersion, decodedShareData, importZipPath]);
 
   const isPage = mode === 'page';
 

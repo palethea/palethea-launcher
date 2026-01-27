@@ -1,4 +1,4 @@
-use crate::minecraft::downloader::{get_assets_dir, get_libraries_dir, get_versions_dir};
+use crate::minecraft::downloader::{self, get_assets_dir, get_libraries_dir, get_versions_dir, DownloadProgress};
 use crate::minecraft::instances::{Instance, ModLoader};
 use crate::minecraft::versions::{self, should_use_library, VersionDetails};
 use crate::minecraft::settings;
@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use zip::ZipArchive;
+use tauri::Emitter;
 
 // ----------
 // CommandExt trait for hiding console windows on Windows
@@ -745,6 +746,7 @@ pub async fn launch_game(
     username: &str,
     access_token: &str,
     uuid: &str,
+    app_handle: &tauri::AppHandle,
 ) -> Result<std::process::Child, String> {
     // Determine the actual version details to use (may be overridden by mod loader)
     let mut actual_version_details = version_details.clone();
@@ -752,6 +754,17 @@ pub async fn launch_game(
     // Handle Forge / NeoForge by loading their custom version.json if available
     if (instance.mod_loader == ModLoader::Forge || instance.mod_loader == ModLoader::NeoForge) && instance.mod_loader_version.is_some() {
         let loader_version = instance.mod_loader_version.as_ref().unwrap();
+        
+        let _ = app_handle.emit("download-progress", DownloadProgress {
+            stage: format!("Merging {} config...", instance.mod_loader.to_string()),
+            current: 0,
+            total: 0,
+            percentage: 20.0,
+            total_bytes: None,
+            downloaded_bytes: None,
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
         let mc_version = &instance.version_id;
         
         // Potential IDs for Forge/NeoForge
@@ -860,18 +873,45 @@ pub async fn launch_game(
 
     // Ensure client JAR is present and valid (avoid corrupt vanilla jar)
     log::info!("Checking for missing client JAR...");
+    let _ = app_handle.emit("download-progress", DownloadProgress {
+        stage: "Checking game files...".to_string(),
+        current: 0,
+        total: 0,
+        percentage: 40.0,
+        total_bytes: None,
+        downloaded_bytes: None,
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let _ = crate::minecraft::downloader::download_client(&actual_version_details).await
         .map_err(|e| format!("Failed to download client JAR: {}", e))?;
 
     // Ensure all libraries (including mod loader dependencies) are downloaded
     log::info!("Checking for missing libraries...");
-    let _ = crate::minecraft::downloader::download_libraries(&actual_version_details, None).await
+    let _ = app_handle.emit("download-progress", DownloadProgress {
+        stage: "Verifying libraries...".to_string(),
+        current: 0,
+        total: 1,
+        percentage: 60.0,
+        total_bytes: None,
+        downloaded_bytes: None,
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let _ = crate::minecraft::downloader::download_libraries(&actual_version_details, Some(app_handle)).await
         .map_err(|e| format!("Failed to download missing libraries: {}", e))?;
 
     // Find Java: instance setting > global setting > auto-detect (with legacy Forge handling)
     let java_path = select_java_for_launch(instance, &actual_version_details)?;
     
     // Build classpath - handle deduplication to avoid "duplicate ASM classes" error
+    let _ = app_handle.emit("download-progress", DownloadProgress {
+        stage: "Building classpath...".to_string(),
+        current: 0,
+        total: 0,
+        percentage: 80.0,
+        total_bytes: None,
+        downloaded_bytes: None,
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let mut classpath_elements: Vec<(String, String)> = Vec::new();
     
     // Determine main class
@@ -978,6 +1018,27 @@ pub async fn launch_game(
     
     // Log the arguments for debugging
     log::info!("Game args: {:?}", game_args);
+
+    let _ = app_handle.emit("download-progress", DownloadProgress {
+        stage: "Starting process...".to_string(),
+        current: 0,
+        total: 0,
+        percentage: 100.0,
+        total_bytes: None,
+        downloaded_bytes: None,
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Build the full command string for verbose logging
+    let full_command = format!(
+        "\"{}\" {} {} {}",
+        java_path.display(),
+        jvm_args.join(" "),
+        main_class,
+        game_args.join(" ")
+    );
+    println!("\n=== STARTING MINECRAFT ===\n{}\n==========================\n", full_command);
+    log::info!("Full launch command: {}", full_command);
     
     // Build command
     let mut command = Command::new(&java_path);
@@ -1028,6 +1089,20 @@ pub async fn launch_game(
     #[cfg(not(target_os = "windows"))]
     {
         command.args(&jvm_args).arg(&main_class).args(&game_args);
+    }
+
+    // Log the full command line for debugging in dev mode
+    #[cfg(debug_assertions)]
+    {
+        let mut full_cmd = format!("\"{}\"", java_path.to_string_lossy());
+        for arg in &jvm_args {
+            full_cmd.push_str(&format!(" \"{}\"", arg));
+        }
+        full_cmd.push_str(&format!(" \"{}\"", main_class));
+        for arg in &game_args {
+            full_cmd.push_str(&format!(" \"{}\"", arg));
+        }
+        println!("\n=== FULL MINECRAFT LAUNCH COMMAND ===\n{}\n=====================================\n", full_cmd);
     }
     
     // Launch the game

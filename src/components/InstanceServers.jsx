@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from './ConfirmModal';
 import './ContextMenu.css';
@@ -90,9 +90,19 @@ function InstanceServers({ instance, onShowNotification, isScrolled }) {
   const [previewError, setPreviewError] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
 
+  const loadServers = useCallback(async () => {
+    try {
+      const s = await invoke('get_instance_servers', { instanceId: instance.id });
+      setServers(s);
+    } catch (error) {
+      console.error('Failed to load servers:', error);
+    }
+    setLoading(false);
+  }, [instance.id]);
+
   useEffect(() => {
     loadServers();
-  }, [instance.id]);
+  }, [loadServers]);
 
   useEffect(() => {
     const handleClickOutside = () => setContextMenu(null);
@@ -122,16 +132,6 @@ function InstanceServers({ instance, onShowNotification, isScrolled }) {
     }
     return () => clearTimeout(timeout);
   }, [newServerIp, showAddModal]);
-
-  const loadServers = async () => {
-    try {
-      const s = await invoke('get_instance_servers', { instanceId: instance.id });
-      setServers(s);
-    } catch (error) {
-      console.error('Failed to load servers:', error);
-    }
-    setLoading(false);
-  };
 
   const handleAddServer = async () => {
     if (!newServerName || !newServerIp) return;
@@ -560,6 +560,6 @@ function InstanceServers({ instance, onShowNotification, isScrolled }) {
   );
 }
 
-export default InstanceServers;
+export default memo(InstanceServers);
 
 

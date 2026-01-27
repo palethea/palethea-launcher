@@ -53,7 +53,7 @@ fn deserialize_gallery<'de, D>(deserializer: D) -> Result<Vec<ModrinthGalleryIma
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::{self, SeqAccess, Visitor};
+    use serde::de::{SeqAccess, Visitor};
     
     struct GalleryVisitor;
     
@@ -203,6 +203,7 @@ pub async fn search_projects(
     project_type: &str, // "mod", "resourcepack", "shader"
     game_version: Option<&str>,
     loader: Option<&str>,
+    category: Option<&str>,
     limit: u32,
     offset: u32,
 ) -> Result<ModrinthSearchResult, Box<dyn Error + Send + Sync>> {
@@ -219,6 +220,10 @@ pub async fn search_projects(
     
     if let Some(loader) = loader {
         facets.push(format!("[\"categories:{}\"]", loader));
+    }
+
+    if let Some(cat) = category {
+        facets.push(format!("[\"categories:{}\"]", cat));
     }
     
     let facets_str = format!("[{}]", facets.join(","));

@@ -1,25 +1,58 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { save } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+
+// Heavy components - Lazy loaded
+const InstanceEditor = lazy(() => import('./components/InstanceEditor'));
+const Settings = lazy(() => import('./components/Settings'));
+const Appearance = lazy(() => import('./components/Appearance'));
+const Stats = lazy(() => import('./components/Stats'));
+const SkinManager = lazy(() => import('./components/SkinManager'));
+const CreateInstance = lazy(() => import('./components/CreateInstance'));
+const Updates = lazy(() => import('./components/Updates'));
+const Console = lazy(() => import('./components/Console'));
+
+// Core UI - Synchronous
 import Sidebar from './components/Sidebar';
+import TitleBar from './components/TitleBar';
 import InstanceList from './components/InstanceList';
-import InstanceEditor from './components/InstanceEditor';
-import Settings from './components/Settings';
-import Stats from './components/Stats';
-import SkinManager from './components/SkinManager';
-import CreateInstance from './components/CreateInstance';
 import ContextMenu from './components/ContextMenu';
 import LoginPrompt from './components/LoginPrompt';
 import ConfirmModal from './components/ConfirmModal';
-import Updates from './components/Updates';
-import Console from './components/Console';
 import AccountManagerModal from './components/AccountManagerModal';
 import EditChoiceModal from './components/EditChoiceModal';
 import './App.css';
+
+const startTime = window.initialHtmlLoad ? (performance.now() - window.initialHtmlLoad) : 0;
+let bootstrapOffset = 0;
+let offsetSynced = false;
+
+const getElapsed = () => {
+  const fromHtml = ((performance.now() - (window.initialHtmlLoad || performance.now())) / 1000);
+  const total = (bootstrapOffset + fromHtml).toFixed(3);
+  return `${total}s`;
+};
+
+const devLog = (...args) => {
+  if (import.meta.env.DEV) {
+    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+    // Only send to Rust if it's not a spammy render log or sync confirmation
+    if (!message.includes('component rendering') && !message.includes('Clock synced')) {
+      invoke('log_event', { level: 'debug', message }).catch(() => {});
+    }
+  }
+};
+
+const devError = (...args) => {
+  if (import.meta.env.DEV) {
+    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+    invoke('log_event', { level: 'error', message }).catch(() => {});
+  }
+};
 
 function App() {
   const [activeTab, setActiveTab] = useState('instances');
@@ -33,10 +66,11 @@ function App() {
   const [loadingCount, setLoadingCount] = useState({ current: 0, total: 0 });
   const [notification, setNotification] = useState(null);
   const [editingInstanceId, setEditingInstanceId] = useState(null);
+  const [deletingInstanceId, setDeletingInstanceId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [showLoginPrompt, setShowLoginPrompt] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
-  const [runningInstances, setRunningInstances] = useState([]);
+  const [runningInstances, setRunningInstances] = useState({}); // { id: { pid, start_time } }
   const [showWelcome, setShowWelcome] = useState(false);
   const [welcomeDontShow, setWelcomeDontShow] = useState(false);
   const [skinRefreshKey, setSkinRefreshKey] = useState(Date.now());
@@ -48,6 +82,11 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [openEditors, setOpenEditors] = useState([]);
   const [showEditChoiceModal, setShowEditChoiceModal] = useState(null); // { instanceId } or null
+  
+  const showNotification = useCallback((message, type = 'info') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 5000);
+  }, []);
 
   // Check if we are running in a pop-out window
   const urlParams = new URLSearchParams(window.location.search);
@@ -56,13 +95,13 @@ function App() {
 
   // Show window once initialized
   useEffect(() => {
-    if (!isInitializing && popoutMode) {
+    if (!isInitializing) {
       // Small timeout to ensure the DOM is rendered before showing the window
       setTimeout(() => {
-        getCurrentWindow().show().catch(console.error);
+        getCurrentWindow().show().catch(err => devError('Failed to show window:', err));
       }, 100);
     }
-  }, [isInitializing, popoutMode]);
+  }, [isInitializing]);
 
   // Apply accent color from settings
   useEffect(() => {
@@ -129,7 +168,7 @@ function App() {
         }
       }
     } catch (err) {
-      console.warn('Silent skin load failed:', err);
+      devLog('Silent skin load failed:', err);
     }
   }, []);
 
@@ -138,7 +177,7 @@ function App() {
       const result = await invoke('get_instances');
       setInstances(result);
     } catch (error) {
-      console.error('Failed to load instances:', error);
+      devError(`[DEBUG] [${getElapsed()}] Failed to load instances:`, error);
     }
   }, []);
 
@@ -147,7 +186,7 @@ function App() {
       const result = await invoke('get_running_instances');
       setRunningInstances(result);
     } catch (error) {
-      console.error('Failed to load running instances:', error);
+      devError(`[DEBUG] [${getElapsed()}] Failed to load running instances:`, error);
     }
   }, []);
 
@@ -156,7 +195,7 @@ function App() {
       const settings = await invoke('get_settings');
       setLauncherSettings(settings);
     } catch (error) {
-      console.error('Failed to load launcher settings:', error);
+      devError(`[DEBUG] [${getElapsed()}] Failed to load settings:`, error);
       // Set defaults on error
       setLauncherSettings({ enable_console: false, show_welcome: true, account_preview_mode: 'simple' });
     }
@@ -189,90 +228,126 @@ function App() {
       const activeAcc = savedData.accounts.find(a => a.username === activeUsername);
 
       if (activeAcc) {
-        // Validate/refresh Microsoft account
-        if (activeAcc.is_microsoft) {
-          const isValid = await invoke('validate_account', { accessToken: activeAcc.access_token });
-
-          if (!isValid) {
-            // Try to refresh the token
-            try {
-              const refreshed = await invoke('refresh_account', { username: activeAcc.username });
-              if (refreshed) {
-                // Reload accounts after refresh
-                const refreshedData = await invoke('get_saved_accounts');
-                const refreshedAcc = refreshedData.accounts.find(a => a.username === activeUsername);
-                if (refreshedAcc) {
-                  await invoke('switch_account', { username: activeAcc.username });
-                  setActiveAccount({
-                    username: refreshedAcc.username,
-                    isLoggedIn: true,
-                    uuid: refreshedAcc.uuid
-                  });
-                  return;
-                }
-              }
-            } catch (refreshError) {
-              console.error('Failed to refresh token:', refreshError);
-              // Remove invalid account
-              await invoke('remove_saved_account', { username: activeAcc.username });
-              showNotification(`Session expired for ${activeAcc.username}. Please login again.`, 'warning');
-
-              // Update accounts list
-              const updatedData = await invoke('get_saved_accounts');
-              const updatedAccounts = (updatedData.accounts || []).map(a => ({
-                username: a.username,
-                isLoggedIn: a.is_microsoft,
-                uuid: a.uuid
-              }));
-              setAccounts(updatedAccounts);
-
-              if (updatedAccounts.length === 0) {
-                setShowLoginPrompt(true);
-                setActiveAccount({ username: 'Player', isLoggedIn: false, uuid: null });
-              } else {
-                // Switch to first available account
-                const firstAcc = updatedData.accounts[0];
-                await invoke('switch_account', { username: firstAcc.username });
-                setActiveAccount({
-                  username: firstAcc.username,
-                  isLoggedIn: firstAcc.is_microsoft,
-                  uuid: firstAcc.uuid
-                });
-              }
-              return;
-            }
-          }
-        }
-
-        // Switch to active account in backend
-        await invoke('switch_account', { username: activeAcc.username });
-        setActiveAccount({
+        const initialAccountState = {
           username: activeAcc.username,
           isLoggedIn: activeAcc.is_microsoft,
           uuid: activeAcc.uuid
-        });
-        await loadSkinForAccount(activeAcc.is_microsoft, activeAcc.uuid);
+        };
+        
+        setActiveAccount(initialAccountState);
+
+        // ASYNC VALIDATION: Don't await this to avoid blocking app startup
+        const validateAccountAsync = async () => {
+          if (activeAcc.is_microsoft) {
+            try {
+              const isValid = await invoke('validate_account', { accessToken: activeAcc.access_token });
+
+              if (!isValid) {
+                // Try to refresh the token
+                try {
+                  const refreshed = await invoke('refresh_account', { username: activeAcc.username });
+                  if (refreshed) {
+                    // Reload accounts after refresh
+                    const refreshedData = await invoke('get_saved_accounts');
+                    const refreshedAcc = refreshedData.accounts.find(a => a.username === activeUsername);
+                    if (refreshedAcc) {
+                      await invoke('switch_account', { username: activeAcc.username });
+                      setActiveAccount({
+                        username: refreshedAcc.username,
+                        isLoggedIn: true,
+                        uuid: refreshedAcc.uuid
+                      });
+                      loadSkinForAccount(true, refreshedAcc.uuid);
+                      return;
+                    }
+                  }
+                } catch (refreshError) {
+                  console.error('Failed to refresh token:', refreshError);
+                  // Remove invalid account
+                  await invoke('remove_saved_account', { username: activeAcc.username });
+                  showNotification(`Session expired for ${activeAcc.username}. Please login again.`, 'warning');
+
+                  // Update accounts list
+                  const updatedData = await invoke('get_saved_accounts');
+                  const updatedAccounts = (updatedData.accounts || []).map(a => ({
+                    username: a.username,
+                    isLoggedIn: a.is_microsoft,
+                    uuid: a.uuid
+                  }));
+                  setAccounts(updatedAccounts);
+
+                  if (updatedAccounts.length === 0) {
+                    setShowLoginPrompt(true);
+                    setActiveAccount({ username: 'Player', isLoggedIn: false, uuid: null });
+                  } else {
+                    // Switch to first available account
+                    const firstAcc = updatedData.accounts[0];
+                    await invoke('switch_account', { username: firstAcc.username });
+                    setActiveAccount({
+                      username: firstAcc.username,
+                      isLoggedIn: firstAcc.is_microsoft,
+                      uuid: firstAcc.uuid
+                    });
+                  }
+                  return;
+                }
+              }
+            } catch (err) {
+              devLog('Silent account validation failed:', err);
+            }
+          }
+          
+          // Switch to active account in backend if not already done
+          await invoke('switch_account', { username: activeAcc.username });
+          // Fetch skin in background
+          loadSkinForAccount(activeAcc.is_microsoft, activeAcc.uuid);
+        };
+
+        validateAccountAsync();
       }
     } catch (error) {
-      console.error('Failed to load accounts:', error);
+      devError('Failed to load accounts:', error);
       setShowLoginPrompt(true);
       setActiveAccount({ username: 'Player', isLoggedIn: false, uuid: null });
     }
-  }, [loadSkinForAccount]);
+  }, [loadSkinForAccount, showNotification]);
+
+  const initializationRef = useRef(false);
 
   useEffect(() => {
     const initializeApp = async () => {
+      // Strictly prevent double-init
+      if (initializationRef.current) return;
+      initializationRef.current = true;
+      
       try {
-        await Promise.all([
-          loadInstances(),
-          loadAccounts(),
-          loadRunningInstances(),
-          loadLauncherSettings()
+        const syncStart = performance.now();
+        bootstrapOffset = await invoke('get_bootstrap_time');
+        offsetSynced = true;
+        const syncTime = (performance.now() - syncStart).toFixed(1);
+      } catch (e) {
+        bootstrapOffset = 0;
+        offsetSynced = true;
+      }
+
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Initialization timed out')), 15000)
+      );
+
+      try {
+        await Promise.race([
+          Promise.all([
+            loadInstances(),
+            loadAccounts(),
+            loadRunningInstances(),
+            loadLauncherSettings()
+          ]),
+          timeoutPromise
         ]);
         // Short delay to ensure state updates and transitions are smooth
-        setTimeout(() => setIsInitializing(false), 800);
+        setTimeout(() => setIsInitializing(false), 500);
       } catch (error) {
-        console.error('Initialization failed:', error);
+        devError(`[DEBUG] [${getElapsed()}] CRITICAL: Initialization halted:`, error);
         setIsInitializing(false);
       }
     };
@@ -303,28 +378,38 @@ function App() {
 
     // Listen for download progress events
     const unlistenProgress = listen('download-progress', (event) => {
-      const { stage, percentage, total_bytes, downloaded_bytes, current, total } = event.payload;
-      const displayPercentage = Number(percentage).toFixed(1);
+      const payload = event.payload;
+      if (!payload) {
+        console.warn('Received empty payload for download-progress');
+        return;
+      }
 
-      setLogs(prev => [...prev.slice(-499), {
+      // Check for both percentage and progress (Tauri 2 event payloads vary)
+      const stage = payload.stage || 'Launching...';
+      const percentage = typeof payload.percentage === 'number' ? payload.percentage : 
+                        (typeof payload.progress === 'number' ? payload.progress : 0);
+      
+      // Update logs for visible history
+      setLogs(prev => [...prev.slice(-199), {
         id: Date.now() + Math.random(),
         level: 'info',
-        message: `[Download] ${stage} (${displayPercentage}%)`,
+        message: `[Launch] ${stage} (${percentage.toFixed(1)}%)`,
         timestamp: new Date().toISOString()
       }]);
+
       setLoadingStatus(stage);
       setLoadingProgress(percentage);
       
-      if (total_bytes !== undefined && downloaded_bytes !== undefined) {
-        setLoadingBytes({ current: downloaded_bytes || 0, total: total_bytes || 0 });
-      } else {
-        setLoadingBytes({ current: 0, total: 0 });
+      const total_bytes = payload.total_bytes;
+      const downloaded_bytes = payload.downloaded_bytes;
+      if (typeof total_bytes === 'number' && typeof downloaded_bytes === 'number') {
+        setLoadingBytes({ current: downloaded_bytes, total: total_bytes });
       }
 
-      if (current !== undefined && total !== undefined && total > 0) {
+      const current = payload.current;
+      const total = payload.total;
+      if (typeof current === 'number' && typeof total === 'number' && total > 0) {
         setLoadingCount({ current, total });
-      } else {
-        setLoadingCount({ current: 0, total: 0 });
       }
     });
 
@@ -386,110 +471,16 @@ function App() {
     return () => document.removeEventListener('click', handleClick);
   }, []);
 
-  const handleInstanceContextMenu = (e, instance) => {
+  const handleInstanceContextMenu = useCallback((e, instance) => {
     e.preventDefault();
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
       instance,
     });
-  };
+  }, []);
 
-  const handleContextMenuAction = async (action, data) => {
-    const instance = contextMenu?.instance;
-    setContextMenu(null);
-
-    switch (action) {
-      case 'play':
-        if (instance) handleLaunchInstance(instance.id);
-        break;
-      case 'edit':
-        if (instance) handleEditInstance(instance.id);
-        break;
-      case 'delete':
-        if (instance) handleDeleteInstance(instance.id);
-        break;
-      case 'create':
-        setActiveTab('create');
-        break;
-      case 'openFolder':
-        if (instance) {
-          try {
-            await invoke('open_instance_folder', { instanceId: instance.id, folderType: 'root' });
-          } catch (error) {
-            console.error('Failed to open folder:', error);
-          }
-        }
-        break;
-      case 'clone':
-        if (instance) {
-          handleCloneInstance(instance);
-        }
-        break;
-      case 'setColor':
-        if (instance && data) {
-          try {
-            const updated = { ...instance, color_accent: data };
-            await invoke('update_instance', { instance: updated });
-            await loadInstances();
-          } catch (error) {
-            console.error('Failed to set color:', error);
-          }
-        }
-        break;
-      // ----------
-      // Share (Export) action
-      // Description: Exports the instance as a .zip file for sharing with others
-      // ----------
-      case 'share':
-        if (instance) {
-          try {
-            const defaultName = `${instance.name.replace(/[^a-zA-Z0-9]/g, '_')}.zip`;
-            const savePath = await save({
-              defaultPath: defaultName,
-              filters: [{
-                name: 'Zip Archive',
-                extensions: ['zip']
-              }]
-            });
-
-            if (savePath) {
-              setIsLoading(true);
-              setLoadingStatus(`Exporting ${instance.name}...`);
-              await invoke('export_instance_zip', {
-                instanceId: instance.id,
-                destinationPath: savePath
-              });
-              showNotification(`Exported "${instance.name}" successfully!`, 'success');
-            }
-          } catch (error) {
-            showNotification(`Failed to export instance: ${error}`, 'error');
-          } finally {
-            setIsLoading(false);
-            setLoadingStatus('');
-            setLoadingProgress(0);
-            setLoadingCount({ current: 0, total: 0 });
-          }
-        }
-        break;
-      case 'shareCode':
-        if (instance) {
-          try {
-            const code = await invoke('get_instance_share_code', { instanceId: instance.id });
-            await navigator.clipboard.writeText(code);
-            showNotification(
-              'Share code copied! Note: Only Modrinth-sourced files are included.',
-              'success'
-            );
-          } catch (error) {
-            showNotification(`Failed to generate share code: ${error}`, 'error');
-          }
-        }
-        break;
-    }
-  };
-
-  const handleCloneInstance = async (instance) => {
+  const handleCloneInstance = useCallback(async (instance) => {
     const newName = `${instance.name} (Copy)`;
     setIsLoading(true);
     setLoadingStatus('Cloning instance...');
@@ -506,14 +497,9 @@ function App() {
       setLoadingCount({ current: 0, total: 0 });
       setLoadingBytes({ current: 0, total: 0 });
     }
-  };
+  }, [loadInstances, showNotification]);
 
-  const showNotification = (message, type = 'info') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 5000);
-  };
-
-  const handleCreateInstance = async (name, versionId, modLoader = 'vanilla', modLoaderVersion = null, javaVersion = null) => {
+  const handleCreateInstance = useCallback(async (name, versionId, modLoader = 'vanilla', modLoaderVersion = null, javaVersion = null) => {
     setIsLoading(true);
     setLoadingProgress(0);
     setLoadingCount({ current: 0, total: 0 });
@@ -842,19 +828,22 @@ function App() {
       setLoadingCount({ current: 0, total: 0 });
       setLoadingBytes({ current: 0, total: 0 });
     }
-  };
+  }, [loadInstances, showNotification]);
 
-  const performDeleteInstance = async (instanceId) => {
+  const performDeleteInstance = useCallback(async (instanceId) => {
+    setDeletingInstanceId(instanceId);
     try {
       await invoke('delete_instance', { instanceId });
       await loadInstances();
       showNotification('Instance deleted', 'success');
     } catch (error) {
       showNotification(`Failed to delete instance: ${error}`, 'error');
+    } finally {
+      setDeletingInstanceId(null);
     }
-  };
+  }, [loadInstances, showNotification]);
 
-  const handleDeleteInstance = (instanceId) => {
+  const handleDeleteInstance = useCallback((instanceId) => {
     const instance = instances.find(i => i.id === instanceId);
     setConfirmModal({
       title: 'Delete Instance',
@@ -868,14 +857,20 @@ function App() {
       },
       onCancel: () => setConfirmModal(null)
     });
-  };
+  }, [instances, performDeleteInstance]);
 
-  const handleLaunchInstance = async (instanceId) => {
-    if (runningInstances.includes(instanceId)) {
+  const handleLaunchInstance = useCallback(async (instanceId) => {
+    if (runningInstances[instanceId]) {
       showNotification("Instance is already running", "info");
       return;
     }
     setIsLoading(true);
+    setLoadingStatus('Starting launch sequence...');
+    setLoadingProgress(5);
+    
+    // Give React a frame to render the overlay before the backend starts heavy preparation
+    await new Promise(resolve => setTimeout(resolve, 50));
+
     try {
       // Clear old logs first so the console doesn't show them
       try {
@@ -887,6 +882,9 @@ function App() {
       const result = await invoke('launch_instance', { instanceId });
       showNotification(result, 'success');
       loadRunningInstances(); // Update running instances immediately
+      
+      // Keep the 100% state visible for a moment before closing overlay
+      await new Promise(resolve => setTimeout(resolve, 800));
     } catch (error) {
       showNotification(`Failed to launch: ${error}`, 'error');
     } finally {
@@ -896,9 +894,9 @@ function App() {
       setLoadingCount({ current: 0, total: 0 });
       setLoadingBytes({ current: 0, total: 0 });
     }
-  };
+  }, [runningInstances, showNotification, loadRunningInstances]);
 
-  const handleStopInstance = async (instanceId) => {
+  const handleStopInstance = useCallback(async (instanceId) => {
     try {
       const result = await invoke('kill_game', { instanceId });
       showNotification(result, 'success');
@@ -907,9 +905,9 @@ function App() {
     } catch (error) {
       showNotification(`Failed to stop: ${error}`, 'error');
     }
-  };
+  }, [showNotification, loadRunningInstances, loadInstances]);
 
-  const handleSetUsername = async (newUsername) => {
+  const handleSetUsername = useCallback(async (newUsername) => {
     try {
       await invoke('set_offline_user', { username: newUsername });
       const newAccount = { username: newUsername, isLoggedIn: false, uuid: null };
@@ -927,9 +925,9 @@ function App() {
     } catch (error) {
       showNotification(`Failed to set username: ${error}`, 'error');
     }
-  };
+  }, [showNotification]);
 
-  const handleLogin = async (newUsername) => {
+  const handleLogin = useCallback(async (newUsername) => {
     // Reload accounts from backend (already saved there)
     const savedData = await invoke('get_saved_accounts');
     const uiAccounts = savedData.accounts.map(a => ({
@@ -953,18 +951,18 @@ function App() {
     }
 
     showNotification(`Signed in as ${newUsername}`, 'success');
-  };
+  }, [loadSkinForAccount, showNotification]);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     setActiveAccount({ username: 'Player', isLoggedIn: false, uuid: null });
     setCurrentSkinUrl(null);
     if (activeTab === 'skins') {
       setActiveTab('instances');
     }
     showNotification('Signed out', 'success');
-  };
+  }, [activeTab, showNotification]);
 
-  const handleCloseWelcome = async () => {
+  const handleCloseWelcome = useCallback(async () => {
     if (welcomeDontShow && launcherSettings) {
       const updated = {
         ...launcherSettings,
@@ -974,17 +972,17 @@ function App() {
       setLauncherSettings(updated);
     }
     setShowWelcome(false);
-  };
+  }, [welcomeDontShow, launcherSettings]);
 
-  const handleOpenSupport = async () => {
+  const handleOpenSupport = useCallback(async () => {
     try {
       await open('https://palethea.com');
     } catch (error) {
       console.error('Failed to open support link:', error);
     }
-  };
+  }, []);
 
-  const handleSwitchAccount = async (account) => {
+  const handleSwitchAccount = useCallback(async (account) => {
     try {
       await invoke('switch_account', { username: account.username });
       setActiveAccount(account);
@@ -993,13 +991,13 @@ function App() {
     } catch (error) {
       showNotification(`Failed to switch account: ${error}`, 'error');
     }
-  };
+  }, [loadSkinForAccount, showNotification]);
 
-  const handleAddAccount = () => {
+  const handleAddAccount = useCallback(() => {
     setShowLoginPrompt(true);
-  };
+  }, []);
 
-  const handleRemoveAccount = async (username) => {
+  const handleRemoveAccount = useCallback(async (username) => {
     try {
       await invoke('remove_saved_account', { username });
       const updatedData = await invoke('get_saved_accounts');
@@ -1024,41 +1022,9 @@ function App() {
     } catch (error) {
       showNotification(`Failed to remove account: ${error}`, 'error');
     }
-  };
+  }, [activeAccount, showNotification]);
 
-  const handleEditInstanceChoice = async (mode, dontAskAgain) => {
-    const { instanceId } = showEditChoiceModal;
-    setShowEditChoiceModal(null);
-
-    if (dontAskAgain) {
-      const updated = {
-        ...launcherSettings,
-        edit_mode_preference: mode
-      };
-      await invoke('save_settings', { newSettings: updated });
-      loadLauncherSettings();
-    }
-
-    if (mode === 'pop-out') {
-      handleOpenPopoutEditor(instanceId);
-    } else {
-      setEditingInstanceId(instanceId);
-    }
-  };
-
-  const handleEditInstance = (instanceId) => {
-    const preference = launcherSettings?.edit_mode_preference || 'ask';
-
-    if (preference === 'ask') {
-      setShowEditChoiceModal({ instanceId });
-    } else if (preference === 'pop-out') {
-      handleOpenPopoutEditor(instanceId);
-    } else {
-      setEditingInstanceId(instanceId);
-    }
-  };
-
-  const handleOpenPopoutEditor = async (instanceId) => {
+  const handleOpenPopoutEditor = useCallback(async (instanceId) => {
     const windowLabel = `editor-${instanceId}`;
     
     // Check if already open
@@ -1078,7 +1044,7 @@ function App() {
         height: 700,
         minWidth: 800,
         minHeight: 600,
-        decorations: true,
+        decorations: false,
         transparent: false,
         visible: false, // Start hidden to prevent white flash
       });
@@ -1095,34 +1061,162 @@ function App() {
       console.error('Failed to create window:', error);
       showNotification('Failed to open pop-out editor', 'error');
     }
-  };
+  }, [openEditors, instances, loadInstances, showNotification]);
 
-  const handleCloseEditor = () => {
+  const handleEditInstanceChoice = useCallback(async (mode, dontAskAgain) => {
+    const { instanceId } = showEditChoiceModal;
+    setShowEditChoiceModal(null);
+
+    if (dontAskAgain) {
+      const updated = {
+        ...launcherSettings,
+        edit_mode_preference: mode
+      };
+      await invoke('save_settings', { newSettings: updated });
+      loadLauncherSettings();
+    }
+
+    if (mode === 'pop-out') {
+      handleOpenPopoutEditor(instanceId);
+    } else {
+      setEditingInstanceId(instanceId);
+    }
+  }, [showEditChoiceModal, launcherSettings, loadLauncherSettings, handleOpenPopoutEditor]);
+
+  const handleEditInstance = useCallback((instanceId) => {
+    const preference = launcherSettings?.edit_mode_preference || 'ask';
+
+    if (preference === 'ask') {
+      setShowEditChoiceModal({ instanceId });
+    } else if (preference === 'pop-out') {
+      handleOpenPopoutEditor(instanceId);
+    } else {
+      setEditingInstanceId(instanceId);
+    }
+  }, [launcherSettings, handleOpenPopoutEditor]);
+
+  const handleContextMenuAction = useCallback(async (action, data) => {
+    const instance = contextMenu?.instance;
+    setContextMenu(null);
+
+    switch (action) {
+      case 'play':
+        if (instance) handleLaunchInstance(instance.id);
+        break;
+      case 'edit':
+        if (instance) handleEditInstance(instance.id);
+        break;
+      case 'delete':
+        if (instance) handleDeleteInstance(instance.id);
+        break;
+      case 'create':
+        setActiveTab('create');
+        break;
+      case 'openFolder':
+        if (instance) {
+          try {
+            await invoke('open_instance_folder', { instanceId: instance.id, folderType: 'root' });
+          } catch (error) {
+            console.error('Failed to open folder:', error);
+          }
+        }
+        break;
+      case 'clone':
+        if (instance) {
+          handleCloneInstance(instance);
+        }
+        break;
+      case 'setColor':
+        if (instance && data) {
+          try {
+            const updated = { ...instance, color_accent: data };
+            await invoke('update_instance', { instance: updated });
+            await loadInstances();
+          } catch (error) {
+            console.error('Failed to set color:', error);
+          }
+        }
+        break;
+      // ----------
+      // Share (Export) action
+      // Description: Exports the instance as a .zip file for sharing with others
+      // ----------
+      case 'share':
+        if (instance) {
+          try {
+            const defaultName = `${instance.name.replace(/[^a-zA-Z0-9]/g, '_')}.zip`;
+            const savePath = await save({
+              defaultPath: defaultName,
+              filters: [{
+                name: 'Zip Archive',
+                extensions: ['zip']
+              }]
+            });
+
+            if (savePath) {
+              setIsLoading(true);
+              setLoadingStatus(`Exporting ${instance.name}...`);
+              await invoke('export_instance_zip', {
+                instanceId: instance.id,
+                destinationPath: savePath
+              });
+              showNotification(`Exported "${instance.name}" successfully!`, 'success');
+            }
+          } catch (error) {
+            showNotification(`Failed to export instance: ${error}`, 'error');
+          } finally {
+            setIsLoading(false);
+            setLoadingStatus('');
+            setLoadingProgress(0);
+            setLoadingCount({ current: 0, total: 0 });
+          }
+        }
+        break;
+      case 'shareCode':
+        if (instance) {
+          try {
+            const code = await invoke('get_instance_share_code', { instanceId: instance.id });
+            await navigator.clipboard.writeText(code);
+            showNotification(
+              'Share code copied! Note: Only Modrinth-sourced files are included.',
+              'success'
+            );
+          } catch (error) {
+            showNotification(`Failed to generate share code: ${error}`, 'error');
+          }
+        }
+        break;
+    }
+  }, [contextMenu, handleLaunchInstance, handleEditInstance, handleDeleteInstance, handleCloneInstance, loadInstances, showNotification]);
+
+  const handleCloseEditor = useCallback(() => {
     setEditingInstanceId(null);
     loadInstances();
-  };
+  }, [loadInstances]);
 
   const renderContent = () => {
     if (editingInstanceId) {
       return (
-        <InstanceEditor
-          instanceId={editingInstanceId}
-          onClose={handleCloseEditor}
-          onPopout={() => {
-            const id = editingInstanceId;
-            handleCloseEditor();
-            handleOpenPopoutEditor(id);
-          }}
-          onUpdate={loadInstances}
-          onLaunch={handleLaunchInstance}
-          onStop={handleStopInstance}
-          runningInstances={runningInstances}
-          onShowNotification={showNotification}
-          onDelete={(id) => {
-            performDeleteInstance(id);
-            setEditingInstanceId(null);
-          }}
-        />
+        <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+          <InstanceEditor
+            instanceId={editingInstanceId}
+            onClose={handleCloseEditor}
+            onPopout={() => {
+              const id = editingInstanceId;
+              handleCloseEditor();
+              handleOpenPopoutEditor(id);
+            }}
+            onUpdate={loadInstances}
+            onLaunch={handleLaunchInstance}
+            onStop={handleStopInstance}
+            runningInstances={runningInstances}
+            onShowNotification={showNotification}
+            onDelete={(id) => {
+              performDeleteInstance(id);
+              setEditingInstanceId(null);
+            }}
+          />
+        </Suspense>
       );
     }
 
@@ -1139,59 +1233,88 @@ function App() {
             onContextMenu={handleInstanceContextMenu}
             isLoading={isLoading}
             runningInstances={runningInstances}
+            deletingInstanceId={deletingInstanceId}
             openEditors={openEditors}
+            launcherSettings={launcherSettings}
           />
         );
       case 'create':
         return (
-          <CreateInstance
-            onClose={() => setActiveTab('instances')}
-            onCreate={handleCreateInstance}
-            isLoading={isLoading}
-            mode="page"
-          />
+          <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+            <CreateInstance
+              onClose={() => setActiveTab('instances')}
+              onCreate={handleCreateInstance}
+              isLoading={isLoading}
+              mode="page"
+            />
+          </Suspense>
         );
       case 'settings':
         return (
-          <Settings
-            username={activeAccount?.username || 'Player'}
-            onSetUsername={handleSetUsername}
-            isLoggedIn={activeAccount?.isLoggedIn || false}
-            onLogin={handleLogin}
-            onLogout={handleLogout}
-            launcherSettings={launcherSettings}
-            onSettingsUpdated={loadLauncherSettings}
-          />
+          <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+            <Settings
+              username={activeAccount?.username || 'Player'}
+              onSetUsername={handleSetUsername}
+              isLoggedIn={activeAccount?.isLoggedIn || false}
+              onLogin={handleLogin}
+              onLogout={handleLogout}
+              launcherSettings={launcherSettings}
+              onSettingsUpdated={loadLauncherSettings}
+            />
+          </Suspense>
+        );
+      case 'appearance':
+        return (
+          <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+            <Appearance
+              launcherSettings={launcherSettings}
+              onSettingsUpdated={loadLauncherSettings}
+            />
+          </Suspense>
         );
       case 'stats':
-        return <Stats />;
+        return (
+          <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+            <Stats />
+          </Suspense>
+        );
       case 'skins':
         return (
-          <SkinManager
-            activeAccount={activeAccount}
-            showNotification={showNotification}
-            onSkinChange={(url) => {
-              setSkinRefreshKey(Date.now());
-              setCurrentSkinUrl(url || null);
-              if (activeAccount?.uuid) {
-                // Update the skin cache so dropdown shows new head immediately
-                if (url) {
-                  setSkinCache(prev => ({ ...prev, [activeAccount.uuid]: url }));
-                  if (url.startsWith('http')) {
-                    localStorage.setItem(`skin_${activeAccount.uuid}`, url);
+          <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+            <SkinManager
+              activeAccount={activeAccount}
+              showNotification={showNotification}
+              onSkinChange={(url) => {
+                setSkinRefreshKey(Date.now());
+                setCurrentSkinUrl(url || null);
+                if (activeAccount?.uuid) {
+                  // Update the skin cache so dropdown shows new head immediately
+                  if (url) {
+                    setSkinCache(prev => ({ ...prev, [activeAccount.uuid]: url }));
+                    if (url.startsWith('http')) {
+                      localStorage.setItem(`skin_${activeAccount.uuid}`, url);
+                    }
+                  } else {
+                    localStorage.removeItem(`skin_${activeAccount.uuid}`);
                   }
-                } else {
-                  localStorage.removeItem(`skin_${activeAccount.uuid}`);
                 }
-              }
-            }}
-            onPreviewChange={setCurrentSkinUrl}
-          />
+              }}
+              onPreviewChange={setCurrentSkinUrl}
+            />
+          </Suspense>
         );
       case 'updates':
-        return <Updates />;
+        return (
+          <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+            <Updates />
+          </Suspense>
+        );
       case 'console':
-        return <Console logs={logs} setLogs={setLogs} />;
+        return (
+          <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+            <Console logs={logs} setLogs={setLogs} />
+          </Suspense>
+        );
       default:
         return null;
     }
@@ -1200,32 +1323,42 @@ function App() {
   if (popoutMode === 'editor' && popoutInstanceId) {
     return (
       <div className={`app popout-window bg-${launcherSettings?.background_style || 'gradient'}`} style={{ height: '100vh', width: '100vw' }}>
-        <main className="main-content" style={{ padding: 0 }}>
-          <InstanceEditor
-            instanceId={popoutInstanceId}
-            isPopout={true}
-            onClose={async () => {
-              console.log('Closing pop-out window...');
-              try {
+        <TitleBar 
+          activeTab={activeTab} 
+          onTabChange={setActiveTab}
+          isPopout={true}
+          launcherSettings={launcherSettings}
+        />
+        <div className="app-main-layout">
+          <main className="main-content" style={{ padding: 0 }}>
+          <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+            <InstanceEditor
+              instanceId={popoutInstanceId}
+              isPopout={true}
+              onClose={async () => {
+                devLog('Closing pop-out window...');
+                try {
+                  const { getCurrentWindow } = await import('@tauri-apps/api/window');
+                  await getCurrentWindow().close();
+                } catch (e) {
+                  devError('Failed to close window:', e);
+                  window.close(); // Fallback
+                }
+              }}
+              onUpdate={loadInstances}
+              onLaunch={handleLaunchInstance}
+              onStop={handleStopInstance}
+              runningInstances={runningInstances}
+              onShowNotification={showNotification}
+              onDelete={async (id) => {
+                await performDeleteInstance(id);
                 const { getCurrentWindow } = await import('@tauri-apps/api/window');
-                await getCurrentWindow().close();
-              } catch (e) {
-                console.error('Failed to close window:', e);
-                window.close(); // Fallback
-              }
-            }}
-            onUpdate={loadInstances}
-            onLaunch={handleLaunchInstance}
-            onStop={handleStopInstance}
-            runningInstances={runningInstances}
-            onShowNotification={showNotification}
-            onDelete={async (id) => {
-              await performDeleteInstance(id);
-              const { getCurrentWindow } = await import('@tauri-apps/api/window');
-              getCurrentWindow().close();
-            }}
-          />
+                getCurrentWindow().close();
+              }}
+            />
+          </Suspense>
         </main>
+        </div>
         
         {notification && (
           <div className={`notification notification-${notification.type}`}>
@@ -1247,8 +1380,17 @@ function App() {
 
   return (
     <div className={`app bg-${launcherSettings?.background_style || 'gradient'}`}>
-      <Sidebar
-        activeTab={activeTab}
+      <TitleBar 
+        activeTab={activeTab} 
+        onTabChange={setActiveTab}
+        launcherSettings={launcherSettings}
+        runningInstances={runningInstances}
+        instances={instances}
+        onStopInstance={handleStopInstance}
+      />
+      <div className="app-main-layout">
+        <Sidebar
+          activeTab={activeTab}
         onTabChange={(tab) => {
           setEditingInstanceId(null);
           setActiveTab(tab);
@@ -1274,6 +1416,7 @@ function App() {
       <main className="main-content">
         {renderContent()}
       </main>
+      </div>
 
       {showWelcome && (
         <div className="welcome-overlay" onClick={handleCloseWelcome}>
@@ -1292,7 +1435,7 @@ function App() {
                   <span className="feature-dot"></span>
                   <div className="feature-content">
                     <strong>Organize Your Library</strong>
-                    <p>Right-click any instance to assign unique color accents or update logos for a personalized collection view.</p>
+                    <p>Assign unique color accents to your instances for a personalized collection view.</p>
                   </div>
                 </div>
                 <div className="welcome-feature-item">
@@ -1424,6 +1567,7 @@ function App() {
 
       {isInitializing && (
         <div className="app-initializing">
+          {/* <img src="/logoPL.png" className="init-logo" alt="Palethea" /> */}
           <div className="init-spinner-container">
             <div className="init-spinner"></div>
             <span className="init-text">{popoutMode ? 'Loading Editor' : 'Initializing Launcher'}</span>

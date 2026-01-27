@@ -1,7 +1,7 @@
-import { useEffect, useState, useMemo } from 'react';
-import { Clock, Plus, Box, LayoutGrid, List } from 'lucide-react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { Clock, Plus, Box, LayoutGrid, List, ChevronDown, Check } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { join } from '@tauri-apps/api/path';
+import { sep } from '@tauri-apps/api/path';
 import './InstanceList.css';
 
 function InstanceList({ 
@@ -13,31 +13,51 @@ function InstanceList({
   onCreate, 
   onContextMenu, 
   isLoading, 
-  runningInstances = [], 
-  openEditors = [] 
+  runningInstances = {}, 
+  deletingInstanceId = null,
+  openEditors = [],
+  launcherSettings = null
 }) {
   const [logoMap, setLogoMap] = useState({});
   const [sortBy, setSortBy] = useState(localStorage.getItem('instance_sort') || 'name');
   const [viewMode, setViewMode] = useState(localStorage.getItem('instance_view_mode') || 'list');
   const [scrolled, setScrolled] = useState(false);
+  const [isSortOpen, setIsSortOpen] = useState(false);
+  const sortRef = useRef(null);
 
-  const handleScroll = (e) => {
+  const handleScroll = useCallback((e) => {
     setScrolled(e.target.scrollTop > 20);
-  };
+  }, []);
+
+  // Close sorting dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (sortRef.current && !sortRef.current.contains(event.target)) {
+        setIsSortOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const sortedInstances = useMemo(() => {
     return [...instances].sort((a, b) => {
       switch (sortBy) {
         case 'name':
           return a.name.localeCompare(b.name);
-        case 'color':
+        case 'color': {
           // Sort by hex value, treating undefined as bottom
           const colorA = a.color_accent || '#zzzzzz';
           const colorB = b.color_accent || '#zzzzzz';
           return colorA.localeCompare(colorB);
-        case 'age':
+        }
+        case 'age': {
           // created_at is timestamp string
-          return parseInt(b.created_at) - parseInt(a.created_at);
+          const ageA = parseInt(a.created_at || '0');
+          const ageB = parseInt(b.created_at || '0');
+          return ageB - ageA;
+        }
         case 'playtime':
           return (b.playtime_seconds || 0) - (a.playtime_seconds || 0);
         default:
@@ -50,7 +70,8 @@ function InstanceList({
   const logoKey = useMemo(() => {
     return instances.map(i => `${i.id}:${i.logo_filename || 'default'}`).join(',');
   }, [instances]);
-  const formatDate = (timestamp) => {
+
+  const formatDate = useCallback((timestamp) => {
     if (!timestamp) return 'Never';
     const date = new Date(parseInt(timestamp) * 1000);
     return date.toLocaleDateString('en-US', {
@@ -58,9 +79,9 @@ function InstanceList({
       day: 'numeric',
       year: 'numeric',
     });
-  };
+  }, []);
 
-  const formatPlaytime = (seconds) => {
+  const formatPlaytime = useCallback((seconds) => {
     if (!seconds || seconds === 0) return null;
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
@@ -68,15 +89,31 @@ function InstanceList({
       return `${hours}h ${minutes}m`;
     }
     return `${minutes}m`;
-  };
+  }, []);
 
-  const handleContainerContextMenu = (e) => {
+  const handleContainerContextMenu = useCallback((e) => {
     // Right-click on empty area
     if (e.target.classList.contains('instance-list') || e.target.classList.contains('instances-grid')) {
       e.preventDefault();
       onContextMenu(e, null);
     }
-  };
+  }, [onContextMenu]);
+
+  const handleSortChange = useCallback((e) => {
+    const val = e.target.value;
+    setSortBy(val);
+    localStorage.setItem('instance_sort', val);
+  }, []);
+
+  const switchToListView = useCallback(() => {
+    setViewMode('list');
+    localStorage.setItem('instance_view_mode', 'list');
+  }, []);
+
+  const switchToGridView = useCallback(() => {
+    setViewMode('grid');
+    localStorage.setItem('instance_view_mode', 'grid');
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,14 +124,18 @@ function InstanceList({
           setLogoMap({});
           return;
         }
+        
+        // Optimize: Get base path and separator once to avoid N IPC calls
         const baseDir = await invoke('get_data_directory');
-        const entries = await Promise.all(
-          instances.map(async (instance) => {
-            const filename = instance.logo_filename || 'minecraft_logo.png';
-            const logoPath = await join(baseDir, 'instance_logos', filename);
-            return [instance.id, convertFileSrc(logoPath)];
-          })
-        );
+        const s = await sep();
+        const logosDir = `${baseDir}${s}instance_logos`;
+        
+        const entries = instances.map((instance) => {
+          const filename = instance.logo_filename || 'minecraft_logo.png';
+          const logoPath = `${logosDir}${s}${filename}`;
+          return [instance.id, convertFileSrc(logoPath)];
+        });
+
         if (!cancelled) {
           setLogoMap(Object.fromEntries(entries));
         }
@@ -119,38 +160,79 @@ function InstanceList({
           <h1>Instances</h1>
           <div className="header-actions">
             <div className="sort-controls">
-              <span className="sort-label">Sort by:</span>
-              <select
-                value={sortBy}
-                onChange={(e) => {
-                  setSortBy(e.target.value);
-                  localStorage.setItem('instance_sort', e.target.value);
-                }}
-                className="sort-select"
-              >
-                <option value="name">Name</option>
-                <option value="color">Color</option>
-                <option value="age">Creation Date</option>
-                <option value="playtime">Playtime</option>
-              </select>
+              <span className="p-dropdown-label">Sort by:</span>
+              <div className="p-dropdown" ref={sortRef}>
+                <button 
+                  className={`p-dropdown-trigger ${isSortOpen ? 'active' : ''}`}
+                  style={{ minWidth: '120px' }}
+                  onClick={() => setIsSortOpen(!isSortOpen)}
+                >
+                  <span className="trigger-label">
+                    {sortBy === 'name' && 'Name'}
+                    {sortBy === 'color' && 'Color'}
+                    {sortBy === 'age' && 'Creation Date'}
+                    {sortBy === 'playtime' && 'Playtime'}
+                  </span>
+                  <ChevronDown size={14} className={`trigger-icon ${isSortOpen ? 'flip' : ''}`} />
+                </button>
+
+                {isSortOpen && (
+                  <div className="p-dropdown-menu">
+                    <div 
+                      className={`p-dropdown-item ${sortBy === 'name' ? 'selected' : ''}`}
+                      onClick={() => {
+                        handleSortChange({ target: { value: 'name' } });
+                        setIsSortOpen(false);
+                      }}
+                    >
+                      <span className="item-label">Name</span>
+                      {sortBy === 'name' && <Check size={14} className="selected-icon" />}
+                    </div>
+                    <div 
+                      className={`p-dropdown-item ${sortBy === 'color' ? 'selected' : ''}`}
+                      onClick={() => {
+                        handleSortChange({ target: { value: 'color' } });
+                        setIsSortOpen(false);
+                      }}
+                    >
+                      <span className="item-label">Color</span>
+                      {sortBy === 'color' && <Check size={14} className="selected-icon" />}
+                    </div>
+                    <div 
+                      className={`p-dropdown-item ${sortBy === 'age' ? 'selected' : ''}`}
+                      onClick={() => {
+                        handleSortChange({ target: { value: 'age' } });
+                        setIsSortOpen(false);
+                      }}
+                    >
+                      <span className="item-label">Creation Date</span>
+                      {sortBy === 'age' && <Check size={14} className="selected-icon" />}
+                    </div>
+                    <div 
+                      className={`p-dropdown-item ${sortBy === 'playtime' ? 'selected' : ''}`}
+                      onClick={() => {
+                        handleSortChange({ target: { value: 'playtime' } });
+                        setIsSortOpen(false);
+                      }}
+                    >
+                      <span className="item-label">Playtime</span>
+                      {sortBy === 'playtime' && <Check size={14} className="selected-icon" />}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <div className="view-controls">
                 <button
                   className={`view-btn ${viewMode === 'list' ? 'active' : ''}`}
-                  onClick={() => {
-                    setViewMode('list');
-                    localStorage.setItem('instance_view_mode', 'list');
-                  }}
+                  onClick={switchToListView}
                   title="List View"
                 >
                   <List size={18} />
                 </button>
                 <button
                   className={`view-btn ${viewMode === 'grid' ? 'active' : ''}`}
-                  onClick={() => {
-                    setViewMode('grid');
-                    localStorage.setItem('instance_view_mode', 'grid');
-                  }}
+                  onClick={switchToGridView}
                   title="Grid View"
                 >
                   <LayoutGrid size={18} />
@@ -186,18 +268,28 @@ function InstanceList({
           </div>
         </div>
       ) : (
-        <div className={`instances-grid ${viewMode}`}>
+        <div className={`instances-grid ${viewMode} ${launcherSettings?.enable_instance_animations === false ? 'no-animations' : ''}`}>
           {sortedInstances.map((instance) => (
             <div
               key={instance.id}
-              className="instance-card"
-              style={instance.color_accent ? { borderLeft: `4px solid ${instance.color_accent}` } : {}}
+              className={`instance-card ${instance.id === deletingInstanceId ? 'deleting' : ''}`}
+              style={{
+                '--instance-accent': instance.color_accent || 'var(--accent)',
+                borderLeftWidth: instance.color_accent ? '4px' : '2px',
+                borderLeftColor: instance.color_accent || 'var(--border)'
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 onContextMenu(e, instance);
               }}
             >
+              {instance.id === deletingInstanceId && (
+                <div className="deleting-overlay">
+                  <div className="deleting-spinner" />
+                  <span className="deleting-text">Removing...</span>
+                </div>
+              )}
               <div className="instance-logo-wrapper">
                 <div className="instance-logo">
                   {logoMap[instance.id] ? (
@@ -252,7 +344,7 @@ function InstanceList({
                 </div>
               </div>
               <div className="instance-actions">
-                {runningInstances.includes(instance.id) ? (
+                {runningInstances[instance.id] ? (
                   <button
                     className="btn btn-danger"
                     onClick={() => onStop(instance.id)}

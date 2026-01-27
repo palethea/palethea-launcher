@@ -4,6 +4,7 @@ import './ContextMenu.css';
 function ContextMenu({ x, y, instance, onAction }) {
   const menuRef = useRef(null);
   const [pos, setPos] = useState({ x, y });
+  const [isReady, setIsReady] = useState(false);
 
   useLayoutEffect(() => {
     if (menuRef.current) {
@@ -31,6 +32,7 @@ function ContextMenu({ x, y, instance, onAction }) {
       if (adjustedY < 8) adjustedY = 8;
 
       setPos({ x: adjustedX, y: adjustedY });
+      setIsReady(true);
     }
   }, [x, y]);
 
@@ -38,7 +40,7 @@ function ContextMenu({ x, y, instance, onAction }) {
     <div 
       ref={menuRef}
       className="context-menu"
-      style={{ left: pos.x, top: pos.y, visibility: menuRef.current ? 'visible' : 'hidden' }}
+      style={{ left: pos.x, top: pos.y, visibility: isReady ? 'visible' : 'hidden' }}
       onClick={(e) => e.stopPropagation()}
     >
       {instance ? (

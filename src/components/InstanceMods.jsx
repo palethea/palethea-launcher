@@ -1,13 +1,31 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Trash2, RefreshCcw, Plus, Upload, Copy, Code, Loader2 } from 'lucide-react';
+import { Trash2, RefreshCcw, Plus, Upload, Copy, Code, Loader2, ChevronDown, Check, Filter } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
 
+const MOD_CATEGORIES = [
+  { id: 'all', label: 'All Categories' },
+  { id: 'optimization', label: 'Optimization' },
+  { id: 'utility', label: 'Utility' },
+  { id: 'technology', label: 'Technology' },
+  { id: 'magic', label: 'Magic' },
+  { id: 'adventure', label: 'Adventure' },
+  { id: 'equipment', label: 'Equipment' },
+  { id: 'storage', label: 'Storage' },
+  { id: 'decoration', label: 'Decoration' },
+  { id: 'library', label: 'Library' },
+  { id: 'worldgen', label: 'Worldgen' },
+  { id: 'food', label: 'Food' },
+];
+
 function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled }) {
   const [activeSubTab, setActiveSubTab] = useState('installed');
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [isCategoryOpen, setIsCategoryOpen] = useState(false);
+  const categoryRef = useRef(null);
   const [installedSearchQuery, setInstalledSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [popularMods, setPopularMods] = useState([]);
@@ -30,6 +48,18 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
   const installedSearchRef = useRef(null);
   const findSearchRef = useRef(null);
 
+  // Close category dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (categoryRef.current && !categoryRef.current.contains(event.target)) {
+        setIsCategoryOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   // Pagination states
   const [popularOffset, setPopularOffset] = useState(0);
   const [searchOffset, setSearchOffset] = useState(0);
@@ -38,70 +68,18 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
   const [loadingMore, setLoadingMore] = useState(false);
   const observer = useRef();
 
-  const lastElementRef = useCallback(node => {
-    if (loadingMore || searching || loadingPopular) return;
-    if (observer.current) observer.current.disconnect();
-    
-    observer.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting) {
-        const isSearch = searchQuery.trim().length > 0;
-        if (isSearch && hasMoreSearch) {
-          loadMoreSearch();
-        } else if (!isSearch && hasMorePopular) {
-          loadMorePopular();
-        }
-      }
-    });
-    
-    if (node) observer.current.observe(node);
-  }, [loadingMore, searching, loadingPopular, hasMoreSearch, hasMorePopular, searchQuery]);
-
   useEffect(() => {
-    loadInstalledMods();
-    loadPopularMods();
-  }, [instance.id]);
-
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        e.preventDefault();
-        if (activeSubTab === 'installed') {
-          installedSearchRef.current?.focus();
-        } else if (activeSubTab === 'find') {
-          findSearchRef.current?.focus();
-        }
+    if (activeSubTab === 'find') {
+      if (searchQuery.trim() === '' && selectedCategory === 'all') {
+        loadPopularMods();
+      } else {
+        handleSearch();
       }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeSubTab]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCategory]);
 
-  // Check if a mod is installed and return the mod object
-  const getInstalledMod = (project) => {
-    const projectId = project.project_id || project.id || project.slug;
-
-    // First check by project_id
-    const byId = installedMods.find(m => m.project_id === projectId);
-    if (byId) return byId;
-
-    // Fallback to filename matching
-    const normalizedSlug = project.slug.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const normalizedTitle = (project.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-
-    return installedMods.find(m => {
-      const normalizedFilename = (m.filename || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const normalizedName = (m.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      return normalizedFilename.includes(normalizedSlug) ||
-        normalizedName.includes(normalizedSlug) ||
-        (normalizedTitle && (normalizedFilename.includes(normalizedTitle) || normalizedName.includes(normalizedTitle)));
-    });
-  };
-
-  const isModInstalled = (project) => {
-    return !!getInstalledMod(project);
-  };
-
-  const loadInstalledMods = async () => {
+  const loadInstalledMods = useCallback(async () => {
     try {
       const mods = await invoke('get_instance_mods', { instanceId: instance.id });
       setInstalledMods(mods);
@@ -109,9 +87,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
       console.error('Failed to load mods:', error);
     }
     setLoading(false);
-  };
+  }, [instance.id]);
 
-  const loadPopularMods = async () => {
+  const loadPopularMods = useCallback(async () => {
     setLoadingPopular(true);
     setPopularOffset(0);
     setHasMorePopular(true);
@@ -122,6 +100,7 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         projectType: 'mod',
         gameVersion: instance.version_id,
         loader: instance.mod_loader?.toLowerCase() !== 'vanilla' ? instance.mod_loader?.toLowerCase() : null,
+        category: selectedCategory !== 'all' ? selectedCategory : null,
         limit: 20,
         offset: 0
       });
@@ -133,9 +112,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
       setPopularError(error.toString());
     }
     setLoadingPopular(false);
-  };
+  }, [instance.version_id, instance.mod_loader, selectedCategory]);
 
-  const loadMorePopular = async () => {
+  const loadMorePopular = useCallback(async () => {
     if (loadingMore || !hasMorePopular) return;
     setLoadingMore(true);
     try {
@@ -144,6 +123,7 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         projectType: 'mod',
         gameVersion: instance.version_id,
         loader: instance.mod_loader?.toLowerCase() !== 'vanilla' ? instance.mod_loader?.toLowerCase() : null,
+        category: selectedCategory !== 'all' ? selectedCategory : null,
         limit: 20,
         offset: popularOffset
       });
@@ -155,10 +135,10 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
       console.error('Failed to load more popular mods:', error);
     }
     setLoadingMore(false);
-  };
+  }, [loadingMore, hasMorePopular, instance.version_id, instance.mod_loader, popularOffset, selectedCategory]);
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) {
+  const handleSearch = useCallback(async () => {
+    if (!searchQuery.trim() && selectedCategory === 'all') {
       setSearchResults([]);
       setSearchOffset(0);
       setHasMoreSearch(false);
@@ -176,6 +156,7 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         projectType: 'mod',
         gameVersion: instance.version_id,
         loader: instance.mod_loader?.toLowerCase() !== 'vanilla' ? instance.mod_loader?.toLowerCase() : null,
+        category: selectedCategory !== 'all' ? selectedCategory : null,
         limit: 20,
         offset: 0
       });
@@ -187,9 +168,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
       setSearchError(error.toString());
     }
     setSearching(false);
-  };
+  }, [searchQuery, instance.version_id, instance.mod_loader, selectedCategory]);
 
-  const loadMoreSearch = async () => {
+  const loadMoreSearch = useCallback(async () => {
     if (loadingMore || !hasMoreSearch) return;
     setLoadingMore(true);
     try {
@@ -198,6 +179,7 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         projectType: 'mod',
         gameVersion: instance.version_id,
         loader: instance.mod_loader?.toLowerCase() !== 'vanilla' ? instance.mod_loader?.toLowerCase() : null,
+        category: selectedCategory !== 'all' ? selectedCategory : null,
         limit: 20,
         offset: searchOffset
       });
@@ -209,20 +191,79 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
       console.error('Failed to load more results:', error);
     }
     setLoadingMore(false);
-  };
+  }, [loadingMore, hasMoreSearch, searchQuery, instance.version_id, instance.mod_loader, searchOffset, selectedCategory]);
 
-  const handleRequestInstall = async (project, updateMod = null) => {
-    setVersionModal({ show: true, project, updateMod: updateMod });
-  };
+  const lastElementRef = useCallback(node => {
+    if (loadingMore || searching || loadingPopular) return;
+    if (observer.current) observer.current.disconnect();
+    
+    observer.current = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting) {
+        const isSearch = searchQuery.trim().length > 0;
+        if (isSearch && hasMoreSearch) {
+          loadMoreSearch();
+        } else if (!isSearch && hasMorePopular) {
+          loadMorePopular();
+        }
+      }
+    });
+    
+    if (node) observer.current.observe(node);
+  }, [loadingMore, searching, loadingPopular, hasMoreSearch, hasMorePopular, searchQuery, loadMoreSearch, loadMorePopular]);
 
-  const handleInstall = async (project, selectedVersion = null, skipDependencyCheck = false, updateMod = null) => {
+  useEffect(() => {
+    loadInstalledMods();
+    loadPopularMods();
+  }, [loadInstalledMods, loadPopularMods]);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        if (activeSubTab === 'installed') {
+          installedSearchRef.current?.focus();
+        } else if (activeSubTab === 'find') {
+          findSearchRef.current?.focus();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeSubTab]);
+
+  // Check if a mod is installed and return the mod object
+  const getInstalledMod = useCallback((project) => {
+    const projectId = project.project_id || project.id || project.slug;
+
+    // First check by project_id
+    const byId = installedMods.find(m => m.project_id === projectId);
+    if (byId) return byId;
+
+    // Fallback to filename matching
+    const normalizedSlug = project.slug.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normalizedTitle = (project.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    return installedMods.find(modItem => {
+      const normalizedFilename = (modItem.filename || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const normalizedName = (modItem.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      return normalizedFilename.includes(normalizedSlug) ||
+        normalizedName.includes(normalizedSlug) ||
+        (normalizedTitle && (normalizedFilename.includes(normalizedTitle) || normalizedName.includes(normalizedTitle)));
+    });
+  }, [installedMods]);
+
+  const isModInstalled = useCallback((project) => {
+    return !!getInstalledMod(project);
+  }, [getInstalledMod]);
+
+  const handleInstall = useCallback(async (project, selectedVersionMatch = null, skipDependencyCheck = false, updateMod = null) => {
     setInstalling(project.slug);
     if (updateMod) {
       setUpdatingMods(prev => [...prev, updateMod.project_id || updateMod.filename]);
     }
 
     try {
-      let version = selectedVersion;
+      let version = selectedVersionMatch;
 
       if (!version) {
         const versions = await invoke('get_modrinth_versions', {
@@ -325,9 +366,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         setUpdatingMods(prev => prev.filter(f => f !== (updateMod.project_id || updateMod.filename)));
       }
     }
-  };
+  }, [instance.id, instance.version_id, instance.mod_loader, isModInstalled, loadInstalledMods, onShowConfirm]);
 
-  const handleToggle = async (mod) => {
+  const handleToggle = useCallback(async (mod) => {
     try {
       await invoke('toggle_instance_mod', {
         instanceId: instance.id,
@@ -337,13 +378,18 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
     } catch (error) {
       console.error('Failed to toggle mod:', error);
     }
-  };
+  }, [instance.id, loadInstalledMods]);
 
-  const handleDelete = async (mod) => {
+  const handleRequestInstall = useCallback(async (project, updateMod = null) => {
+    setVersionModal({ show: true, project, updateMod: updateMod });
+  }, []);
+
+  const handleDelete = useCallback(async (mod) => {
+    setDeleteConfirm({ show: false, mod }); // Close if open
     setDeleteConfirm({ show: true, mod });
-  };
+  }, []);
 
-  const handleImportFile = async () => {
+  const handleImportFile = useCallback(async () => {
     try {
       const selected = await open({
         multiple: true,
@@ -372,9 +418,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         onShowNotification('Failed to import mods: ' + error, 'error');
       }
     }
-  };
+  }, [instance.id, loadInstalledMods, onShowNotification]);
 
-  const handleCheckUpdate = (mod) => {
+  const handleCheckUpdate = useCallback((mod) => {
     if (!mod.project_id) return;
     setVersionModal({ 
       show: true, 
@@ -382,9 +428,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
       updateMod: mod,
       project: { title: mod.name, icon_url: mod.icon_url, slug: mod.project_id } 
     });
-  };
+  }, []);
 
-  const handleCopyModsCode = async () => {
+  const handleCopyModsCode = useCallback(async () => {
     try {
       const code = await invoke('get_instance_mods_share_code', { instanceId: instance.id });
       await navigator.clipboard.writeText(code);
@@ -397,9 +443,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         onShowNotification(`Failed to copy mods code: ${error}`, 'error');
       }
     }
-  };
+  }, [instance.id, onShowNotification]);
 
-  const handleApplyCode = async () => {
+  const handleApplyCode = useCallback(async () => {
     if (!shareCodeInput.trim()) return;
 
     setApplyingCode(true);
@@ -498,8 +544,6 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
       }
 
       setApplyProgress(100);
-      setApplyStatus('Installation complete!');
-
       if (onShowNotification) {
         onShowNotification(`Successfully installed ${installedCount} mods!`, 'success');
       }
@@ -521,9 +565,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
     setApplyingCode(false);
     setApplyProgress(0);
     setApplyStatus('');
-  };
+  }, [shareCodeInput, instance.id, instance.version_id, instance.mod_loader, installedMods, onShowNotification, loadInstalledMods]);
 
-  const handleOpenFolder = async () => {
+  const handleOpenFolder = useCallback(async () => {
     try {
       await invoke('open_instance_folder', {
         instanceId: instance.id,
@@ -535,9 +579,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         onShowNotification(`Failed to open mods folder: ${error}`, 'error');
       }
     }
-  };
+  }, [instance.id, onShowNotification]);
 
-  const handleOpenConfigFolder = async () => {
+  const handleOpenConfigFolder = useCallback(async () => {
     try {
       await invoke('open_instance_folder', {
         instanceId: instance.id,
@@ -549,9 +593,9 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         onShowNotification(`Failed to open config folder: ${error}`, 'error');
       }
     }
-  };
+  }, [instance.id, onShowNotification]);
 
-  const confirmDelete = async () => {
+  const confirmDelete = useCallback(async () => {
     const mod = deleteConfirm.mod;
     setDeleteConfirm({ show: false, mod: null });
 
@@ -564,41 +608,52 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
     } catch (error) {
       console.error('Failed to delete mod:', error);
     }
-  };
+  }, [instance.id, deleteConfirm.mod, loadInstalledMods]);
 
-  const formatDownloads = (num) => {
+  const formatDownloads = useCallback((num) => {
     if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
     if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
     return num.toString();
-  };
+  }, []);
 
-  const formatFileSize = (bytes) => {
+  const formatFileSize = useCallback((bytes) => {
     if (!bytes || bytes === 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+  }, []);
 
-  const filteredInstalledMods = installedMods.filter(m => {
-    if (!installedSearchQuery.trim()) return true;
-    const query = installedSearchQuery.toLowerCase();
-    return (m.name || '').toLowerCase().includes(query) || 
-           (m.filename || '').toLowerCase().includes(query);
-  });
-
-  const modrinthMods = filteredInstalledMods.filter(m => m.provider === 'Modrinth').sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename));
-  const manualMods = filteredInstalledMods.filter(m => m.provider !== 'Modrinth').sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename));
-
-  const getLoaderBadges = (categories) => {
+  const getLoaderBadges = useCallback((categories) => {
     if (!categories) return [];
-    const loaders = [];
-    if (categories.includes('fabric')) loaders.push('Fabric');
-    if (categories.includes('forge')) loaders.push('Forge');
-    if (categories.includes('neoforge')) loaders.push('NeoForge');
-    if (categories.includes('quilt')) loaders.push('Quilt');
-    return loaders;
-  };
+    const loadersList = [];
+    if (categories.includes('fabric')) loadersList.push('Fabric');
+    if (categories.includes('forge')) loadersList.push('Forge');
+    if (categories.includes('neoforge')) loadersList.push('NeoForge');
+    if (categories.includes('quilt')) loadersList.push('Quilt');
+    return loadersList;
+  }, []);
+
+  const filteredInstalledMods = useMemo(() => {
+    return installedMods.filter(m => {
+      if (!installedSearchQuery.trim()) return true;
+      const query = installedSearchQuery.toLowerCase();
+      return (m.name || '').toLowerCase().includes(query) || 
+             (m.filename || '').toLowerCase().includes(query);
+    });
+  }, [installedMods, installedSearchQuery]);
+
+  const modrinthMods = useMemo(() => {
+    return filteredInstalledMods
+      .filter(m => m.provider === 'Modrinth')
+      .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename));
+  }, [filteredInstalledMods]);
+
+  const manualMods = useMemo(() => {
+    return filteredInstalledMods
+      .filter(m => m.provider !== 'Modrinth')
+      .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename));
+  }, [filteredInstalledMods]);
 
   if (instance.mod_loader === 'Vanilla' || !instance.mod_loader) {
     return (
@@ -810,26 +865,59 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
         </div>
       ) : (
         <div className="find-mods-section">
-          <div className="search-input-wrapper">
-            <input
-              ref={findSearchRef}
-              type="text"
-              placeholder="Search Modrinth for mods..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-            />
-            <button
-              className="search-btn"
-              onClick={handleSearch}
-              disabled={searching}
-            >
-              {searching ? 'Searching...' : 'Search'}
-            </button>
+          <div className="find-mods-controls" style={{ display: 'flex', gap: '12px', marginBottom: '20px' }}>
+            <div className="p-dropdown" ref={categoryRef} style={{ flexShrink: 0 }}>
+              <button 
+                className={`p-dropdown-trigger ${isCategoryOpen ? 'active' : ''}`}
+                onClick={() => setIsCategoryOpen(!isCategoryOpen)}
+                style={{ height: '42px', width: '180px' }}
+              >
+                <div className="p-dropdown-label" style={{ margin: 0, opacity: 1, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Filter size={14} style={{ opacity: 0.6 }} />
+                  <span>{MOD_CATEGORIES.find(c => c.id === selectedCategory)?.label}</span>
+                </div>
+                <ChevronDown size={16} className={`trigger-icon ${isCategoryOpen ? 'flip' : ''}`} />
+              </button>
+              {isCategoryOpen && (
+                <div className="p-dropdown-menu">
+                  {MOD_CATEGORIES.map(category => (
+                    <div
+                      key={category.id}
+                      className={`p-dropdown-item ${selectedCategory === category.id ? 'selected' : ''}`}
+                      onClick={() => {
+                        setSelectedCategory(category.id);
+                        setIsCategoryOpen(false);
+                      }}
+                    >
+                      <span>{category.label}</span>
+                      {selectedCategory === category.id && <Check size={14} className="selected-icon" />}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            <div className="search-input-wrapper" style={{ flex: 1, marginBottom: 0 }}>
+              <input
+                ref={findSearchRef}
+                type="text"
+                placeholder="Search Modrinth for mods..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+              />
+              <button
+                className="search-btn"
+                onClick={handleSearch}
+                disabled={searching}
+              >
+                {searching ? 'Searching...' : 'Search'}
+              </button>
+            </div>
           </div>
 
           <h3 className="section-title">
-            {searchQuery.trim() ? 'Search Results' : 'Popular Mods'}
+            {searchQuery.trim() || selectedCategory !== 'all' ? 'Search Results' : 'Popular Mods'}
           </h3>
 
           {(searching || loadingPopular) ? (
@@ -936,11 +1024,11 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
           gameVersion={instance.version_id}
           loader={instance.mod_loader}
           onClose={() => setVersionModal({ show: false, project: null, projectId: null, updateMod: null })}
-          onSelect={(version) => {
-            const updateMod = versionModal.updateMod;
-            const project = versionModal.project;
+          onSelect={(selectedV) => {
+            const updateModItem = versionModal.updateMod;
+            const projectItem = versionModal.project;
             setVersionModal({ show: false, project: null, projectId: null, updateMod: null });
-            handleInstall(project, version, false, updateMod);
+            handleInstall(projectItem, selectedV, false, updateModItem);
           }}
         />
       )}
@@ -1019,4 +1107,4 @@ function InstanceMods({ instance, onShowConfirm, onShowNotification, isScrolled 
   );
 }
 
-export default InstanceMods;
+export default memo(InstanceMods);

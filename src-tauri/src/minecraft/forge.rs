@@ -98,7 +98,9 @@ pub async fn install_forge(
     }
     
     // Run installer in client mode
-    log::info!("Running Forge installer: {} --installClient {}", installer_path.display(), minecraft_dir.display());
+    let forge_cmd_str = format!("\"{}\" -jar \"{}\" --installClient \"{}\"", java_path.display(), installer_path.display(), minecraft_dir.display());
+    println!("\n[DEBUG] Running Forge installer:\n{}\n", forge_cmd_str);
+    log::info!("Running Forge installer: {}", forge_cmd_str);
     
     // Some older Forge installers use different arguments or require a different display mode
     // but --installClient is standard for modern ones. 
@@ -263,7 +265,9 @@ pub async fn install_neoforge(
     }
     
     // Run installer in client mode
-    log::info!("Running NeoForge installer: {} --installClient {}", installer_path.display(), minecraft_dir.display());
+    let neoforge_cmd_str = format!("\"{}\" -jar \"{}\" --installClient \"{}\"", java_path.display(), installer_path.display(), minecraft_dir.display());
+    println!("\n[DEBUG] Running NeoForge installer:\n{}\n", neoforge_cmd_str);
+    log::info!("Running NeoForge installer: {}", neoforge_cmd_str);
     
     let mut neoforge_cmd = Command::new(&java_path);
     neoforge_cmd.args(&[

@@ -44,47 +44,32 @@
 
 .sort-label {
   font-size: 13px;
-  color: var(--muted);
-}
-
-.sort-select {
-  background: var(--surface-hover);
-  border: 1px solid var(--border);
-  color: var(--foreground);
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 13px;
-  cursor: pointer;
-  outline: none;
-  transition: all 0.1s ease;
-}
-
-.sort-select:hover {
-  border-color: var(--muted);
+  color: var(--text-secondary);
+  opacity: 0.6;
 }
 
 .view-controls {
   display: flex;
   background: var(--surface-hover);
   border: 1px solid var(--border);
-  padding: 3px;
-  border-radius: 6px;
-  gap: 2px;
+  padding: 4px;
+  border-radius: 8px;
+  gap: 4px;
 }
 
 .view-btn {
   background: transparent;
   border: none;
-  color: var(--muted);
-  width: 28px;
-  height: 28px;
+  color: var(--text-secondary);
+  width: 32px;
+  height: 32px;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  border-radius: 4px;
-  transition: all 0.1s ease;
+  border-radius: 6px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .view-btn:hover {
@@ -95,7 +80,16 @@
 .view-btn.active {
   background: var(--surface);
   color: var(--accent);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.view-btn svg {
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+}
+
+.view-btn.active svg {
+  opacity: 1;
 }
 
 .empty-state {
@@ -188,13 +182,53 @@
   gap: 16px;
 }
 
+@property --border-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
 .instance-card {
   position: relative;
   display: flex;
   background: var(--surface);
   border: 2px solid var(--border);
   border-radius: 16px;
-  transition: all 0.15s ease;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  z-index: 1;
+}
+
+.instance-card::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 18px;
+  padding: 3px;
+  background: conic-gradient(
+    from var(--border-angle),
+    var(--instance-accent),
+    transparent 25%,
+    var(--instance-accent) 50%,
+    transparent 75%,
+    var(--instance-accent)
+  );
+  -webkit-mask: 
+     linear-gradient(#fff 0 0) content-box, 
+     linear-gradient(#fff 0 0);
+  mask: 
+     linear-gradient(#fff 0 0) content-box, 
+     linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+@keyframes rotate-gradient {
+  to { --border-angle: 360deg; }
 }
 
 .instances-grid.list .instance-card {
@@ -211,7 +245,26 @@
 }
 
 .instance-card:hover {
-  border-color: var(--accent);
+  transform: translateY(-4px);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+  border-color: transparent !important;
+  border-width: 2px !important;
+  overflow: visible;
+}
+
+.instance-card:hover::before {
+  opacity: 1;
+  animation: rotate-gradient 3s linear infinite;
+}
+
+/* Disable hover animations if requested */
+.instances-grid.no-animations .instance-card:hover::before {
+  animation: none;
+  opacity: 0;
+}
+
+.instances-grid.no-animations .instance-card:hover {
+  border-color: var(--instance-accent) !important;
 }
 
 .instance-logo-wrapper {
@@ -523,3 +576,58 @@
 .instance-loader-badge.neoforge, .instance-loader-badge.neo-forge, .loader-inline.neoforge, .loader-inline.neo-forge { color: #f7a233; border-color: rgba(247, 162, 51, 0.3); }
 .instance-loader-badge.vanilla, .loader-inline.vanilla { color: #888; border-color: rgba(136, 136, 136, 0.3); }
 .instance-loader-badge.liteloader, .loader-inline.liteloader { color: #3ea0f2; border-color: rgba(62, 160, 242, 0.3); }
+
+/* Deletion State */
+.instance-card.deleting {
+  pointer-events: none;
+}
+
+.instance-card.deleting > :not(.deleting-overlay) {
+  filter: blur(6px) grayscale(0.4);
+  opacity: 0.5;
+}
+
+.deleting-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.25);
+  z-index: 50;
+  border-radius: 14px;
+  gap: 12px;
+  animation: fadeInOverlay 0.2s ease;
+}
+
+.deleting-text {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+  letter-spacing: 0.02em;
+}
+
+.deleting-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spinOverlay 0.8s linear infinite;
+  box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+}
+
+@keyframes spinOverlay {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeInOverlay {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

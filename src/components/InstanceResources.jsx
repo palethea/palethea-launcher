@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Trash2, RefreshCcw, Plus, Upload, Loader2 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -30,66 +30,7 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const observer = useRef();
 
-  const lastElementRef = useCallback(node => {
-    if (loadingMore || searching || loadingPopular) return;
-    if (observer.current) observer.current.disconnect();
-    
-    observer.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting) {
-        const isSearch = searchQuery.trim().length > 0;
-        if (isSearch && hasMoreSearch) {
-          loadMoreSearch();
-        } else if (!isSearch && hasMorePopular) {
-          loadMorePopular();
-        }
-      }
-    });
-    
-    if (node) observer.current.observe(node);
-  }, [loadingMore, searching, loadingPopular, hasMoreSearch, hasMorePopular, searchQuery]);
-
-  useEffect(() => {
-    loadResources();
-  }, [instance.id]);
-
-  useEffect(() => {
-    if (activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders') {
-      loadPopularItems();
-    }
-  }, [activeSubTab, instance.version_id]);
-
-  const getInstalledItem = (project) => {
-    const isResourcePack = activeSubTab === 'find-resourcepacks';
-    const installedList = isResourcePack ? resourcePacks : shaderPacks;
-
-    if (!installedList || installedList.length === 0) return null;
-
-    const projectId = project.project_id || project.id;
-
-    // First check by project_id
-    if (projectId) {
-      const byId = installedList.find(m => m.project_id === projectId);
-      if (byId) return byId;
-    }
-
-    // Normalize: remove all non-alphanumeric characters and lowercase
-    const searchTitle = (project.title || project.name || '').toLowerCase().trim();
-    const searchSlug = (project.slug || '').toLowerCase().trim();
-
-    return installedList.find(item => {
-      const itemTitle = (item.name || '').toLowerCase().trim();
-      const itemFilename = (item.filename || '').toLowerCase().trim();
-
-      return (searchTitle && (itemTitle === searchTitle || itemFilename.includes(searchTitle))) ||
-             (searchSlug && (itemFilename.includes(searchSlug) || itemTitle.includes(searchSlug)));
-    });
-  };
-
-  const isItemInstalled = (project) => {
-    return !!getInstalledItem(project);
-  };
-
-  const loadResources = async () => {
+  const loadResources = useCallback(async () => {
     setError(null);
     try {
       const [rp, sp] = await Promise.all([
@@ -105,9 +46,9 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
       setShaderPacks([]);
     }
     setLoading(false);
-  };
+  }, [instance.id]);
 
-  const loadPopularItems = async () => {
+  const loadPopularItems = useCallback(async () => {
     const projectType = activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
     setLoadingPopular(true);
     setSearchResults([]);
@@ -135,9 +76,9 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
       setPopularItems([]);
     }
     setLoadingPopular(false);
-  };
+  }, [activeSubTab, instance.version_id]);
 
-  const loadMorePopular = async () => {
+  const loadMorePopular = useCallback(async () => {
     if (loadingMore || !hasMorePopular) return;
     const projectType = activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
     setLoadingMore(true);
@@ -151,16 +92,102 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
         offset: popularOffset
       });
       const newHits = results.hits || [];
-      setPopularItems(prev => [...prev, ...newHits]);
-      setPopularOffset(prev => prev + newHits.length);
+      if (newHits.length > 0) {
+        setPopularItems(prev => [...prev, ...newHits]);
+        setPopularOffset(prev => prev + newHits.length);
+      }
       setHasMorePopular(newHits.length === 20 && (popularOffset + newHits.length) < results.total_hits);
-    } catch (error) {
-      console.error('Failed to load more popular items:', error);
+    } catch (err) {
+      console.error('Failed to load more popular items:', err);
     }
     setLoadingMore(false);
-  };
+  }, [loadingMore, hasMorePopular, activeSubTab, instance.version_id, popularOffset]);
 
-  const handleSearch = async () => {
+  const loadMoreSearch = useCallback(async () => {
+    if (loadingMore || !hasMoreSearch) return;
+    const projectType = activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
+    setLoadingMore(true);
+    try {
+      const results = await invoke('search_modrinth', {
+        query: searchQuery,
+        projectType: projectType,
+        gameVersion: instance.version_id,
+        loader: null,
+        limit: 20,
+        offset: searchOffset
+      });
+      const newHits = results.hits || [];
+      if (newHits.length > 0) {
+        setSearchResults(prev => [...prev, ...newHits]);
+        setSearchOffset(prev => prev + newHits.length);
+      }
+      setHasMoreSearch(newHits.length === 20 && (searchOffset + newHits.length) < results.total_hits);
+    } catch (err) {
+      console.error('Failed to load more search results:', err);
+    }
+    setLoadingMore(false);
+  }, [loadingMore, hasMoreSearch, activeSubTab, searchQuery, instance.version_id, searchOffset]);
+
+  const lastElementRef = useCallback(node => {
+    if (loadingMore || searching || loadingPopular) return;
+    if (observer.current) observer.current.disconnect();
+    
+    observer.current = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting) {
+        const isSearch = searchQuery.trim().length > 0;
+        if (isSearch && hasMoreSearch) {
+          loadMoreSearch();
+        } else if (!isSearch && hasMorePopular) {
+          loadMorePopular();
+        }
+      }
+    });
+    
+    if (node) observer.current.observe(node);
+  }, [loadingMore, searching, loadingPopular, hasMoreSearch, hasMorePopular, searchQuery, loadMoreSearch, loadMorePopular]);
+
+  useEffect(() => {
+    loadResources();
+  }, [instance.id, loadResources]);
+
+  useEffect(() => {
+    if (activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders') {
+      loadPopularItems();
+    }
+  }, [activeSubTab, instance.version_id, loadPopularItems]);
+
+  const getInstalledItem = useCallback((project) => {
+    const isResourcePack = activeSubTab === 'find-resourcepacks';
+    const installedList = isResourcePack ? resourcePacks : shaderPacks;
+
+    if (!installedList || installedList.length === 0) return null;
+
+    const projectId = project.project_id || project.id;
+
+    // First check by project_id
+    if (projectId) {
+      const byId = installedList.find(m => m.project_id === projectId);
+      if (byId) return byId;
+    }
+
+    // Normalize: remove all non-alphanumeric characters and lowercase
+    const searchTitle = (project.title || project.name || '').toLowerCase().trim();
+    const searchSlug = (project.slug || '').toLowerCase().trim();
+
+    return installedList.find(item => {
+      const itemTitle = (item.name || '').toLowerCase().trim();
+      const itemFilename = (item.filename || '').toLowerCase().trim();
+
+      return (searchTitle && (itemTitle === searchTitle || itemFilename.includes(searchTitle))) ||
+             (searchSlug && (itemFilename.includes(searchSlug) || itemTitle.includes(searchSlug)));
+    });
+  }, [activeSubTab, resourcePacks, shaderPacks]);
+
+  const isItemInstalled = useCallback((project) => {
+    return !!getInstalledItem(project);
+  }, [getInstalledItem]);
+
+  const handleSearch = useCallback(async () => {
     if (!searchQuery.trim()) {
       setSearchResults([]);
       setSearchOffset(0);
@@ -188,36 +215,13 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
       console.error('Failed to search:', error);
     }
     setSearching(false);
-  };
+  }, [searchQuery, activeSubTab, instance.version_id]);
 
-  const loadMoreSearch = async () => {
-    if (loadingMore || !hasMoreSearch) return;
-    const projectType = activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
-    setLoadingMore(true);
-    try {
-      const results = await invoke('search_modrinth', {
-        query: searchQuery,
-        projectType: projectType,
-        gameVersion: instance.version_id,
-        loader: null,
-        limit: 20,
-        offset: searchOffset
-      });
-      const newHits = results.hits || [];
-      setSearchResults(prev => [...prev, ...newHits]);
-      setSearchOffset(prev => prev + newHits.length);
-      setHasMoreSearch(newHits.length === 20 && (searchOffset + newHits.length) < results.total_hits);
-    } catch (error) {
-      console.error('Failed to load more results:', error);
-    }
-    setLoadingMore(false);
-  };
-
-  const handleRequestInstall = async (project, updateItem = null) => {
+  const handleRequestInstall = useCallback(async (project, updateItem = null) => {
     setVersionModal({ show: true, project, updateItem: updateItem });
-  };
+  }, []);
 
-  const handleInstall = async (project, selectedVersion = null, skipDependencyCheck = false, updateItem = null) => {
+  const handleInstall = useCallback(async (project, selectedVersion = null, skipDependencyCheck = false, updateItem = null) => {
     const fileType = activeSubTab === 'find-resourcepacks' || activeSubTab === 'resourcepacks' ? 'resourcepack' : 'shader';
     setInstalling(project.slug);
     if (updateItem) {
@@ -262,7 +266,9 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
 
       // If updating, delete the old file
       if (updateItem && updateItem.filename !== file.filename) {
-        console.log(`Deleting old file: ${updateItem.filename}`);
+        if (import.meta.env.DEV) {
+          invoke('log_event', { level: 'info', message: `Deleting old file: ${updateItem.filename}` }).catch(() => {});
+        }
         if (fileType === 'resourcepack') {
           await invoke('delete_instance_resourcepack', {
             instanceId: instance.id,
@@ -290,13 +296,13 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
     if (updateItem) {
       setUpdatingItems(prev => prev.filter(f => f !== updateItem.filename));
     }
-  };
+  }, [activeSubTab, instance.version_id, instance.id, loadResources, onShowNotification]);
 
-  const handleDelete = async (item, type) => {
+  const handleDelete = useCallback(async (item, type) => {
     setDeleteConfirm({ show: true, item, type });
-  };
+  }, []);
 
-  const confirmDelete = async () => {
+  const confirmDelete = useCallback(async () => {
     const { item, type } = deleteConfirm;
     setDeleteConfirm({ show: false, item: null, type: null });
 
@@ -316,15 +322,15 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
     } catch (error) {
       console.error('Failed to delete:', error);
     }
-  };
+  }, [deleteConfirm, instance.id, loadResources]);
 
-  const formatDownloads = (num) => {
+  const formatDownloads = useCallback((num) => {
     if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
     if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
     return num.toString();
-  };
+  }, []);
 
-  const handleImportFile = async (type) => {
+  const handleImportFile = useCallback(async (type) => {
     try {
       const selected = await open({
         multiple: true,
@@ -353,9 +359,9 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
         onShowNotification('Failed to import: ' + error, 'error');
       }
     }
-  };
+  }, [instance.id, loadResources, onShowNotification]);
 
-  const handleOpenResourcePacksFolder = async () => {
+  const handleOpenResourcePacksFolder = useCallback(async () => {
     try {
       await invoke('open_instance_folder', {
         instanceId: instance.id,
@@ -367,9 +373,9 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
         onShowNotification(`Failed to open resource packs folder: ${error}`, 'error');
       }
     }
-  };
+  }, [instance.id, onShowNotification]);
 
-  const handleOpenShadersFolder = async () => {
+  const handleOpenShadersFolder = useCallback(async () => {
     try {
       await invoke('open_instance_folder', {
         instanceId: instance.id,
@@ -381,9 +387,9 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
         onShowNotification(`Failed to open shader packs folder: ${error}`, 'error');
       }
     }
-  };
+  }, [instance.id, onShowNotification]);
 
-  const displayItems = searchQuery.trim() ? searchResults : popularItems;
+  const displayItems = useMemo(() => searchQuery.trim() ? searchResults : popularItems, [searchQuery, searchResults, popularItems]);
   const isFindTab = activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders';
 
   return (
@@ -786,4 +792,4 @@ function InstanceResources({ instance, onShowNotification, isScrolled }) {
   );
 }
 
-export default InstanceResources;
+export default memo(InstanceResources);

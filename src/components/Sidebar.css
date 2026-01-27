@@ -2,49 +2,7 @@
   width: 220px;
   display: flex;
   flex-direction: column;
-  height: 100vh;
-}
-
-.sidebar-header {
-  padding: 20px;
-  display: flex;
-  justify-content: center;
-}
-
-.logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  text-decoration: none;
-}
-
-.logo-text {
-  font-size: 30px;
-  font-weight: 600;
-  letter-spacing: -0.5px;
-  background: linear-gradient(
-    to right,
-    var(--accent) 0%,
-    var(--accent) 40%,
-    color-mix(in srgb, var(--accent), white 40%) 50%,
-    var(--accent) 60%,
-    var(--accent) 100%
-  );
-  background-size: 300% auto;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3)) drop-shadow(0 0 10px rgba(var(--accent-rgb), 0.3));
-  animation: shimmer 5s linear infinite;
-}
-
-@keyframes shimmer {
-  0% {
-    background-position: 150% 50%;
-  }
-  100% {
-    background-position: -150% 50%;
-  }
+  height: 100%;
 }
 
 .sidebar-nav {
@@ -84,6 +42,17 @@
   opacity: 0.5;
   cursor: not-allowed;
   filter: grayscale(1);
+}
+
+.nav-icon {
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+}
+
+.nav-item:hover .nav-icon,
+.nav-item.active .nav-icon {
+  opacity: 1;
 }
 
 .tab-info-trigger {
@@ -349,40 +318,4 @@
 
 .account-add:hover {
   background: var(--background);
-}
-
-.console-sidebar-btn {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 10px 14px;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  margin-bottom: 8px;
-}
-
-.console-sidebar-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--foreground);
-  border-color: rgba(255, 255, 255, 0.1);
-}
-
-.console-sidebar-btn.active {
-  background: rgba(var(--accent-rgb), 0.1);
-  color: var(--accent);
-  border-color: rgba(var(--accent-rgb), 0.2);
-}
-
-.console-sidebar-btn svg {
-  opacity: 0.7;
-}
-
-.console-sidebar-btn.active svg {
-  opacity: 1;
 }

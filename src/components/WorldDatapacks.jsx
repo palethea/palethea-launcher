@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Trash2, RefreshCcw, Plus, Upload, FolderOpen, Loader2 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -27,6 +27,123 @@ function WorldDatapacks({ instance, world, onShowNotification, onBack, isScrolle
     const [loadingMore, setLoadingMore] = useState(false);
     const observer = useRef();
 
+    const loadInstalledDatapacks = useCallback(async () => {
+        setLoading(true);
+        try {
+            const packs = await invoke('get_world_datapacks', {
+                instanceId: instance.id,
+                worldName: world.folder_name
+            });
+            setInstalledDatapacks(packs);
+        } catch (error) {
+            console.error('Failed to load datapacks:', error);
+            if (onShowNotification) {
+                onShowNotification('Failed to load datapacks: ' + error, 'error');
+            }
+        }
+        setLoading(false);
+    }, [instance.id, world.folder_name, onShowNotification]);
+
+    const loadPopularDatapacks = useCallback(async () => {
+        setLoadingPopular(true);
+        setPopularOffset(0);
+        setHasMorePopular(true);
+        try {
+            const results = await invoke('search_modrinth', {
+                query: '',
+                projectType: 'datapack',
+                gameVersion: instance.version_id,
+                loader: 'datapack',
+                limit: 20,
+                offset: 0
+            });
+            setPopularDatapacks(results.hits || []);
+            setHasMorePopular((results.hits?.length || 0) === 20 && results.total_hits > 20);
+            setPopularOffset(results.hits?.length || 0);
+        } catch (error) {
+            console.error('Failed to load popular datapacks:', error);
+        }
+        setLoadingPopular(false);
+    }, [instance.version_id]);
+
+    const loadMorePopular = useCallback(async () => {
+        if (loadingMore || !hasMorePopular) return;
+        setLoadingMore(true);
+        try {
+            const results = await invoke('search_modrinth', {
+                query: '',
+                projectType: 'datapack',
+                gameVersion: instance.version_id,
+                loader: 'datapack',
+                limit: 20,
+                offset: popularOffset
+            });
+            const newHits = results.hits || [];
+            if (newHits.length > 0) {
+              setPopularDatapacks(prev => [...prev, ...newHits]);
+              setPopularOffset(prev => prev + newHits.length);
+            }
+            setHasMorePopular(newHits.length === 20 && (popularOffset + newHits.length) < results.total_hits);
+        } catch (error) {
+            console.error('Failed to load more popular datapacks:', error);
+        }
+        setLoadingMore(false);
+    }, [loadingMore, hasMorePopular, instance.version_id, popularOffset]);
+
+    const handleSearch = useCallback(async () => {
+        if (!searchQuery.trim()) {
+            setSearchResults([]);
+            setSearchOffset(0);
+            setHasMoreSearch(false);
+            return;
+        }
+
+        setSearching(true);
+        setSearchOffset(0);
+        setHasMoreSearch(true);
+        try {
+            // Modrinth uses 'project_type:datapack'
+            const results = await invoke('search_modrinth', {
+                query: searchQuery,
+                projectType: 'datapack',
+                gameVersion: instance.version_id,
+                loader: 'datapack',
+                limit: 20,
+                offset: 0
+            });
+            setSearchResults(results.hits || []);
+            setHasMoreSearch((results.hits?.length || 0) === 20 && results.total_hits > 20);
+            setSearchOffset(results.hits?.length || 0);
+        } catch (error) {
+            console.error('Failed to search Modrinth for datapacks:', error);
+        }
+        setSearching(false);
+    }, [searchQuery, instance.version_id]);
+
+    const loadMoreSearch = useCallback(async () => {
+        if (loadingMore || !hasMoreSearch) return;
+        setLoadingMore(true);
+        try {
+            const results = await invoke('search_modrinth', {
+                query: searchQuery,
+                projectType: 'datapack',
+                gameVersion: instance.version_id,
+                loader: 'datapack',
+                limit: 20,
+                offset: searchOffset
+            });
+            const newHits = results.hits || [];
+            if (newHits.length > 0) {
+              setSearchResults(prev => [...prev, ...newHits]);
+              setSearchOffset(prev => prev + newHits.length);
+            }
+            setHasMoreSearch(newHits.length === 20 && (searchOffset + newHits.length) < results.total_hits);
+        } catch (error) {
+            console.error('Failed to load more results:', error);
+        }
+        setLoadingMore(false);
+    }, [loadingMore, hasMoreSearch, searchQuery, instance.version_id, searchOffset]);
+
     const lastElementRef = useCallback(node => {
         if (loadingMore || searching || loadingPopular) return;
         if (observer.current) observer.current.disconnect();
@@ -43,7 +160,7 @@ function WorldDatapacks({ instance, world, onShowNotification, onBack, isScrolle
         });
         
         if (node) observer.current.observe(node);
-    }, [loadingMore, searching, loadingPopular, hasMoreSearch, hasMorePopular, searchQuery]);
+    }, [loadingMore, searching, loadingPopular, hasMoreSearch, hasMorePopular, searchQuery, loadMoreSearch, loadMorePopular]);
 
     useEffect(() => {
         loadInstalledDatapacks();
@@ -78,124 +195,11 @@ function WorldDatapacks({ instance, world, onShowNotification, onBack, isScrolle
         return !!getInstalledItem(project);
     };
 
-    const loadInstalledDatapacks = async () => {
-        setLoading(true);
-        try {
-            const packs = await invoke('get_world_datapacks', {
-                instanceId: instance.id,
-                worldName: world.folder_name
-            });
-            setInstalledDatapacks(packs);
-        } catch (error) {
-            console.error('Failed to load datapacks:', error);
-            if (onShowNotification) {
-                onShowNotification('Failed to load datapacks: ' + error, 'error');
-            }
-        }
-        setLoading(false);
-    };
-
-    const loadPopularDatapacks = async () => {
-        setLoadingPopular(true);
-        setPopularOffset(0);
-        setHasMorePopular(true);
-        try {
-            const results = await invoke('search_modrinth', {
-                query: '',
-                projectType: 'datapack',
-                gameVersion: instance.version_id,
-                loader: 'datapack',
-                limit: 20,
-                offset: 0
-            });
-            setPopularDatapacks(results.hits || []);
-            setHasMorePopular((results.hits?.length || 0) === 20 && results.total_hits > 20);
-            setPopularOffset(results.hits?.length || 0);
-        } catch (error) {
-            console.error('Failed to load popular datapacks:', error);
-        }
-        setLoadingPopular(false);
-    };
-
-    const loadMorePopular = async () => {
-        if (loadingMore || !hasMorePopular) return;
-        setLoadingMore(true);
-        try {
-            const results = await invoke('search_modrinth', {
-                query: '',
-                projectType: 'datapack',
-                gameVersion: instance.version_id,
-                loader: 'datapack',
-                limit: 20,
-                offset: popularOffset
-            });
-            const newHits = results.hits || [];
-            setPopularDatapacks(prev => [...prev, ...newHits]);
-            setPopularOffset(prev => prev + newHits.length);
-            setHasMorePopular(newHits.length === 20 && (popularOffset + newHits.length) < results.total_hits);
-        } catch (error) {
-            console.error('Failed to load more popular datapacks:', error);
-        }
-        setLoadingMore(false);
-    };
-
-    const handleSearch = async () => {
-        if (!searchQuery.trim()) {
-            setSearchResults([]);
-            setSearchOffset(0);
-            setHasMoreSearch(false);
-            return;
-        }
-
-        setSearching(true);
-        setSearchOffset(0);
-        setHasMoreSearch(true);
-        try {
-            // Modrinth uses 'project_type:datapack'
-            const results = await invoke('search_modrinth', {
-                query: searchQuery,
-                projectType: 'datapack',
-                gameVersion: instance.version_id,
-                loader: 'datapack',
-                limit: 20,
-                offset: 0
-            });
-            setSearchResults(results.hits || []);
-            setHasMoreSearch((results.hits?.length || 0) === 20 && results.total_hits > 20);
-            setSearchOffset(results.hits?.length || 0);
-        } catch (error) {
-            console.error('Failed to search Modrinth for datapacks:', error);
-        }
-        setSearching(false);
-    };
-
-    const loadMoreSearch = async () => {
-        if (loadingMore || !hasMoreSearch) return;
-        setLoadingMore(true);
-        try {
-            const results = await invoke('search_modrinth', {
-                query: searchQuery,
-                projectType: 'datapack',
-                gameVersion: instance.version_id,
-                loader: 'datapack',
-                limit: 20,
-                offset: searchOffset
-            });
-            const newHits = results.hits || [];
-            setSearchResults(prev => [...prev, ...newHits]);
-            setSearchOffset(prev => prev + newHits.length);
-            setHasMoreSearch(newHits.length === 20 && (searchOffset + newHits.length) < results.total_hits);
-        } catch (error) {
-            console.error('Failed to load more results:', error);
-        }
-        setLoadingMore(false);
-    };
-
-    const handleRequestInstall = (project, updateItem = null) => {
+    const handleRequestInstall = useCallback((project, updateItem = null) => {
         setVersionModal({ show: true, project, updateItem: updateItem });
-    };
+    }, []);
 
-    const handleInstall = async (project, version, skipDeps = false, updateItem = null) => {
+    const handleInstall = useCallback(async (project, version, skipDeps = false, updateItem = null) => {
         setInstalling(project.slug);
         if (updateItem) {
             setUpdatingItems(prev => [...prev, updateItem.filename]);
@@ -223,7 +227,9 @@ function WorldDatapacks({ instance, world, onShowNotification, onBack, isScrolle
 
             // If updating, delete the old file
             if (updateItem && updateItem.filename !== file.filename) {
-                console.log(`Deleting old datapack: ${updateItem.filename}`);
+                if (import.meta.env.DEV) {
+                    invoke('log_event', { level: 'info', message: `Deleting old datapack: ${updateItem.filename}` }).catch(() => {});
+                }
                 await invoke('delete_instance_datapack', {
                     instanceId: instance.id,
                     worldName: world.folder_name,
@@ -246,11 +252,11 @@ function WorldDatapacks({ instance, world, onShowNotification, onBack, isScrolle
         if (updateItem) {
             setUpdatingItems(prev => prev.filter(f => f !== updateItem.filename));
         }
-    };
+    }, [instance.id, world.folder_name, onShowNotification, loadInstalledDatapacks]);
 
-    const handleDelete = (datapack) => {
+    const handleDelete = useCallback((datapack) => {
         setDeleteConfirm({ show: true, datapack });
-    };
+    }, []);
 
     const handleImportFile = async () => {
         try {
@@ -284,7 +290,7 @@ function WorldDatapacks({ instance, world, onShowNotification, onBack, isScrolle
         }
     };
 
-    const confirmDelete = async () => {
+    const confirmDelete = useCallback(async () => {
         const dp = deleteConfirm.datapack;
         setDeleteConfirm({ show: false, datapack: null });
 
@@ -298,7 +304,7 @@ function WorldDatapacks({ instance, world, onShowNotification, onBack, isScrolle
         } catch (error) {
             console.error('Failed to delete datapack:', error);
         }
-    };
+    }, [instance.id, world.folder_name, deleteConfirm.datapack, loadInstalledDatapacks]);
 
     const formatDownloads = (num) => {
         if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
@@ -339,7 +345,7 @@ function WorldDatapacks({ instance, world, onShowNotification, onBack, isScrolle
                             </button>
                             <button 
                                 className="open-folder-btn" 
-                                onClick={() => invoke('open_instance_datapacks_folder', { instanceId: instance.id, worldName: world.folder_name })}
+                                onClick={handleOpenFolder}
                                 title="Open Datapacks Folder"
                             >
                                 <FolderOpen size={16} />

@@ -9,7 +9,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{State, AppHandle, Emitter, Manager};
 
 // Global state for tracking running game processes
-static RUNNING_PROCESSES: LazyLock<Mutex<HashMap<String, u32>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RunningProcessInfo {
+    pub pid: u32,
+    pub start_time: u64,
+}
+
+static RUNNING_PROCESSES: LazyLock<Mutex<HashMap<String, RunningProcessInfo>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static BOOTSTRAP_START: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
 
 // App state for storing user info
 pub struct AppState {
@@ -90,6 +97,11 @@ fn get_global_stats() -> Result<GlobalStats, String> {
 }
 
 #[tauri::command]
+fn get_bootstrap_time() -> f64 {
+    BOOTSTRAP_START.elapsed().as_secs_f64()
+}
+
+#[tauri::command]
 fn log_event(level: String, message: String, app_handle: AppHandle) {
     logger::emit_log(&app_handle, &level, &message);
 }
@@ -143,8 +155,8 @@ fn create_instance(name: String, version_id: String, app_handle: AppHandle) -> R
 }
 
 #[tauri::command]
-fn delete_instance(instance_id: String, app_handle: AppHandle) -> Result<(), String> {
-    instances::delete_instance(&instance_id)?;
+async fn delete_instance(instance_id: String, app_handle: AppHandle) -> Result<(), String> {
+    instances::delete_instance(&instance_id).await?;
     let _ = app_handle.emit("refresh-instances", ());
     Ok(())
 }
@@ -308,6 +320,53 @@ fn clear_instance_logo(instance_id: String) -> Result<instances::Instance, Strin
     instances::update_instance(instance.clone())?;
     Ok(instance)
 }
+
+#[tauri::command]
+fn get_available_logos() -> Result<Vec<String>, String> {
+    let logos_dir = downloader::get_instance_logos_dir();
+    if !logos_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut logos = Vec::new();
+    if let Ok(entries) = fs::read_dir(logos_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if ext.to_lowercase() == "png" {
+                        if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                            logos.push(filename.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Sort logos to keep them consistent
+    logos.sort_by_key(|a| a.to_lowercase());
+    
+    Ok(logos)
+}
+
+#[tauri::command]
+fn set_instance_logo_from_stock(instance_id: String, filename: String) -> Result<instances::Instance, String> {
+    let mut instance = instances::get_instance(&instance_id)?;
+    
+    // Verify file exists
+    let logo_path = downloader::get_instance_logos_dir().join(&filename);
+    if !logo_path.exists() {
+        return Err("Logo file not found".to_string());
+    }
+
+    // If it was a custom logo (starts with instance_id), we might want to clean it up, 
+    // but stock logos should stay. Actually, for simplicity, we'll just switch filename.
+    instance.logo_filename = Some(filename);
+    instances::update_instance(instance.clone())?;
+    Ok(instance)
+}
+
 
 // ----------
 // export_instance_zip
@@ -945,7 +1004,7 @@ async fn launch_instance(
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
     let instance = instances::get_instance(&instance_id)?;
-    log_info!(&app_handle, "Preparing to launch instance: {}", instance.name);
+    println!("Launching instance: {}", instance.name);
     
     // Check if this instance is already running
     {
@@ -955,13 +1014,17 @@ async fn launch_instance(
             return Err("This instance is already running".to_string());
         }
     }
+
+    let _ = app_handle.emit("download-progress", downloader::DownloadProgress {
+        stage: format!("Preparing to launch {}...", instance.name),
+        percentage: 10.0,
+        total_bytes: None,
+        downloaded_bytes: None,
+        current: 0,
+        total: 0,
+    });
     
     // Check if version is downloaded
-    if !is_version_downloaded(instance.version_id.clone()) {
-        return Err("Version not downloaded. Please download it first.".to_string());
-    }
-    
-    // Load version details
     let versions_dir = downloader::get_versions_dir();
     let json_path = versions_dir.join(&instance.version_id).join(format!("{}.json", &instance.version_id));
     let json_content = std::fs::read_to_string(&json_path)
@@ -983,8 +1046,17 @@ async fn launch_instance(
     updated_instance.total_launches += 1;
     instances::update_instance(updated_instance)?;
     
+    let _ = app_handle.emit("download-progress", downloader::DownloadProgress {
+        stage: format!("Preparing to launch {}...", instance.name),
+        percentage: 0.0,
+        total_bytes: None,
+        downloaded_bytes: None,
+        current: 0,
+        total: 0,
+    });
+    
     // Launch the game
-    let mut child = launcher::launch_game(&instance, &version_details, &username, &access_token, &uuid).await?;
+    let mut child = launcher::launch_game(&instance, &version_details, &username, &access_token, &uuid, &app_handle).await?;
     
     // Store the process ID
     let process_id = child.id();
@@ -994,7 +1066,10 @@ async fn launch_instance(
     
     {
         let mut processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
-        processes.insert(instance_id.clone(), process_id);
+        processes.insert(instance_id.clone(), RunningProcessInfo {
+            pid: process_id,
+            start_time,
+        });
     }
     
     // Spawn a background thread to track playtime
@@ -1036,13 +1111,14 @@ async fn launch_instance(
 fn kill_game(
     instance_id: String,
 ) -> Result<String, String> {
-    let process_id = {
+    let process_info = {
         let processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
-        processes.get(&instance_id).copied()
+        processes.get(&instance_id).cloned()
     };
     
-    match process_id {
-        Some(pid) => {
+    match process_info {
+        Some(info) => {
+            let pid = info.pid;
             // Kill the process using system commands
             #[cfg(target_os = "windows")]
             {
@@ -1075,10 +1151,9 @@ fn kill_game(
 }
 
 #[tauri::command]
-fn get_running_instances() -> Result<Vec<String>, String> {
+fn get_running_instances() -> Result<HashMap<String, RunningProcessInfo>, String> {
     let processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
-    let keys: Vec<String> = processes.keys().cloned().collect();
-    Ok(keys)
+    Ok(processes.clone())
 }
 
 #[tauri::command]
@@ -2030,6 +2105,7 @@ async fn search_modrinth(
     project_type: String,
     game_version: Option<String>,
     loader: Option<String>,
+    category: Option<String>,
     limit: u32,
     offset: u32,
 ) -> Result<modrinth::ModrinthSearchResult, String> {
@@ -2038,6 +2114,7 @@ async fn search_modrinth(
         &project_type,
         game_version.as_deref(),
         loader.as_deref(),
+        category.as_deref(),
         limit,
         offset,
     )
@@ -2580,17 +2657,17 @@ fn get_instance_details(instance_id: String) -> Result<instances::Instance, Stri
 #[tauri::command]
 fn exit_app_fully(app: AppHandle) {
     let mut processes = RUNNING_PROCESSES.lock().expect("Process state corrupted");
-    for (_instance_id, pid) in processes.drain() {
+    for (_instance_id, info) in processes.drain() {
         #[cfg(target_os = "windows")]
         {
             let _ = std::process::Command::new("taskkill")
-                .args(&["/F", "/PID", &pid.to_string()])
+                .args(&["/F", "/PID", &info.pid.to_string()])
                 .spawn();
         }
         #[cfg(not(target_os = "windows"))]
         {
             let _ = std::process::Command::new("kill")
-                .args(&["-9", &pid.to_string()])
+                .args(&["-9", &info.pid.to_string()])
                 .spawn();
         }
     }
@@ -2601,6 +2678,20 @@ fn exit_app_fully(app: AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let bootstrap_start = *BOOTSTRAP_START;
+
+    // Note: WebView2 args are set in main.rs (must be before any Tauri init)
+
+    #[cfg(debug_assertions)]
+    {
+        println!("\n==========================================");
+        println!("[PALETHEA] Starting launcher in DEV MODE...");
+        println!("[DEBUG] Workspace: palethea-launcher");
+        println!("[DEBUG] App Version: {}", env!("CARGO_PKG_VERSION"));
+        println!("[DEBUG] Backend started at: {:?}", std::time::SystemTime::now());
+        println!("==========================================\n");
+    }
+
     #[cfg(target_os = "linux")]
     {
         // Fix for "Could not create GBM EGL display" crash on NVIDIA/Wayland/Arch
@@ -2619,13 +2710,20 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
-                    window.app_handle().exit(0);
+                    let processes = RUNNING_PROCESSES.lock().unwrap();
+                    if !processes.is_empty() {
+                        api.prevent_close();
+                        let _ = window.emit("show-exit-confirm", ());
+                    } else {
+                        // Kill the whole process group to avoid "Terminate batch job" lingering
+                        window.app_handle().exit(0);
+                    }
                 }
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             let version = app.package_info().version.to_string();
             minecraft::set_launcher_version(version);
 
@@ -2637,8 +2735,8 @@ pub fn run() {
                     .build()
             )?;
 
-            if let Err(err) = downloader::ensure_instance_logos_dir() {
-                log::warn!("Failed to initialize instance logos folder: {}", err);
+            if let Err(err) = downloader::sync_logos(app.handle()) {
+                log::warn!("Failed to sync instance logos: {}", err);
             }
             let _ = fs::create_dir_all(downloader::get_skins_dir());
 
@@ -2651,7 +2749,10 @@ pub fn run() {
                     // Re-register in the global map
                     {
                         let mut processes = RUNNING_PROCESSES.lock().expect("Process state corrupted");
-                        processes.insert(instance_id.clone(), pid_val);
+                        processes.insert(instance_id.clone(), RunningProcessInfo {
+                            pid: pid_val,
+                            start_time,
+                        });
                     }
                     
                     let handle_clone = handle.clone();
@@ -2693,6 +2794,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_url,
+            get_bootstrap_time,
             // Version commands
             get_versions,
             get_latest_release,
@@ -2703,7 +2805,9 @@ pub fn run() {
             update_instance,
             clone_instance,
             get_instance_details,
+            get_available_logos,
             set_instance_logo,
+            set_instance_logo_from_stock,
             set_instance_logo_from_url,
             clear_instance_logo,
             export_instance_zip,
@@ -2807,17 +2911,9 @@ pub fn run() {
             get_skin_file_path,
             get_global_stats,
             log_event,
+            get_bootstrap_time,
             exit_app_fully,
         ])
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let processes = RUNNING_PROCESSES.lock().unwrap();
-                if !processes.is_empty() {
-                    api.prevent_close();
-                    let _ = window.emit("show-exit-confirm", ());
-                }
-            }
-        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import ConfirmModal from './ConfirmModal';
 import WorldDatapacks from './WorldDatapacks';
@@ -12,6 +12,16 @@ function InstanceWorlds({ instance, onShowNotification, isScrolled }) {
   const [worldContextMenu, setWorldContextMenu] = useState(null);
   const [renameModal, setRenameModal] = useState({ show: false, world: null, newName: '' });
 
+  const loadWorlds = useCallback(async () => {
+    try {
+      const w = await invoke('get_instance_worlds', { instanceId: instance.id });
+      setWorlds(w);
+    } catch (error) {
+      console.error('Failed to load worlds:', error);
+    }
+    setLoading(false);
+  }, [instance.id]);
+
   useEffect(() => {
     loadWorlds();
 
@@ -20,17 +30,7 @@ function InstanceWorlds({ instance, onShowNotification, isScrolled }) {
     };
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
-  }, [instance.id]);
-
-  const loadWorlds = async () => {
-    try {
-      const w = await invoke('get_instance_worlds', { instanceId: instance.id });
-      setWorlds(w);
-    } catch (error) {
-      console.error('Failed to load worlds:', error);
-    }
-    setLoading(false);
-  };
+  }, [instance.id, loadWorlds]);
 
   const handleOpenFolder = async () => {
     try {
@@ -343,4 +343,4 @@ function InstanceWorlds({ instance, onShowNotification, isScrolled }) {
   );
 }
 
-export default InstanceWorlds;
+export default memo(InstanceWorlds);

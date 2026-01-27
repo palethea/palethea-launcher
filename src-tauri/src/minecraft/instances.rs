@@ -23,6 +23,17 @@ pub enum ModLoader {
     NeoForge,
 }
 
+impl std::fmt::Display for ModLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModLoader::Vanilla => write!(f, "Vanilla"),
+            ModLoader::Fabric => write!(f, "Fabric"),
+            ModLoader::Forge => write!(f, "Forge"),
+            ModLoader::NeoForge => write!(f, "NeoForge"),
+        }
+    }
+}
+
 impl Default for ModLoader {
     fn default() -> Self {
         ModLoader::Vanilla
@@ -177,7 +188,7 @@ pub fn create_instance(name: String, version_id: String) -> Result<Instance, Str
 }
 
 /// Delete an instance
-pub fn delete_instance(instance_id: &str) -> Result<(), String> {
+pub async fn delete_instance(instance_id: &str) -> Result<(), String> {
     let mut instances = load_instances()?;
     
     // Find and remove the instance
@@ -191,7 +202,8 @@ pub fn delete_instance(instance_id: &str) -> Result<(), String> {
     // Delete instance directory
     let instance_dir = get_instances_dir().join(instance_id);
     if instance_dir.exists() {
-        fs::remove_dir_all(&instance_dir)
+        tokio::fs::remove_dir_all(&instance_dir)
+            .await
             .map_err(|e| format!("Failed to delete instance directory: {}", e))?;
     }
     

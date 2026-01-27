@@ -1,10 +1,54 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { open } from '@tauri-apps/plugin-shell';
-import { User, HelpCircle, Info } from 'lucide-react';
+import { 
+  User, 
+  HelpCircle, 
+  Info, 
+  List, 
+  Shirt, 
+  BarChart3, 
+  RefreshCcw, 
+  Settings,
+  Wallpaper
+} from 'lucide-react';
 import './Sidebar.css';
 
 // Steve head as a data URL fallback (8x8 Steve face)
 const STEVE_HEAD_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAARklEQVQI12NgoAbghLD+I4kwBqOjo+O/f/8YGBj+MzD8Z2D4z8Dwnwmq7P9/BoYL5y8g0/8hHP7/x0b/Y2D4D5b5/58ZAME2EVcxlvGVAAAAAElFTkSuQmCC';
+
+const SkinHead2D = memo(({ src, size = 32 }) => (
+  <div className="sidebar-head-2d" style={{ width: `${size}px`, height: `${size}px` }}>
+    <div
+      className="head-base"
+      style={{
+        backgroundImage: `url("${src}")`,
+        width: `${size}px`,
+        height: `${size}px`,
+        backgroundSize: `${size * 8}px auto`,
+        backgroundPosition: `-${size}px -${size}px`
+      }}
+    ></div>
+    <div
+      className="head-overlay"
+      style={{
+        backgroundImage: `url("${src}")`,
+        width: `${size}px`,
+        height: `${size}px`,
+        backgroundSize: `${size * 8}px auto`,
+        backgroundPosition: `-${size * 5}px -${size}px`
+      }}
+    ></div>
+  </div>
+));
+
+const SIDEBAR_TABS = [
+  { id: 'instances', label: 'Instances', icon: List },
+  { id: 'skins', label: 'Skins', icon: Shirt },
+  { id: 'stats', label: 'Stats', icon: BarChart3 },
+  { id: 'updates', label: 'Updates', icon: RefreshCcw },
+  { id: 'appearance', label: 'Appearance', icon: Wallpaper },
+  { id: 'settings', label: 'Settings', icon: Settings },
+];
 
 function Sidebar({
   activeTab,
@@ -40,40 +84,7 @@ function Sidebar({
     };
   }, [showAccountMenu]);
 
-  const SkinHead2D = ({ src, size = 32 }) => (
-    <div className="sidebar-head-2d" style={{ width: `${size}px`, height: `${size}px` }}>
-      <div
-        className="head-base"
-        style={{
-          backgroundImage: `url("${src}")`,
-          width: `${size}px`,
-          height: `${size}px`,
-          backgroundSize: `${size * 8}px auto`,
-          backgroundPosition: `-${size}px -${size}px`
-        }}
-      ></div>
-      <div
-        className="head-overlay"
-        style={{
-          backgroundImage: `url("${src}")`,
-          width: `${size}px`,
-          height: `${size}px`,
-          backgroundSize: `${size * 8}px auto`,
-          backgroundPosition: `-${size * 5}px -${size}px`
-        }}
-      ></div>
-    </div>
-  );
-
-  const tabs = [
-    { id: 'instances', label: 'Instances', icon: null },
-    { id: 'skins', label: 'Skins', icon: null },
-    { id: 'stats', label: 'Stats', icon: null },
-    { id: 'updates', label: 'Updates', icon: null },
-    { id: 'settings', label: 'Settings', icon: null },
-  ];
-
-  const getSkinUrl = (uuid, isLoggedIn) => {
+  const getSkinUrl = useCallback((uuid, isLoggedIn) => {
     if (!isLoggedIn || !uuid) {
       return STEVE_HEAD_DATA;
     }
@@ -84,26 +95,16 @@ function Sidebar({
     // Use minotar.net - more reliable, accepts UUIDs with or without dashes
     const cleanUuid = uuid.replace(/-/g, '');
     return `https://minotar.net/helm/${cleanUuid}/32.png?t=${skinRefreshKey}`;
-  };
+  }, [failedImages, skinRefreshKey]);
 
-  const handleImageError = (uuid) => {
+  const handleImageError = useCallback((uuid) => {
     setFailedImages(prev => ({ ...prev, [uuid]: true }));
-  };
+  }, []);
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-header">
-        <div
-          className="logo"
-          onClick={() => open('https://palethea.com')}
-          style={{ cursor: 'pointer' }}
-        >
-          <span className="logo-text">Palethea</span>
-        </div>
-      </div>
-
       <nav className="sidebar-nav">
-        {tabs.map((tab) => {
+        {SIDEBAR_TABS.map((tab) => {
           const isDisabled = tab.id === 'skins' && !activeAccount?.isLoggedIn;
           return (
             <button
@@ -111,6 +112,7 @@ function Sidebar({
               className={`nav-item ${activeTab === tab.id ? 'active' : ''} ${isDisabled ? 'disabled' : ''}`}
               onClick={() => !isDisabled && onTabChange(tab.id)}
             >
+              {tab.icon && <tab.icon size={18} className="nav-icon" />}
               <span className="nav-label">{tab.label}</span>
               {isDisabled && (
                 <div 
@@ -135,20 +137,6 @@ function Sidebar({
       </nav>
 
       <div className="sidebar-footer" ref={accountMenuRef}>
-        {launcherSettings?.enable_console && (
-          <button
-            className={`console-sidebar-btn ${activeTab === 'console' ? 'active' : ''}`}
-            onClick={() => onTabChange('console')}
-            title="Open Console"
-          >
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="4 17 10 11 4 5" />
-              <line x1="12" y1="19" x2="20" y2="19" />
-            </svg>
-            <span>Console</span>
-          </button>
-        )}
-
         <div
           className={`account-viewer ${showAccountMenu ? 'expanded' : ''}`}
           onClick={() => {
@@ -253,4 +241,4 @@ function Sidebar({
   );
 }
 
-export default Sidebar;
+export default memo(Sidebar);

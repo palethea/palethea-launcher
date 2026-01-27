@@ -113,7 +113,9 @@ function Updates() {
       const lastCheck = localStorage.getItem('last_update_check');
       const now = Date.now();
       if (lastCheck && now - parseInt(lastCheck) < 30000) {
-        console.log('Skipping throttled update check');
+        if (import.meta.env.DEV) {
+          invoke('log_event', { level: 'debug', message: 'Skipping throttled update check' }).catch(() => {});
+        }
         return;
       }
     }

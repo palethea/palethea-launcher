@@ -10,7 +10,7 @@ const CustomColorPicker = ({ value, onChange }) => {
   const hueRef = useRef(null);
 
   // Hex to HSV
-  const hexToHsv = (hex) => {
+  const hexToHsv = useCallback((hex) => {
     let r = 0, g = 0, b = 0;
     if (hex.length === 4) {
       r = parseInt(hex[1] + hex[1], 16);
@@ -35,14 +35,15 @@ const CustomColorPicker = ({ value, onChange }) => {
         case r: h = (g - b) / d + (g < b ? 6 : 0); break;
         case g: h = (b - r) / d + 2; break;
         case b: h = (r - g) / d + 4; break;
+        default: h = 0;
       }
       h /= 6;
     }
     return { h: h * 360, s: s * 100, v: v * 100 };
-  };
+  }, []);
 
   // HSV to Hex
-  const hsvToHex = (h, s, v) => {
+  const hsvToHex = useCallback((h, s, v) => {
     h /= 360; s /= 100; v /= 100;
     let r, g, b;
     const i = Math.floor(h * 6);
@@ -58,6 +59,7 @@ const CustomColorPicker = ({ value, onChange }) => {
       case 3: r = p; g = q; b = v; break;
       case 4: r = t; g = p; b = v; break;
       case 5: r = v; g = p; b = q; break;
+      default: r = 0; g = 0; b = 0;
     }
 
     const toHex = (x) => {
@@ -65,7 +67,7 @@ const CustomColorPicker = ({ value, onChange }) => {
       return hex.length === 1 ? '0' + hex : hex;
     };
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
-  };
+  }, []);
 
   useEffect(() => {
     const { h, s, v } = hexToHsv(value);
@@ -73,7 +75,7 @@ const CustomColorPicker = ({ value, onChange }) => {
     setSat(s);
     setVal(v);
     setTempHex(value);
-  }, [value]);
+  }, [value, hexToHsv]);
 
   const handleSatValChange = useCallback((e) => {
     if (!satValRef.current) return;
@@ -86,7 +88,7 @@ const CustomColorPicker = ({ value, onChange }) => {
     setSat(newSat);
     setVal(newVal);
     onChange(hsvToHex(hue, newSat, newVal));
-  }, [hue, onChange]);
+  }, [hue, onChange, hsvToHex]);
 
   const handleHueChange = useCallback((e) => {
     if (!hueRef.current) return;
@@ -95,9 +97,9 @@ const CustomColorPicker = ({ value, onChange }) => {
     const newHue = x * 360;
     setHue(newHue);
     onChange(hsvToHex(newHue, sat, val));
-  }, [sat, val, onChange]);
+  }, [sat, val, onChange, hsvToHex]);
 
-  const onMouseDown = (handler) => (e) => {
+  const startDragging = useCallback((handler) => (e) => {
     handler(e);
     const onMouseMove = (moveEvent) => handler(moveEvent);
     const onMouseUp = () => {
@@ -106,7 +108,7 @@ const CustomColorPicker = ({ value, onChange }) => {
     };
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
-  };
+  }, []);
 
   return (
     <div className="custom-color-picker">
@@ -114,7 +116,7 @@ const CustomColorPicker = ({ value, onChange }) => {
         className="sat-val-container" 
         ref={satValRef}
         style={{ backgroundColor: `hsl(${hue}, 100%, 50%)` }}
-        onMouseDown={onMouseDown(handleSatValChange)}
+        onMouseDown={startDragging(handleSatValChange)}
       >
         <div className="sat-gradient">
           <div className="val-gradient" />
@@ -132,7 +134,7 @@ const CustomColorPicker = ({ value, onChange }) => {
       <div 
         className="hue-slider" 
         ref={hueRef}
-        onMouseDown={onMouseDown(handleHueChange)}
+        onMouseDown={startDragging(handleHueChange)}
       >
         <div 
           className="hue-handle" 

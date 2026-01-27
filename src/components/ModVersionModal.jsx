@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, memo, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { Download, User, Info, Image as ImageIcon, List, ExternalLink, X, Copy, Save } from 'lucide-react';
@@ -40,11 +40,7 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
         return () => window.removeEventListener('click', handleClick);
     }, []);
 
-    useEffect(() => {
-        loadData();
-    }, [projectId, initialProject?.project_id, initialProject?.slug, gameVersion, loader]);
-
-    const loadData = async () => {
+    const loadData = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
@@ -96,18 +92,22 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
             setError('Failed to fetch project data');
         }
         setLoading(false);
-    };
+    }, [projectId, initialProject, gameVersion, loader]);
 
-    const formatDate = (dateStr) => {
+    useEffect(() => {
+        loadData();
+    }, [loadData]);
+
+    const formatDate = useCallback((dateStr) => {
         const date = new Date(dateStr);
         return date.toLocaleDateString(undefined, {
             year: 'numeric',
             month: 'short',
             day: 'numeric'
         });
-    };
+    }, []);
 
-    const handleCopyImage = async (galleryImg) => {
+    const handleCopyImage = useCallback(async (galleryImg) => {
         setCopying(true);
         try {
             const fullUrl = getFullSizeUrl(galleryImg);
@@ -119,7 +119,9 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
             if (window.ClipboardItem) {
                 const item = new ClipboardItem({ [blob.type]: blob });
                 await navigator.clipboard.write([item]);
-                console.log('High-res image copied to clipboard');
+                if (import.meta.env.DEV) {
+                    invoke('log_event', { level: 'info', message: 'High-res image copied to clipboard' }).catch(() => {});
+                }
             } else {
                 throw new Error('ClipboardItem not supported');
             }
@@ -129,9 +131,9 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
             setCopying(false);
             setGalleryContextMenu(null);
         }
-    };
+    }, []);
 
-    const handleSaveImage = async (galleryImg) => {
+    const handleSaveImage = useCallback(async (galleryImg) => {
         try {
             const fullUrl = getFullSizeUrl(galleryImg);
 
@@ -148,29 +150,34 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
 
             if (filePath) {
                 await invoke('save_remote_file', { url: fullUrl, path: filePath });
-                console.log('Image saved to', filePath);
+                if (import.meta.env.DEV) {
+                    invoke('log_event', { level: 'info', message: `Image saved to ${filePath}` }).catch(() => {});
+                }
             }
         } catch (err) {
-            console.error('Failed to save image:', err);
+            if (import.meta.env.DEV) {
+                invoke('log_event', { level: 'error', message: `Failed to save image: ${err}` }).catch(() => {});
+            }
         } finally {
             setGalleryContextMenu(null);
         }
-    };
-    const formatNumber = (num) => {
+    }, []);
+
+    const formatNumber = useCallback((num) => {
         if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
         if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
         return num.toString();
-    };
+    }, []);
 
-    const handleOpenModrinth = () => {
+    const handleOpenModrinth = useCallback(() => {
         const type = project?.project_type || 'mod';
         const slug = project?.slug || project?.project_id || projectId;
         if (slug) {
             invoke('open_url', { url: `https://modrinth.com/${type}/${slug}` });
         }
-    };
+    }, [project, projectId]);
 
-    const renderTabContent = () => {
+    const renderTabContent = useCallback(() => {
         if (loading) {
             return (
                 <div className="loading-state">
@@ -237,7 +244,20 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
             default:
                 return null;
         }
-    };
+    }, [loading, activeTab, project]);
+
+    const compatibilityInfo = useMemo(() => {
+        if (!project?.game_versions) return null;
+        const versionsList = [...project.game_versions].reverse();
+        const displayVersions = showAllCompatibility ? versionsList : versionsList.slice(0, 5);
+        const hasMore = versionsList.length > 5;
+        
+        return {
+            displayVersions,
+            hasMore,
+            moreCount: versionsList.length - 5
+        };
+    }, [project?.game_versions, showAllCompatibility]);
 
     return (
         <div className="version-modal-overlay" onClick={onClose}>
@@ -301,15 +321,15 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                                 <div className="compatibility-info">
                                     <span className="compatibility-sublabel">Minecraft: Java Edition</span>
                                     <div className="compatibility-tags">
-                                        {[...(project.game_versions || [])].reverse().slice(0, showAllCompatibility ? project.game_versions.length : 5).map(v => (
+                                        {compatibilityInfo?.displayVersions.map(v => (
                                             <span key={v} className="compatibility-tag">{v}</span>
                                         ))}
-                                        {!showAllCompatibility && project.game_versions && project.game_versions.length > 5 && (
+                                        {!showAllCompatibility && compatibilityInfo?.hasMore && (
                                             <span 
                                                 className="compatibility-tag more clickable"
                                                 onClick={() => setShowAllCompatibility(true)}
                                             >
-                                                +{project.game_versions.length - 5} more
+                                                +{compatibilityInfo.moreCount} more
                                             </span>
                                         )}
                                         {showAllCompatibility && (
@@ -472,5 +492,5 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
     );
 }
 
-export default ModVersionModal;
+export default memo(ModVersionModal);
 

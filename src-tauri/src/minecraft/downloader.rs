@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::error::Error;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use futures::stream::{self, StreamExt};
 use crate::log_info;
 
@@ -90,6 +90,37 @@ pub fn ensure_instance_logos_dir() -> Result<(), String> {
 
     Ok(())
 }
+
+/// Sync logos from resources to data directory
+pub fn sync_logos(app_handle: &AppHandle) -> Result<(), String> {
+    ensure_instance_logos_dir()?;
+    let logos_dir = get_instance_logos_dir();
+
+    // In Tauri v2, we can get the resource directory
+    let resource_dir = app_handle
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to get resource directory: {}", e))?;
+    
+    let source_logos_dir = resource_dir.join("resources").join("instance_logos");
+    
+    if source_logos_dir.exists() && source_logos_dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(source_logos_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().map_or(false, |ext| ext == "png") {
+                    let dest_path = logos_dir.join(entry.file_name());
+                    if !dest_path.exists() {
+                        let _ = fs::copy(&path, &dest_path);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 
 /// Verify a file's SHA1 hash
 pub fn verify_sha1(path: &PathBuf, expected: &str) -> bool {

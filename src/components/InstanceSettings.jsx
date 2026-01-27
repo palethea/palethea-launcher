@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { join } from '@tauri-apps/api/path';
-import { Box, ChevronDown, ChevronUp, Cpu, Save, Trash2 } from 'lucide-react';
+import { Box, ChevronDown, ChevronUp, Cpu, Save, Trash2, Image, Check, Minus, Plus } from 'lucide-react';
 import VersionSelector from './VersionSelector';
+import IconPicker from './IconPicker';
 
 function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, onDelete, onShowNotification, isScrolled }) {
-  const getRecommendedJava = (mcVersion) => {
+  const getRecommendedJava = useCallback((mcVersion) => {
     if (!mcVersion) return 21;
     try {
       // Extract major/minor version
@@ -29,7 +30,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
     } catch (e) {
       return 17;
     }
-  };
+  }, []);
 
   const [name, setName] = useState(instance.name);
   const [versionId, setVersionId] = useState(instance.version_id);
@@ -38,6 +39,8 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
   const [modLoaderVersion, setModLoaderVersion] = useState(instance.mod_loader_version || '');
   const [javaPath, setJavaPath] = useState(instance.java_path || '');
   const [javaDownloadVersion, setJavaDownloadVersion] = useState(getRecommendedJava(instance.version_id).toString());
+  const [showJavaDropdown, setShowJavaDropdown] = useState(false);
+  const javaDropdownRef = useRef(null);
   const [javaDownloading, setJavaDownloading] = useState(false);
   const [javaDownloadError, setJavaDownloadError] = useState('');
   const [memory, setMemory] = useState(instance.memory_max || 4096);
@@ -51,17 +54,56 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
   const [logoUpdating, setLogoUpdating] = useState(false);
   const [showVersionSelector, setShowVersionSelector] = useState(false);
   const [showLoaderSelector, setShowLoaderSelector] = useState(false);
+  const [showIconPicker, setShowIconPicker] = useState(false);
   const [installingLoader, setInstallingLoader] = useState(false);
+
+  const loadVersions = useCallback(async () => {
+    try {
+      const vers = await invoke('get_versions');
+      setVersions(vers);
+    } catch (error) {
+      console.error('Failed to load versions:', error);
+    }
+  }, []);
 
   useEffect(() => {
     loadVersions();
+  }, [loadVersions]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (javaDropdownRef.current && !javaDropdownRef.current.contains(event.target)) {
+        setShowJavaDropdown(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   useEffect(() => {
     // Update recommended Java version when Minecraft version changes
     const recommended = getRecommendedJava(versionId);
     setJavaDownloadVersion(recommended.toString());
-  }, [versionId]);
+  }, [versionId, getRecommendedJava]);
+
+  const loadLoaderVersions = useCallback(async (loader) => {
+    setLoadingLoaders(true);
+    try {
+      const vers = await invoke('get_loader_versions', {
+        loader: loader.toLowerCase(),
+        gameVersion: versionId
+      });
+      setLoaderVersions(vers);
+      if (vers.length > 0 && !modLoaderVersion) {
+        setModLoaderVersion(vers[0].version);
+      }
+    } catch (error) {
+      console.error('Failed to load loader versions:', error);
+      setLoaderVersions([]);
+    }
+    setLoadingLoaders(false);
+  }, [versionId, modLoaderVersion]);
 
   useEffect(() => {
     if (modLoader !== 'Vanilla') {
@@ -70,11 +112,24 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
       setLoaderVersions([]);
       setModLoaderVersion('');
     }
-  }, [modLoader, versionId]);
+  }, [modLoader, versionId, loadLoaderVersions]);
+
+  const checkChanges = useCallback(() => {
+    const changed =
+      name !== instance.name ||
+      versionId !== instance.version_id ||
+      colorAccent !== (instance.color_accent || '#ffffff') ||
+      modLoader !== (instance.mod_loader || 'Vanilla') ||
+      modLoaderVersion !== (instance.mod_loader_version || '') ||
+      javaPath !== (instance.java_path || '') ||
+      memory !== (instance.memory_max || 4096) ||
+      jvmArgs !== (instance.jvm_args || '');
+    setHasChanges(changed);
+  }, [name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, instance]);
 
   useEffect(() => {
     checkChanges();
-  }, [name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs]);
+  }, [checkChanges]);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,47 +154,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
     };
   }, [instance.id, instance.logo_filename]);
 
-  const loadVersions = async () => {
-    try {
-      const vers = await invoke('get_versions');
-      setVersions(vers);
-    } catch (error) {
-      console.error('Failed to load versions:', error);
-    }
-  };
-
-  const loadLoaderVersions = async (loader) => {
-    setLoadingLoaders(true);
-    try {
-      const vers = await invoke('get_loader_versions', {
-        loader: loader.toLowerCase(),
-        gameVersion: versionId
-      });
-      setLoaderVersions(vers);
-      if (vers.length > 0 && !modLoaderVersion) {
-        setModLoaderVersion(vers[0].version);
-      }
-    } catch (error) {
-      console.error('Failed to load loader versions:', error);
-      setLoaderVersions([]);
-    }
-    setLoadingLoaders(false);
-  };
-
-  const checkChanges = () => {
-    const changed =
-      name !== instance.name ||
-      versionId !== instance.version_id ||
-      colorAccent !== (instance.color_accent || '#ffffff') ||
-      modLoader !== (instance.mod_loader || 'Vanilla') ||
-      modLoaderVersion !== (instance.mod_loader_version || '') ||
-      javaPath !== (instance.java_path || '') ||
-      memory !== (instance.memory_max || 4096) ||
-      jvmArgs !== (instance.jvm_args || '');
-    setHasChanges(changed);
-  };
-
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     setSaving(true);
     try {
       const updatedInstance = {
@@ -161,9 +176,9 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
       console.error('Failed to save:', error);
     }
     setSaving(false);
-  };
+  }, [instance, name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, onSave]);
 
-  const handleDownloadJava = async () => {
+  const handleDownloadJava = useCallback(async () => {
     setJavaDownloading(true);
     setJavaDownloadError('');
     try {
@@ -182,9 +197,9 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
       setJavaDownloadError('Failed to download Java');
     }
     setJavaDownloading(false);
-  };
+  }, [instance.id, javaDownloadVersion, onInstanceUpdated]);
 
-  const handleOpenFolder = async () => {
+  const handleOpenFolder = useCallback(async () => {
     try {
       await invoke('open_instance_folder', { instanceId: instance.id, folderType: 'root' });
     } catch (error) {
@@ -193,32 +208,33 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
         onShowNotification(`Failed to open instance folder: ${error}`, 'error');
       }
     }
-  };
+  }, [instance.id, onShowNotification]);
 
-  const handleChooseLogo = async () => {
+  const handleChooseLogo = useCallback(() => {
+    setShowIconPicker(true);
+  }, []);
+
+  const handleIconSelect = useCallback(async (icon, type) => {
     try {
-      const selected = await open({
-        multiple: false,
-        filters: [{ name: 'PNG Image', extensions: ['png'] }],
-      });
-
-      if (!selected) return;
-
       setLogoUpdating(true);
-      const updated = await invoke('set_instance_logo', {
-        instanceId: instance.id,
-        sourcePath: selected,
-      });
-      if (onInstanceUpdated) {
-        onInstanceUpdated(updated);
+      if (type === 'clear') {
+        const updated = await invoke('clear_instance_logo', { instanceId: instance.id });
+        if (onInstanceUpdated) onInstanceUpdated(updated);
+      } else if (type === 'stock') {
+        const updated = await invoke('set_instance_logo_from_stock', { instanceId: instance.id, filename: icon });
+        if (onInstanceUpdated) onInstanceUpdated(updated);
+      } else if (type === 'custom') {
+        const updated = await invoke('set_instance_logo', { instanceId: instance.id, filePath: icon });
+        if (onInstanceUpdated) onInstanceUpdated(updated);
       }
     } catch (error) {
-      console.error('Failed to set logo:', error);
+      console.error('Failed to update logo:', error);
+      if (onShowNotification) onShowNotification('Failed to update logo: ' + error, 'error');
     }
     setLogoUpdating(false);
-  };
+  }, [instance.id, onInstanceUpdated, onShowNotification]);
 
-  const handleClearLogo = async () => {
+  const handleClearLogo = useCallback(async () => {
     try {
       setLogoUpdating(true);
       const updated = await invoke('clear_instance_logo', { instanceId: instance.id });
@@ -229,9 +245,9 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
       console.error('Failed to clear logo:', error);
     }
     setLogoUpdating(false);
-  };
+  }, [instance.id, onInstanceUpdated]);
 
-  const handleDelete = () => {
+  const handleDelete = useCallback(() => {
     if (onShowConfirm) {
       onShowConfirm({
         title: 'Delete Instance?',
@@ -244,9 +260,9 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
         }
       });
     }
-  };
+  }, [instance.name, instance.id, onShowConfirm, onDelete]);
 
-  const handleInstallLoader = async () => {
+  const handleInstallLoader = useCallback(async () => {
     if (modLoader === 'Vanilla' || !modLoaderVersion) return;
 
     setInstallingLoader(true);
@@ -289,7 +305,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
       }
     }
     setInstallingLoader(false);
-  };
+  }, [modLoader, modLoaderVersion, instance, onSave, onShowConfirm]);
 
   const loaders = ['Vanilla', 'Fabric', 'Forge', 'NeoForge'];
 
@@ -455,15 +471,40 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
           <div className="setting-row">
             <label>Quick Java Install</label>
             <div className="java-download-actions">
-              <select
-                value={javaDownloadVersion}
-                onChange={(e) => setJavaDownloadVersion(e.target.value)}
-              >
-                <option value="8">Java 8 {getRecommendedJava(versionId) === 8 ? '(Recommended)' : '(Legacy)'}</option>
-                <option value="16">Java 16 {getRecommendedJava(versionId) === 16 ? '(Recommended)' : ''}</option>
-                <option value="17">Java 17 {getRecommendedJava(versionId) === 17 ? '(Recommended)' : ''}</option>
-                <option value="21">Java 21 {getRecommendedJava(versionId) === 21 ? '(Recommended)' : ''}</option>
-              </select>
+              <div className="p-dropdown" ref={javaDropdownRef}>
+                <button 
+                  className={`p-dropdown-trigger ${showJavaDropdown ? 'active' : ''}`}
+                  onClick={() => setShowJavaDropdown(!showJavaDropdown)}
+                  style={{ minWidth: '160px' }}
+                >
+                  <span>
+                    Java {javaDownloadVersion} {javaDownloadVersion === getRecommendedJava(versionId).toString() ? '(Rec.)' : ''}
+                  </span>
+                  <ChevronDown size={14} className={`trigger-icon ${showJavaDropdown ? 'flip' : ''}`} />
+                </button>
+
+                {showJavaDropdown && (
+                  <div className="p-dropdown-menu">
+                    {[8, 16, 17, 21].map((v) => {
+                      const verStr = v.toString();
+                      const isRecommended = verStr === getRecommendedJava(versionId).toString();
+                      return (
+                        <div 
+                          key={v}
+                          className={`p-dropdown-item ${javaDownloadVersion === verStr ? 'selected' : ''}`}
+                          onClick={() => {
+                            setJavaDownloadVersion(verStr);
+                            setShowJavaDropdown(false);
+                          }}
+                        >
+                          <span>Java {v} {isRecommended ? '(Recommended)' : (v === 8 ? '(Legacy)' : '')}</span>
+                          {javaDownloadVersion === verStr && <Check size={14} className="selected-icon" />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               <button
                 className="btn btn-secondary"
                 onClick={handleDownloadJava}
@@ -490,14 +531,34 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
           </div>
           <div className="setting-row">
             <label>Memory (MB)</label>
-            <input
-              type="number"
-              value={memory}
-              onChange={(e) => setMemory(parseInt(e.target.value) || 4096)}
-              min={512}
-              max={32768}
-              step={512}
-            />
+            <div className="p-stepper">
+              <input
+                type="number"
+                value={memory}
+                onChange={(e) => setMemory(parseInt(e.target.value) || 4096)}
+                min={512}
+                max={32768}
+                step={512}
+              />
+              <div className="p-stepper-actions">
+                <button 
+                  className="p-stepper-btn" 
+                  onClick={() => setMemory(Math.max(512, memory - 512))}
+                  disabled={memory <= 512}
+                  title="Decrease Memory"
+                >
+                  <Minus size={16} />
+                </button>
+                <button 
+                  className="p-stepper-btn" 
+                  onClick={() => setMemory(Math.min(32768, memory + 512))}
+                  disabled={memory >= 32768}
+                  title="Increase Memory"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
+            </div>
           </div>
           <div className="setting-row">
             <label>JVM Arguments</label>
@@ -522,6 +583,15 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
           Delete Instance
         </button>
       </div>
+
+      {showIconPicker && (
+        <IconPicker
+          instanceId={instance.id}
+          currentIcon={instance.logo_filename}
+          onClose={() => setShowIconPicker(false)}
+          onSelect={handleIconSelect}
+        />
+      )}
     </div>
   );
 }

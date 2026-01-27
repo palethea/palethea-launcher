@@ -1,8 +1,33 @@
-import { useState } from 'react';
+import { useState, useCallback, memo } from 'react';
 import { User, X, Trash2 } from 'lucide-react';
 import './AccountManagerModal.css';
 
 const STEVE_HEAD_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAARklEQVQI12NgoAbghLD+I4kwBqOjo+O/f/8YGBj+MzD8Z2D4z8Dwnwmq7P9/BoYL5y8g0/8hHP7/x0b/Y2D4D5b5/58ZAME2EVcxlvGVAAAAAElFTkSuQmCC';
+
+const SkinHead2D = memo(({ src, size = 48 }) => (
+    <div className="modal-head-2d" style={{ width: `${size}px`, height: `${size}px` }}>
+        <div
+            className="head-base"
+            style={{
+                backgroundImage: `url("${src}")`,
+                width: `${size}px`,
+                height: `${size}px`,
+                backgroundSize: `${size * 8}px auto`,
+                backgroundPosition: `-${size}px -${size}px`
+            }}
+        ></div>
+        <div
+            className="head-overlay"
+            style={{
+                backgroundImage: `url("${src}")`,
+                width: `${size}px`,
+                height: `${size}px`,
+                backgroundSize: `${size * 8}px auto`,
+                backgroundPosition: `-${size * 5}px -${size}px`
+            }}
+        ></div>
+    </div>
+));
 
 function AccountManagerModal({
     show,
@@ -17,39 +42,14 @@ function AccountManagerModal({
 }) {
     const [failedImages, setFailedImages] = useState({});
 
-    if (!show) return null;
-
-    const getSkinUrl = (uuid, isLoggedIn) => {
+    const getSkinUrl = useCallback((uuid, isLoggedIn) => {
         if (!isLoggedIn || !uuid) return STEVE_HEAD_DATA;
         if (failedImages[uuid]) return STEVE_HEAD_DATA;
         const cleanUuid = uuid.replace(/-/g, '');
         return `https://minotar.net/helm/${cleanUuid}/64.png?t=${skinRefreshKey}`;
-    };
+    }, [failedImages, skinRefreshKey]);
 
-    const SkinHead2D = ({ src, size = 48 }) => (
-        <div className="modal-head-2d" style={{ width: `${size}px`, height: `${size}px` }}>
-            <div
-                className="head-base"
-                style={{
-                    backgroundImage: `url("${src}")`,
-                    width: `${size}px`,
-                    height: `${size}px`,
-                    backgroundSize: `${size * 8}px auto`,
-                    backgroundPosition: `-${size}px -${size}px`
-                }}
-            ></div>
-            <div
-                className="head-overlay"
-                style={{
-                    backgroundImage: `url("${src}")`,
-                    width: `${size}px`,
-                    height: `${size}px`,
-                    backgroundSize: `${size * 8}px auto`,
-                    backgroundPosition: `-${size * 5}px -${size}px`
-                }}
-            ></div>
-        </div>
-    );
+    if (!show) return null;
 
     return (
         <div className="account-modal-overlay" onClick={onClose}>
@@ -121,4 +121,4 @@ function AccountManagerModal({
     );
 }
 
-export default AccountManagerModal;
+export default memo(AccountManagerModal);

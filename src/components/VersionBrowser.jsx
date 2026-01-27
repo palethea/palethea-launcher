@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './VersionBrowser.css';
 
@@ -8,11 +8,7 @@ function VersionBrowser() {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadVersions();
-  }, []);
-
-  const loadVersions = async () => {
+  const loadVersions = useCallback(async () => {
     try {
       const result = await invoke('get_versions');
       setVersions(result);
@@ -20,7 +16,11 @@ function VersionBrowser() {
       console.error('Failed to load versions:', error);
     }
     setLoading(false);
-  };
+  }, []);
+
+  useEffect(() => {
+    loadVersions();
+  }, [loadVersions]);
 
   const filteredVersions = versions.filter((version) => {
     const matchesFilter = filter === 'all' || version.version_type === filter;

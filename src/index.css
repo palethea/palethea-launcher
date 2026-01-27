@@ -89,3 +89,172 @@ select option {
 input::placeholder {
   color: var(--muted);
 }
+
+/* Reusable Custom Dropdown Styles */
+.p-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.p-dropdown-trigger {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  transition: all 0.15s ease;
+  user-select: none;
+  min-width: 100px;
+}
+
+.p-dropdown-trigger:hover {
+  background: var(--surface);
+  border-color: var(--text-secondary);
+}
+
+.p-dropdown-trigger.active {
+  background: var(--surface);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.1);
+}
+
+.p-dropdown-trigger .trigger-icon {
+  opacity: 0.5;
+  transition: transform 0.2s ease;
+}
+
+.p-dropdown-trigger .trigger-icon.flip {
+  transform: rotate(180deg);
+}
+
+.p-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  animation: pDropdownFadeIn 0.15s ease-out;
+}
+
+@keyframes pDropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.p-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all 0.1s ease;
+}
+
+.p-dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--foreground);
+}
+
+.p-dropdown-item.selected {
+  background: rgba(var(--accent-rgb), 0.1);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.p-dropdown-item .selected-icon {
+  margin-left: 8px;
+  color: var(--accent);
+}
+
+.p-dropdown-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-right: 8px;
+  opacity: 0.8;
+}
+
+/* Reusable Stepper/Number Input */
+.p-stepper {
+  display: flex;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  width: fit-content;
+}
+
+.p-stepper input {
+  width: 90px;
+  border: none !important;
+  background: transparent !important;
+  text-align: left;
+  padding: 8px 16px !important;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 0 !important;
+}
+
+.p-stepper-actions {
+  display: flex;
+  border-left: 1px solid var(--border);
+}
+
+.p-stepper-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-left: 1px solid var(--border);
+}
+
+.p-stepper-btn:first-child {
+  border-left: none;
+}
+
+.p-stepper-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--foreground);
+}
+
+.p-stepper-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.p-stepper input::-webkit-outer-spin-button,
+.p-stepper input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.p-stepper input[type=number] {
+  -moz-appearance: textfield;
+}

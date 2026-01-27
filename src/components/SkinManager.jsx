@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import SkinViewer3D from './SkinViewer3D';
@@ -21,14 +21,7 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
   const [showVariantPicker, setShowVariantPicker] = useState(false);
   const [showRateLimitModal, setShowRateLimitModal] = useState(false);
 
-  useEffect(() => {
-    if (activeAccount?.isLoggedIn) {
-      loadProfile();
-    }
-    loadLibrary();
-  }, [activeAccount]);
-
-  const loadProfile = async (silent = false) => {
+  const loadProfile = useCallback(async (silent = false) => {
     if (!silent) {
       setIsLoading(true);
     }
@@ -56,9 +49,9 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
     if (!silent) {
       setIsLoading(false);
     }
-  };
+  }, [showNotification]);
 
-  const loadLibrary = async () => {
+  const loadLibrary = useCallback(async () => {
     try {
       const items = await invoke('get_skin_collection');
       // Pre-resolve all file paths for the images
@@ -70,11 +63,18 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
     } catch (error) {
       console.error('Failed to load library:', error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (activeAccount?.isLoggedIn) {
+      loadProfile();
+    }
+    loadLibrary();
+  }, [activeAccount, loadProfile, loadLibrary]);
 
   const currentSkinUrl = profile?.skins?.find(s => s.state === 'ACTIVE')?.url;
 
-  const detectSkinVariant = async (filePath) => {
+  const detectSkinVariant = useCallback(async (filePath) => {
     return new Promise((resolve) => {
       invoke('log_event', { level: 'info', message: `Analyzing skin model for: ${filePath}` });
 
@@ -142,43 +142,9 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
 
       img.src = convertFileSrc(filePath);
     });
-  };
+  }, []);
 
-  const handleUploadSkin = async (explicitVariant) => {
-    if (!activeAccount?.isLoggedIn) {
-      showNotification('You must be logged in with a Microsoft account to change skins', 'error');
-      return;
-    }
-
-    try {
-      const selected = await open({
-        multiple: false,
-        filters: [{
-          name: 'Image',
-          extensions: ['png']
-        }]
-      });
-
-      if (selected) {
-        const localUrl = convertFileSrc(selected);
-        setLastSelectedPath(selected);
-        setJustUploadedUrl(localUrl);
-
-        if (explicitVariant) {
-          // User explicitly chose a variant, upload directly
-          await uploadSkinWithVariant(selected, localUrl, explicitVariant);
-        } else {
-          // Show variant picker modal
-          setShowVariantPicker(true);
-        }
-      }
-    } catch (error) {
-      console.error('Upload failed:', error);
-      showNotification(`Upload failed: ${error}`, 'error');
-    }
-  };
-
-  const uploadSkinWithVariant = async (filePath, localUrl, variant) => {
+  const uploadSkinWithVariant = useCallback(async (filePath, localUrl, variant) => {
     setIsUploading(true);
     setSaveVariant(variant);
 
@@ -210,9 +176,43 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
       setIsUploading(false);
       setShowVariantPicker(false);
     }
-  };
+  }, [onSkinChange, showNotification, loadProfile]);
 
-  const handleSaveToLibrary = async () => {
+  const handleUploadSkin = useCallback(async (explicitVariant) => {
+    if (!activeAccount?.isLoggedIn) {
+      showNotification('You must be logged in with a Microsoft account to change skins', 'error');
+      return;
+    }
+
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{
+          name: 'Image',
+          extensions: ['png']
+        }]
+      });
+
+      if (selected) {
+        const localUrl = convertFileSrc(selected);
+        setLastSelectedPath(selected);
+        setJustUploadedUrl(localUrl);
+
+        if (explicitVariant) {
+          // User explicitly chose a variant, upload directly
+          await uploadSkinWithVariant(selected, localUrl, explicitVariant);
+        } else {
+          // Show variant picker modal
+          setShowVariantPicker(true);
+        }
+      }
+    } catch (error) {
+      console.error('Upload failed:', error);
+      showNotification(`Upload failed: ${error}`, 'error');
+    }
+  }, [activeAccount, showNotification, uploadSkinWithVariant]);
+
+  const handleSaveToLibrary = useCallback(async () => {
     if (!saveName.trim()) {
       showNotification('Please enter a name for the skin', 'error');
       return;
@@ -231,9 +231,9 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
     } catch (error) {
       showNotification(`Failed to save: ${error}`, 'error');
     }
-  };
+  }, [saveName, lastSelectedPath, currentSkinUrl, saveVariant, showNotification, loadLibrary]);
 
-  const handleUseFromLibrary = async (skin) => {
+  const handleUseFromLibrary = useCallback(async (skin) => {
     if (!activeAccount?.isLoggedIn) {
       showNotification('You must be logged in to change skins', 'error');
       return;
@@ -256,18 +256,18 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
     } finally {
       setIsUploading(false);
     }
-  };
+  }, [activeAccount, showNotification, onSkinChange, loadProfile]);
 
-  const handleDeleteFromLibrary = async (id) => {
+  const handleDeleteFromLibrary = useCallback(async (id) => {
     try {
       await invoke('delete_skin_from_collection', { id });
       loadLibrary();
     } catch (error) {
       showNotification(`Delete failed: ${error}`, 'error');
     }
-  };
+  }, [loadLibrary, showNotification]);
 
-  const handleResetSkin = async () => {
+  const handleResetSkin = useCallback(async () => {
     try {
       setIsUploading(true);
       await invoke('reset_skin');
@@ -288,7 +288,7 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
     } finally {
       setIsUploading(false);
     }
-  };
+  }, [onSkinChange, showNotification, loadProfile]);
 
   const SkinCharacter2D = ({ src }) => (
     <div className="skin-character-2d">

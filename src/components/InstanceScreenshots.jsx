@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, memo } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import ConfirmModal from './ConfirmModal';
 import './ScreenshotContextMenu.css';
@@ -13,6 +13,16 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
   const [renameModal, setRenameModal] = useState({ show: false, screenshot: null, newName: '' });
   const [toast, setToast] = useState(null);
 
+  const loadScreenshots = useCallback(async () => {
+    try {
+      const ss = await invoke('get_instance_screenshots', { instanceId: instance.id });
+      setScreenshots(ss);
+    } catch (error) {
+      console.error('Failed to load screenshots:', error);
+    }
+    setLoading(false);
+  }, [instance.id]);
+
   useEffect(() => {
     loadScreenshots();
 
@@ -21,17 +31,7 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
     };
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
-  }, [instance.id]);
-
-  const loadScreenshots = async () => {
-    try {
-      const ss = await invoke('get_instance_screenshots', { instanceId: instance.id });
-      setScreenshots(ss);
-    } catch (error) {
-      console.error('Failed to load screenshots:', error);
-    }
-    setLoading(false);
-  };
+  }, [instance.id, loadScreenshots]);
 
   const showToast = (message) => {
     setToast(message);
@@ -39,12 +39,13 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
   };
 
   const debugLog = (message, data = null) => {
-    const fullMessage = data ? `${message} ${JSON.stringify(data)}` : message;
-    console.log(`[JS DEBUG] ${fullMessage}`);
-    invoke('log_event', {
-      level: 'info',
-      message: `[JS DEBUG] ${fullMessage}`
-    }).catch(() => { });
+    if (import.meta.env.DEV) {
+      const fullMessage = data ? `${message} ${JSON.stringify(data)}` : message;
+      invoke('log_event', {
+        level: 'info',
+        message: `[JS DEBUG] ${fullMessage}`
+      }).catch(() => { });
+    }
   };
 
   const handleOpenFolder = async () => {
@@ -362,4 +363,4 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
   );
 }
 
-export default InstanceScreenshots;
+export default memo(InstanceScreenshots);

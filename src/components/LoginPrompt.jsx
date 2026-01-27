@@ -96,6 +96,7 @@ function LoginPrompt({ onLogin, onClose, onOfflineMode }) {
     <div className="login-prompt-overlay">
       <div className="login-prompt">
         <div className="login-header">
+          {/* <img src="/logoPL.png" className="login-logo" alt="Palethea" /> */}
           <h2>Welcome to Palethea</h2>
           <p className="login-subtitle">
             Sign in with your Microsoft account to play Minecraft online.

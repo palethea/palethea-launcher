@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { RotateCcw, Trash2, FolderOpen } from 'lucide-react';
 
@@ -189,4 +189,4 @@ function InstanceConsole({ instance, onInstanceUpdated, onShowNotification, clea
   );
 }
 
-export default InstanceConsole;
+export default memo(InstanceConsole);

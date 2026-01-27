@@ -21,6 +21,7 @@ pub struct LauncherSettings {
     pub accent_color: Option<String>,
     pub background_style: Option<String>,
     pub edit_mode_preference: Option<String>,
+    pub enable_instance_animations: Option<bool>,
 }
 
 fn default_update_channel() -> Option<String> {
@@ -40,6 +41,7 @@ impl Default for LauncherSettings {
             accent_color: Some("#E89C88".to_string()),
             background_style: Some("gradient".to_string()),
             edit_mode_preference: Some("ask".to_string()),
+            enable_instance_animations: Some(true),
         }
     }
 }
