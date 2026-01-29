@@ -26,6 +26,12 @@ pub struct InstalledMod {
     pub size: u64,
     #[serde(default)]
     pub provider: String, // "Modrinth", "Manual", etc.
+    // ----------
+    // Categories
+    // Description: Modrinth category tags for filtering
+    // ----------
+    #[serde(default)]
+    pub categories: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -41,6 +47,12 @@ pub struct ModMeta {
     pub icon_url: Option<String>,
     #[serde(default)]
     pub version_name: Option<String>,
+    // ----------
+    // Categories
+    // Description: Stores Modrinth category tags for filtering installed items
+    // ----------
+    #[serde(default)]
+    pub categories: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -59,6 +71,12 @@ pub struct ResourcePack {
     pub size: u64,
     #[serde(default)]
     pub provider: String,
+    // ----------
+    // Categories
+    // Description: Modrinth category tags for filtering
+    // ----------
+    #[serde(default)]
+    pub categories: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -77,6 +95,12 @@ pub struct ShaderPack {
     pub size: u64,
     #[serde(default)]
     pub provider: String,
+    // ----------
+    // Categories
+    // Description: Modrinth category tags for filtering
+    // ----------
+    #[serde(default)]
+    pub categories: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -186,6 +210,7 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
                 let mut icon_url = None;
                 let mut version = None;
                 let mut provider = "Manual".to_string();
+                let mut categories = None;
                 
                 if meta_path.exists() {
                     if let Ok(s) = fs::read_to_string(&meta_path) {
@@ -196,6 +221,7 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
                             author = m.author;
                             icon_url = m.icon_url;
                             version = m.version_name;
+                            categories = m.categories;
                             provider = "Modrinth".to_string();
                         }
                     }
@@ -212,6 +238,7 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
                     icon_url,
                     size,
                     provider,
+                    categories,
                 });
             }
         }
@@ -290,6 +317,7 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                 let mut version = None;
                 let mut name = Some(filename.trim_end_matches(".zip").to_string());
                 let mut provider = "Manual".to_string();
+                let mut categories: Option<Vec<String>> = None;
                 
                 if meta_path.exists() {
                     if let Ok(s) = fs::read_to_string(&meta_path) {
@@ -300,6 +328,7 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                             author = m.author;
                             icon_url = m.icon_url;
                             version = m.version_name;
+                            categories = m.categories;
                             provider = "Modrinth".to_string();
                         }
                     }
@@ -315,6 +344,7 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                     icon_url,
                     size,
                     provider,
+                    categories,
                 });
             }
         }
@@ -373,6 +403,7 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                 let mut version = None;
                 let mut name = Some(filename.trim_end_matches(".zip").to_string());
                 let mut provider = "Manual".to_string();
+                let mut categories: Option<Vec<String>> = None;
                 
                 if meta_path.exists() {
                     if let Ok(s) = fs::read_to_string(&meta_path) {
@@ -383,6 +414,7 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                             author = m.author;
                             icon_url = m.icon_url;
                             version = m.version_name;
+                            categories = m.categories;
                             provider = "Modrinth".to_string();
                         }
                     }
@@ -398,6 +430,7 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                     icon_url,
                     size,
                     provider,
+                    categories,
                 });
             }
         }

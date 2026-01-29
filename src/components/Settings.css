@@ -5,14 +5,7 @@
 }
 
 .settings-header {
-  margin-bottom: 32px;
-}
-
-.settings-header h1 {
-  font-size: 28px;
-  font-weight: 700;
-  color: #fff;
-  margin: 0 0 8px 0;
+  margin-bottom: 20px;
 }
 
 .settings-content {

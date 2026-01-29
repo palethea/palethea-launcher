@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, memo, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Download, User, Info, Image as ImageIcon, List, ExternalLink, X, Copy, Save } from 'lucide-react';
+import { Download, User, Info, Image as ImageIcon, List, ExternalLink, X, Copy, Save, Trash2, Box } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -21,10 +21,35 @@ const getFullSizeUrl = (img) => {
     return clean.replace(/_\d+\.(webp|png|jpg|jpeg|gif)$/i, '.$1');
 };
 
-function ModVersionModal({ project: initialProject, projectId, gameVersion, loader, onSelect, onClose }) {
+const LOADER_CATEGORIES = ['fabric', 'forge', 'neoforge', 'quilt', 'bukkit', 'folia', 'paper', 'spigot', 'sponge', 'bungeecord', 'velocity', 'waterfall', 'purpur', 'rift', 'liteloader', 'modloader', 'risugamis-modloader'];
+
+const formatCategory = (cat) => {
+    if (!cat) return '';
+    // Handle common abbreviations or special cases from Modrinth slugs to human labels
+    const specialCases = {
+        'worldgen': 'World Generation',
+        'vanilla-like': 'Vanilla-like',
+        'core-shaders': 'Core Shaders',
+        'game-mechanics': 'Game Mechanics',
+    };
+    if (specialCases[cat.toLowerCase()]) return specialCases[cat.toLowerCase()];
+
+    return cat.split(/[_-]/)
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(' ');
+};
+
+const filterContentCategories = (categories) => {
+    if (!categories) return [];
+    return categories.filter(cat => !LOADER_CATEGORIES.includes(cat.toLowerCase()));
+};
+
+function ModVersionModal({ project: initialProject, projectId, gameVersion, loader, onSelect, onClose, installedMod, onUninstall }) {
     const [project, setProject] = useState(initialProject);
     const [versions, setVersions] = useState([]);
+    const [dependencies, setDependencies] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [loadingDeps, setLoadingDeps] = useState(false);
     const [error, setError] = useState(null);
     const [activeTab, setActiveTab] = useState('description');
     const [showAllCompatibility, setShowAllCompatibility] = useState(false);
@@ -58,11 +83,16 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                     ? fullProject.author 
                     : (currentAuthor && currentAuthor !== "Unknown Creator" ? currentAuthor : "Unknown Creator");
                 
+                // Preserve the full categories array from the search result (which includes all categories)
+                // The full project API sometimes only returns display_categories
+                const allCategories = prev?.categories || initialProject?.categories || fullProject.categories || [];
+                
                 return {
                     ...initialProject,
                     ...prev,
                     ...fullProject,
-                    author: newAuthor
+                    author: newAuthor,
+                    categories: allCategories.length > 0 ? allCategories : (fullProject.categories || [])
                 };
             });
 
@@ -87,6 +117,37 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                 return new Date(b.date_published) - new Date(a.date_published);
             });
             setVersions(sortedResults);
+
+            // Fetch dependencies for the latest version if they exist
+            if (sortedResults.length > 0) {
+                const latestVersion = sortedResults[0];
+                if (latestVersion.dependencies && latestVersion.dependencies.length > 0) {
+                    setLoadingDeps(true);
+                    try {
+                        const projectIds = latestVersion.dependencies
+                            .map(d => d.project_id)
+                            .filter(Boolean);
+                        
+                        if (projectIds.length > 0) {
+                            const depProjects = await invoke('get_modrinth_projects', { projectIds });
+                            // Merge dependency type info from version into project info
+                            const enrichedDeps = depProjects.map(p => {
+                                const depInfo = latestVersion.dependencies.find(d => d.project_id === (p.project_id || p.id));
+                                return { ...p, dependency_type: depInfo?.dependency_type };
+                            });
+                            setDependencies(enrichedDeps);
+                        }
+                    } catch (depErr) {
+                        console.error('Failed to load dependencies:', depErr);
+                    } finally {
+                        setLoadingDeps(false);
+                    }
+                } else {
+                    setDependencies([]);
+                }
+            } else {
+                setDependencies([]);
+            }
         } catch (err) {
             console.error('Failed to load mod data:', err);
             setError('Failed to fetch project data');
@@ -112,7 +173,7 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
         try {
             const fullUrl = getFullSizeUrl(galleryImg);
             
-            let response = await fetch(fullUrl);
+            let response = await fetch(fullUrl, { referrerPolicy: 'no-referrer' });
             
             const blob = await response.blob();
             
@@ -197,7 +258,12 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                                 rehypePlugins={[rehypeRaw]}
                                 components={{
                                     a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-                                    img: ({ node, ...props }) => <img {...props} style={{ maxWidth: '100%', height: 'auto', borderRadius: '8px' }} />
+                                    img: ({ node, ...props }) => <img {...props} referrerPolicy="no-referrer" style={{ maxWidth: '100%', height: 'auto', borderRadius: '8px' }} />,
+                                    // Handle non-standard tags found in Modrinth descriptions to avoid React warnings
+                                    version: ({ node, ...props }) => <span {...props} />,
+                                    minecraft: ({ node, ...props }) => <span {...props} />,
+                                    center: ({ node, ...props }) => <div style={{ textAlign: 'center' }} {...props} />,
+                                    important: ({ node, ...props }) => <span {...props} />
                                 }}
                             >
                                 {project.body}
@@ -227,7 +293,7 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                                         }}
                                     >
                                         <div className="gallery-image-container">
-                                            <img src={img.url} alt={img.title || ''} />
+                                            <img src={img.url} alt={img.title || ''} referrerPolicy="no-referrer" />
                                             <div className="gallery-item-overlay">
                                                 <ImageIcon size={24} />
                                             </div>
@@ -241,10 +307,68 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                         )}
                     </div>
                 );
+            case 'dependencies':
+                return (
+                    <div className="tab-pane dependencies-pane">
+                        {loadingDeps ? (
+                            <div className="loading-state">
+                                <div className="spinner"></div>
+                                <span>Loading dependencies...</span>
+                            </div>
+                        ) : dependencies.length > 0 ? (
+                            <div className="dependencies-list">
+                                {dependencies.map((dep) => (
+                                    <div 
+                                        key={dep.project_id || dep.id} 
+                                        className="dependency-card"
+                                        onClick={() => {
+                                            // Handle clicking a dependency - maybe switch to that mod view?
+                                            // For now we'll just show info
+                                        }}
+                                    >
+                                        <div className="dep-icon">
+                                            {dep.icon_url ? (
+                                                <img src={dep.icon_url} alt="" referrerPolicy="no-referrer" />
+                                            ) : (
+                                                <div className="dep-icon-placeholder">📦</div>
+                                            )}
+                                        </div>
+                                        <div className="dep-info">
+                                            <div className="dep-title-row">
+                                                <h4>{dep.title}</h4>
+                                                <span className={`dep-type-tag ${dep.dependency_type}`}>
+                                                    {dep.dependency_type || 'required'}
+                                                </span>
+                                            </div>
+                                            <p className="dep-description">{dep.description}</p>
+                                            <div className="dep-meta">
+                                                <span>by {dep.author || 'Unknown'}</span>
+                                                <span className="dot">•</span>
+                                                <span>{formatNumber(dep.downloads || 0)} downloads</span>
+                                            </div>
+                                        </div>
+                                        <ExternalLink 
+                                            size={16} 
+                                            className="dep-external" 
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                const type = dep.project_type || 'mod';
+                                                const slug = dep.slug || dep.project_id || dep.id;
+                                                invoke('open_url', { url: `https://modrinth.com/${type}/${slug}` });
+                                            }}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="empty-state">No dependencies listed for the latest version.</div>
+                        )}
+                    </div>
+                );
             default:
                 return null;
         }
-    }, [loading, activeTab, project]);
+    }, [loading, loadingDeps, activeTab, project, dependencies, formatNumber]);
 
     const compatibilityInfo = useMemo(() => {
         if (!project?.game_versions) return null;
@@ -265,7 +389,7 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                 <div className="version-modal-header">
                     <div className="header-info">
                         {project?.icon_url ? (
-                            <img src={project.icon_url} alt="" className="project-icon-large" />
+                            <img src={project.icon_url} alt="" className="project-icon-large" referrerPolicy="no-referrer" />
                         ) : (
                             <div className="project-icon-large project-icon-placeholder">📦</div>
                         )}
@@ -284,6 +408,26 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
 
                 <div className="rich-modal-content">
                     <div className="rich-modal-sidebar">
+                        {installedMod && (
+                            <div className="sidebar-section">
+                                <label>Status</label>
+                                <div className="sidebar-status-box">
+                                    <div className="status-header">
+                                        <div className="status-indicator"></div>
+                                        <span>Installed</span>
+                                    </div>
+                                    <div className="status-version-link" onClick={() => {
+                                        // Scroll to version in list if possible, or just show it
+                                    }}>
+                                        {installedMod.version || installedMod.versionName || installedMod.version_name || 'Unknown version'}
+                                    </div>
+                                    {installedMod.filename && (
+                                        <div className="status-filename">{installedMod.filename}</div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
                         <div className="sidebar-section">
                             <label>Details</label>
                             <div className="sidebar-stats">
@@ -349,8 +493,8 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                             <div className="sidebar-section">
                                 <label>Categories</label>
                                 <div className="category-tags">
-                                    {project.categories.map(cat => (
-                                        <span key={cat} className="category-tag">{cat}</span>
+                                    {filterContentCategories(project.categories).map(cat => (
+                                        <span key={cat} className="category-tag">{formatCategory(cat)}</span>
                                     ))}
                                 </div>
                             </div>
@@ -373,6 +517,14 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                                 <ImageIcon size={16} />
                                 Gallery
                             </button>
+                            <button 
+                                className={`modal-tab ${activeTab === 'dependencies' ? 'active' : ''}`}
+                                onClick={() => setActiveTab('dependencies')}
+                            >
+                                <Box size={16} />
+                                Dependencies
+                                {dependencies.length > 0 && <span className="tab-count">{dependencies.length}</span>}
+                            </button>
                         </div>
 
                         <div className="modal-tab-content">
@@ -394,18 +546,28 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                                 <div className="empty-state mini">No versions found</div>
                             ) : (
                                 <div className="versions-small-list">
-                                    {versions.map((v) => (
-                                        <div key={v.id} className="version-mini-item" onClick={() => onSelect(v)}>
-                                            <div className="mini-item-top">
-                                                <span className="mini-name" title={v.name}>{v.name}</span>
-                                                <span className={`version-tag-mini ${v.version_type}`}></span>
+                                    {versions.map((v) => {
+                                        const isInstalled = installedMod?.version_id === v.id;
+                                        return (
+                                            <div 
+                                                key={v.id} 
+                                                className={`version-mini-item ${isInstalled ? 'installed' : ''}`} 
+                                                onClick={() => onSelect(v)}
+                                            >
+                                                <div className="mini-item-top">
+                                                    <span className="mini-name" title={v.name}>{v.name}</span>
+                                                    <div className="mini-item-tags">
+                                                        {isInstalled && <span className="installed-label">INSTALLED</span>}
+                                                        <span className={`version-tag-mini ${v.version_type}`}></span>
+                                                    </div>
+                                                </div>
+                                                <div className="mini-item-bottom">
+                                                    <span className="mini-number">{v.version_number}</span>
+                                                    <span className="mini-date">{formatDate(v.date_published)}</span>
+                                                </div>
                                             </div>
-                                            <div className="mini-item-bottom">
-                                                <span className="mini-number">{v.version_number}</span>
-                                                <span className="mini-date">{formatDate(v.date_published)}</span>
-                                            </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>
@@ -420,6 +582,15 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                         <ExternalLink size={14} />
                         <span>View on Modrinth</span>
                     </button>
+                    {installedMod && (
+                        <button 
+                            className="uninstall-btn"
+                            onClick={() => onUninstall(installedMod)}
+                        >
+                            <Trash2 size={14} />
+                            <span>Uninstall</span>
+                        </button>
+                    )}
                     <button className="btn-secondary" onClick={onClose}>Cancel</button>
                 </div>
             </div>
@@ -436,7 +607,7 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
                             </div>
                         )}
                         <div className="gallery-modal-image-wrapper">
-                            <img src={getFullSizeUrl(selectedGalleryImage)} alt={selectedGalleryImage.title || ''} />
+                            <img src={getFullSizeUrl(selectedGalleryImage)} alt={selectedGalleryImage.title || ''} referrerPolicy="no-referrer" />
                             <button className="gallery-modal-close" onClick={() => setSelectedGalleryImage(null)}>
                                 <X size={20} />
                             </button>

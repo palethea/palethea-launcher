@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { save } from '@tauri-apps/plugin-dialog';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
@@ -42,7 +42,7 @@ const devLog = (...args) => {
     const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
     // Only send to Rust if it's not a spammy render log or sync confirmation
     if (!message.includes('component rendering') && !message.includes('Clock synced')) {
-      invoke('log_event', { level: 'debug', message }).catch(() => {});
+      invoke('log_event', { level: 'debug', message }).catch(() => { });
     }
   }
 };
@@ -50,7 +50,7 @@ const devLog = (...args) => {
 const devError = (...args) => {
   if (import.meta.env.DEV) {
     const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
-    invoke('log_event', { level: 'error', message }).catch(() => {});
+    invoke('log_event', { level: 'error', message }).catch(() => { });
   }
 };
 
@@ -82,7 +82,54 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [openEditors, setOpenEditors] = useState([]);
   const [showEditChoiceModal, setShowEditChoiceModal] = useState(null); // { instanceId } or null
-  
+  const [downloadQueue, setDownloadQueue] = useState([]); // Array of { id, name, icon, status, progress }
+  const [downloadHistory, setDownloadHistory] = useState([]); // Array of last 10 finished downloads
+
+  const handleQueueDownload = useCallback((item) => {
+    setDownloadQueue(prev => {
+      // Avoid duplicates in active queue
+      if (prev.find(i => i.id === item.id)) return prev;
+      const newQueue = [...prev, item];
+      emit('sync-download-queue', newQueue).catch(console.error);
+      return newQueue;
+    });
+  }, []);
+
+  const handleDequeueDownload = useCallback((id, addToHistory = true) => {
+    setDownloadQueue(prev => {
+      const item = prev.find(i => i.id === id);
+      const newQueue = prev.filter(i => i.id !== id);
+
+      if (item && addToHistory) {
+        // Add to history
+        setDownloadHistory(hPrev => {
+          // Avoid duplicates in history
+          const filteredHistory = hPrev.filter(h => h.id !== id);
+          const newHistory = [{ ...item, status: 'Completed', finishedAt: Date.now() }, ...filteredHistory];
+          const finalHistory = newHistory.slice(0, 10);
+          emit('sync-download-history', finalHistory).catch(console.error);
+          return finalHistory;
+        });
+      }
+
+      emit('sync-download-queue', newQueue).catch(console.error);
+      return newQueue;
+    });
+  }, []);
+
+  const handleUpdateDownloadStatus = useCallback((id, status) => {
+    setDownloadQueue(prev => {
+      const newQueue = prev.map(i => i.id === id ? { ...i, status } : i);
+      emit('sync-download-queue', newQueue).catch(console.error);
+      return newQueue;
+    });
+  }, []);
+
+  const handleClearDownloadHistory = useCallback(() => {
+    setDownloadHistory([]);
+    emit('sync-download-history', []).catch(console.error);
+  }, []);
+
   const showNotification = useCallback((message, type = 'info') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 5000);
@@ -108,13 +155,13 @@ function App() {
     if (launcherSettings?.accent_color) {
       const root = document.documentElement;
       root.style.setProperty('--accent', launcherSettings.accent_color);
-      
+
       // Convert hex to rgb for transparency support
       const hex = launcherSettings.accent_color.replace('#', '');
       const r = parseInt(hex.substring(0, 2), 16);
       const g = parseInt(hex.substring(2, 4), 16);
       const b = parseInt(hex.substring(4, 6), 16);
-      
+
       if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
         root.style.setProperty('--accent-rgb', `${r}, ${g}, ${b}`);
       }
@@ -233,7 +280,7 @@ function App() {
           isLoggedIn: activeAcc.is_microsoft,
           uuid: activeAcc.uuid
         };
-        
+
         setActiveAccount(initialAccountState);
 
         // ASYNC VALIDATION: Don't await this to avoid blocking app startup
@@ -296,7 +343,7 @@ function App() {
               devLog('Silent account validation failed:', err);
             }
           }
-          
+
           // Switch to active account in backend if not already done
           await invoke('switch_account', { username: activeAcc.username });
           // Fetch skin in background
@@ -319,7 +366,7 @@ function App() {
       // Strictly prevent double-init
       if (initializationRef.current) return;
       initializationRef.current = true;
-      
+
       try {
         const syncStart = performance.now();
         bootstrapOffset = await invoke('get_bootstrap_time');
@@ -330,7 +377,7 @@ function App() {
         offsetSynced = true;
       }
 
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Initialization timed out')), 15000)
       );
 
@@ -386,9 +433,9 @@ function App() {
 
       // Check for both percentage and progress (Tauri 2 event payloads vary)
       const stage = payload.stage || 'Launching...';
-      const percentage = typeof payload.percentage === 'number' ? payload.percentage : 
-                        (typeof payload.progress === 'number' ? payload.progress : 0);
-      
+      const percentage = typeof payload.percentage === 'number' ? payload.percentage :
+        (typeof payload.progress === 'number' ? payload.progress : 0);
+
       // Update logs for visible history
       setLogs(prev => [...prev.slice(-199), {
         id: Date.now() + Math.random(),
@@ -399,7 +446,7 @@ function App() {
 
       setLoadingStatus(stage);
       setLoadingProgress(percentage);
-      
+
       const total_bytes = payload.total_bytes;
       const downloaded_bytes = payload.downloaded_bytes;
       if (typeof total_bytes === 'number' && typeof downloaded_bytes === 'number') {
@@ -417,6 +464,15 @@ function App() {
     const unlistenRefresh = listen('refresh-instances', () => {
       loadInstances();
       loadRunningInstances();
+    });
+
+    // Listen for cross-window download sync
+    const unlistenQueueSync = listen('sync-download-queue', (event) => {
+      setDownloadQueue(event.payload);
+    });
+
+    const unlistenHistorySync = listen('sync-download-history', (event) => {
+      setDownloadHistory(event.payload);
     });
 
     // Listen for exit confirmation
@@ -439,6 +495,8 @@ function App() {
       unlistenLog.then(fn => fn());
       unlistenProgress.then(fn => fn());
       unlistenRefresh.then(fn => fn());
+      unlistenQueueSync.then(fn => fn());
+      unlistenHistorySync.then(fn => fn());
       unlistenExit.then(fn => fn());
       document.removeEventListener('contextmenu', handleContextMenu);
     };
@@ -551,15 +609,15 @@ function App() {
       // ----------
       if (modLoader === 'share-code') {
         const { shareData } = modLoaderVersion;
-        const { 
-          name: originalName, 
-          version: mcVersion, 
-          loader, 
-          loader_version, 
-          mods, 
-          resourcepacks, 
+        const {
+          name: originalName,
+          version: mcVersion,
+          loader,
+          loader_version,
+          mods,
+          resourcepacks,
           shaders,
-          datapacks = [] 
+          datapacks = []
         } = shareData;
 
         setLoadingStatus(`Preparing instance "${name || originalName}"...`);
@@ -573,10 +631,10 @@ function App() {
           ...shaders.map(s => s.project_id || s.projectId),
           ...datapacks.map(d => d.project_id || d.projectId)
         ].filter(Boolean);
-        
+
         const uniqueIds = [...new Set(allProjectIds)];
         let projectMap = {};
-        
+
         try {
           if (uniqueIds.length > 0) {
             const projects = await invoke('get_modrinth_projects', { projectIds: uniqueIds });
@@ -591,9 +649,9 @@ function App() {
         }
 
         // 1. Create the instance
-        const newInstance = await invoke('create_instance', { 
-          name: name || originalName, 
-          versionId: mcVersion 
+        const newInstance = await invoke('create_instance', {
+          name: name || originalName,
+          versionId: mcVersion
         });
 
         await setupJava(newInstance.id, javaVersion);
@@ -615,7 +673,7 @@ function App() {
             await invoke('install_neoforge', { instanceId: newInstance.id, loaderVersion: loader_version });
           }
         }
-        
+
         // 4. Download Mods, Resource Packs, Shaders, etc.
         // ... (existing code for share-code continues)
 
@@ -628,17 +686,17 @@ function App() {
           const CONCURRENCY = 10;
           for (let i = 0; i < items.length; i += CONCURRENCY) {
             const chunk = items.slice(i, i + CONCURRENCY);
-            
+
             await Promise.all(chunk.map(async (item) => {
               const mid = item.project_id || item.projectId;
               const vid = item.version_id || item.versionId;
-              
+
               try {
                 let info;
                 if (vid) {
                   info = await invoke('get_modrinth_version', { versionId: vid });
                 } else {
-                  const versions = await invoke('get_modrinth_versions', { 
+                  const versions = await invoke('get_modrinth_versions', {
                     projectId: mid,
                     gameVersion: mcVersion,
                     loader: type === 'mod' ? (loader === 'vanilla' ? null : loader) : null
@@ -648,7 +706,7 @@ function App() {
 
                 if (info) {
                   let project = projectMap[mid];
-                  
+
                   if (!project) {
                     try {
                       project = await invoke('get_modrinth_project', { projectId: mid });
@@ -658,7 +716,7 @@ function App() {
                   }
 
                   const file = info.files.find(f => f.primary) || info.files[0];
-                  
+
                   await invoke('install_modrinth_file', {
                     instanceId: newInstance.id,
                     fileUrl: file.url,
@@ -670,13 +728,14 @@ function App() {
                     author: project?.author || item.author || null,
                     iconUrl: project?.icon_url || item.icon_url || item.iconUrl || null,
                     versionName: info.name || item.version_name || item.versionName,
-                    worldName: worldName
+                    worldName: worldName,
+                    categories: project?.categories || project?.display_categories || item.categories || null
                   });
                 }
               } catch (e) {
                 console.warn(`Failed to install ${type} ${mid}:`, e);
               }
-              
+
               completedItems++;
               setLoadingStatus(`Installing ${type} ${completedItems}/${totalItems}...`);
               setLoadingProgress(20 + (completedItems / totalItems) * 75);
@@ -687,7 +746,7 @@ function App() {
         await processItems(mods, 'mod');
         await processItems(resourcepacks, 'resourcepack');
         await processItems(shaders, 'shader');
-        
+
         if (datapacks.length > 0) {
           // For datapacks, we create a default world since they must belong to a world
           await processItems(datapacks, 'datapack', 'Shared World');
@@ -867,7 +926,7 @@ function App() {
     setIsLoading(true);
     setLoadingStatus('Starting launch sequence...');
     setLoadingProgress(5);
-    
+
     // Give React a frame to render the overlay before the backend starts heavy preparation
     await new Promise(resolve => setTimeout(resolve, 50));
 
@@ -882,7 +941,7 @@ function App() {
       const result = await invoke('launch_instance', { instanceId });
       showNotification(result, 'success');
       loadRunningInstances(); // Update running instances immediately
-      
+
       // Keep the 100% state visible for a moment before closing overlay
       await new Promise(resolve => setTimeout(resolve, 800));
     } catch (error) {
@@ -1026,7 +1085,7 @@ function App() {
 
   const handleOpenPopoutEditor = useCallback(async (instanceId) => {
     const windowLabel = `editor-${instanceId}`;
-    
+
     // Check if already open
     if (openEditors.includes(instanceId)) {
       const win = await WebviewWindow.getByLabel(windowLabel);
@@ -1211,6 +1270,9 @@ function App() {
             onStop={handleStopInstance}
             runningInstances={runningInstances}
             onShowNotification={showNotification}
+            onQueueDownload={handleQueueDownload}
+            onDequeueDownload={handleDequeueDownload}
+            onUpdateDownloadStatus={handleUpdateDownloadStatus}
             onDelete={(id) => {
               performDeleteInstance(id);
               setEditingInstanceId(null);
@@ -1323,43 +1385,53 @@ function App() {
   if (popoutMode === 'editor' && popoutInstanceId) {
     return (
       <div className={`app popout-window bg-${launcherSettings?.background_style || 'gradient'}`} style={{ height: '100vh', width: '100vw' }}>
-        <TitleBar 
-          activeTab={activeTab} 
+        <TitleBar
+          activeTab={activeTab}
           onTabChange={setActiveTab}
           isPopout={true}
           launcherSettings={launcherSettings}
+          instances={instances}
+          runningInstances={runningInstances}
+          onStopInstance={handleStopInstance}
+          editingInstanceId={popoutInstanceId}
+          downloadQueue={downloadQueue}
+          downloadHistory={downloadHistory}
+          onClearDownloadHistory={handleClearDownloadHistory}
         />
         <div className="app-main-layout">
           <main className="main-content" style={{ padding: 0 }}>
-          <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
-            <InstanceEditor
-              instanceId={popoutInstanceId}
-              isPopout={true}
-              onClose={async () => {
-                devLog('Closing pop-out window...');
-                try {
+            <Suspense fallback={<div className="centered-loader"><div className="init-spinner"></div></div>}>
+              <InstanceEditor
+                instanceId={popoutInstanceId}
+                isPopout={true}
+                onClose={async () => {
+                  devLog('Closing pop-out window...');
+                  try {
+                    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+                    await getCurrentWindow().close();
+                  } catch (e) {
+                    devError('Failed to close window:', e);
+                    window.close(); // Fallback
+                  }
+                }}
+                onUpdate={loadInstances}
+                onLaunch={handleLaunchInstance}
+                onStop={handleStopInstance}
+                runningInstances={runningInstances}
+                onShowNotification={showNotification}
+                onQueueDownload={handleQueueDownload}
+                onDequeueDownload={handleDequeueDownload}
+                onUpdateDownloadStatus={handleUpdateDownloadStatus}
+                onDelete={async (id) => {
+                  await performDeleteInstance(id);
                   const { getCurrentWindow } = await import('@tauri-apps/api/window');
-                  await getCurrentWindow().close();
-                } catch (e) {
-                  devError('Failed to close window:', e);
-                  window.close(); // Fallback
-                }
-              }}
-              onUpdate={loadInstances}
-              onLaunch={handleLaunchInstance}
-              onStop={handleStopInstance}
-              runningInstances={runningInstances}
-              onShowNotification={showNotification}
-              onDelete={async (id) => {
-                await performDeleteInstance(id);
-                const { getCurrentWindow } = await import('@tauri-apps/api/window');
-                getCurrentWindow().close();
-              }}
-            />
-          </Suspense>
-        </main>
+                  getCurrentWindow().close();
+                }}
+              />
+            </Suspense>
+          </main>
         </div>
-        
+
         {notification && (
           <div className={`notification notification-${notification.type}`}>
             {notification.message}
@@ -1380,42 +1452,46 @@ function App() {
 
   return (
     <div className={`app bg-${launcherSettings?.background_style || 'gradient'}`}>
-      <TitleBar 
-        activeTab={activeTab} 
+      <TitleBar
+        activeTab={activeTab}
         onTabChange={setActiveTab}
         launcherSettings={launcherSettings}
         runningInstances={runningInstances}
         instances={instances}
         onStopInstance={handleStopInstance}
+        editingInstanceId={editingInstanceId}
+        downloadQueue={downloadQueue}
+        downloadHistory={downloadHistory}
+        onClearDownloadHistory={handleClearDownloadHistory}
       />
       <div className="app-main-layout">
         <Sidebar
           activeTab={activeTab}
-        onTabChange={(tab) => {
-          setEditingInstanceId(null);
-          setActiveTab(tab);
-        }}
-        accounts={accounts}
-        activeAccount={activeAccount}
-        onSwitchAccount={handleSwitchAccount}
-        onAddAccount={handleAddAccount}
-        onRemoveAccount={handleRemoveAccount}
-        skinRefreshKey={skinRefreshKey}
-        currentSkinTexture={currentSkinUrl}
-        skinCache={skinCache}
-        launcherSettings={launcherSettings}
-        onOpenAccountManager={() => setShowAccountManager(true)}
-        onShowInfo={(config) => {
-          setConfirmModal({
-            ...config,
-            onConfirm: () => setConfirmModal(null),
-            onCancel: () => setConfirmModal(null)
-          });
-        }}
-      />
-      <main className="main-content">
-        {renderContent()}
-      </main>
+          onTabChange={(tab) => {
+            setEditingInstanceId(null);
+            setActiveTab(tab);
+          }}
+          accounts={accounts}
+          activeAccount={activeAccount}
+          onSwitchAccount={handleSwitchAccount}
+          onAddAccount={handleAddAccount}
+          onRemoveAccount={handleRemoveAccount}
+          skinRefreshKey={skinRefreshKey}
+          currentSkinTexture={currentSkinUrl}
+          skinCache={skinCache}
+          launcherSettings={launcherSettings}
+          onOpenAccountManager={() => setShowAccountManager(true)}
+          onShowInfo={(config) => {
+            setConfirmModal({
+              ...config,
+              onConfirm: () => setConfirmModal(null),
+              onCancel: () => setConfirmModal(null)
+            });
+          }}
+        />
+        <main className="main-content">
+          {renderContent()}
+        </main>
       </div>
 
       {showWelcome && (
@@ -1502,11 +1578,11 @@ function App() {
                 {(loadingBytes.current / 1024 / 1024).toFixed(1)} MB / {(loadingBytes.total / 1024 / 1024).toFixed(1)} MB
               </p>
             )}
-              {loadingCount.total > 0 && (
-                <p className="loading-count">
-                  {loadingCount.current} / {loadingCount.total} files
-                </p>
-              )}
+            {loadingCount.total > 0 && (
+              <p className="loading-count">
+                {loadingCount.current} / {loadingCount.total} files
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -1540,9 +1616,20 @@ function App() {
           message={confirmModal.message}
           confirmText={confirmModal.confirmText}
           cancelText={confirmModal.cancelText}
+          extraConfirmText={confirmModal.extraConfirmText}
           variant={confirmModal.variant}
-          onConfirm={confirmModal.onConfirm}
-          onCancel={confirmModal.onCancel}
+          onConfirm={() => {
+            if (confirmModal.onConfirm) confirmModal.onConfirm();
+            setConfirmModal(null);
+          }}
+          onCancel={() => {
+            if (confirmModal.onCancel) confirmModal.onCancel();
+            setConfirmModal(null);
+          }}
+          onExtraConfirm={() => {
+            if (confirmModal.onExtraConfirm) confirmModal.onExtraConfirm();
+            setConfirmModal(null);
+          }}
         />
       )}
 

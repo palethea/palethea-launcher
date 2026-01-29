@@ -1,11 +1,27 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Loader2 } from 'lucide-react';
+import { Loader2, ChevronDown, Check, ListFilterPlus, Settings2 } from 'lucide-react';
 import './CreateInstance.css';
 import VersionSelector from './VersionSelector';
+import FilterModal from './FilterModal';
+
+const MODPACK_CATEGORIES = [
+  { id: 'all', label: 'All Categories' },
+  { id: 'adventure', label: 'Adventure' },
+  { id: 'challenging', label: 'Challenging' },
+  { id: 'combat', label: 'Combat' },
+  { id: 'kitchen-sink', label: 'Kitchen Sink' },
+  { id: 'lightweight', label: 'Lightweight' },
+  { id: 'magic', label: 'Magic' },
+  { id: 'multiplayer', label: 'Multiplayer' },
+  { id: 'optimization', label: 'Optimization' },
+  { id: 'quests', label: 'Quests' },
+  { id: 'technology', label: 'Technology' },
+];
 
 function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
+  // 1. State Hooks
   const [creationMode, setCreationMode] = useState('version'); // 'version', 'modpack', 'import', or 'share-code'
   const [name, setName] = useState('');
   const [selectedVersion, setSelectedVersion] = useState('');
@@ -27,6 +43,8 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
   const [modpackVersionsLoading, setModpackVersionsLoading] = useState(false);
   const [modpackTotalSize, setModpackTotalSize] = useState(null);
   const [sizeLoading, setSizeLoading] = useState(false);
+  const [selectedModpackCategories, setSelectedModpackCategories] = useState([]);
+  const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
 
   // Import state
   const [importZipPath, setImportZipPath] = useState('');
@@ -42,7 +60,6 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
   const [modpackOffset, setModpackOffset] = useState(0);
   const [hasMoreModpacks, setHasMoreModpacks] = useState(true);
   const [loadingMoreModpacks, setLoadingMoreModpacks] = useState(false);
-  const modpackObserver = useRef();
 
   // Java recommendation state
   const [selectedJava, setSelectedJava] = useState(21);
@@ -51,12 +68,38 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
   const [isJavaDownloading, setIsJavaDownloading] = useState(false);
   const [javaDownloadError, setJavaDownloadError] = useState('');
 
-  // Filters
-  const [enabledTypes, setEnabledTypes] = useState(['release']);
-  const [searchQuery] = useState('');
-  const [loaderSearchQuery] = useState('');
+  // Version loading state
   const [loadingVersions, setLoadingVersions] = useState(true);
 
+  // 2. Ref Hooks
+  const modpackObserver = useRef();
+
+  // 3. useMemo hooks
+  const canNextFromName = useMemo(() => (creationMode === 'import' || creationMode === 'share-code') ? true : name.trim().length > 0, [creationMode, name]);
+  
+  const canNextFromVersion = useMemo(() => creationMode === 'version'
+    ? !!selectedVersion
+    : creationMode === 'modpack'
+      ? !!selectedModpack
+      : creationMode === 'share-code'
+        ? !!decodedShareData
+        : !!importZipPath, [creationMode, selectedVersion, selectedModpack, decodedShareData, importZipPath]);
+  
+  const canNextFromLoader = useMemo(() => creationMode === 'version'
+    ? (modLoader === 'vanilla' || !!selectedLoaderVersion)
+    : creationMode === 'modpack'
+      ? !!selectedModpackVersion
+      : true, [creationMode, modLoader, selectedLoaderVersion, selectedModpackVersion]);
+  
+  const canCreate = useMemo(() => creationMode === 'version'
+    ? (name.trim() && selectedVersion && (modLoader === 'vanilla' || selectedLoaderVersion))
+    : creationMode === 'modpack'
+      ? (name.trim() && selectedModpack && selectedModpackVersion)
+      : creationMode === 'share-code'
+        ? !!decodedShareData
+        : !!importZipPath, [creationMode, name, selectedVersion, modLoader, selectedLoaderVersion, selectedModpack, selectedModpackVersion, decodedShareData, importZipPath]);
+
+  // 4. useCallback hooks
   const loadVersions = useCallback(async () => {
     setLoadingVersions(true);
     try {
@@ -77,23 +120,25 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
   const handleSearchModpacks = useCallback(async (queryOverride) => {
     const query = queryOverride !== undefined ? queryOverride : modpackSearch;
     setModpacksLoading(true);
+    setModpacks([]); // Clear results immediately to show loading state
     setModpackOffset(0);
     setHasMoreModpacks(true);
     try {
       const result = await invoke('search_modrinth', {
         query: query,
         projectType: 'modpack',
+        categories: selectedModpackCategories.length > 0 ? selectedModpackCategories : null,
         limit: 20,
         offset: 0
       });
-      setModpacks(result.hits);
-      setHasMoreModpacks(result.hits.length === 20 && result.total_hits > 20);
-      setModpackOffset(result.hits.length);
+      setModpacks(result.hits || []);
+      setHasMoreModpacks((result.hits || []).length === 20 && result.total_hits > 20);
+      setModpackOffset((result.hits || []).length);
     } catch (error) {
       console.error('Failed to search modpacks:', error);
     }
     setModpacksLoading(false);
-  }, [modpackSearch]);
+  }, [modpackSearch, selectedModpackCategories]);
 
   const handleLoadMoreModpacks = useCallback(async () => {
     if (loadingMoreModpacks || !hasMoreModpacks) return;
@@ -102,6 +147,7 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
       const result = await invoke('search_modrinth', {
         query: modpackSearch,
         projectType: 'modpack',
+        categories: selectedModpackCategories.length > 0 ? selectedModpackCategories : null,
         limit: 20,
         offset: modpackOffset
       });
@@ -115,7 +161,7 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
       console.error('Failed to load more modpacks:', error);
     }
     setLoadingMoreModpacks(false);
-  }, [loadingMoreModpacks, hasMoreModpacks, modpackSearch, modpackOffset]);
+  }, [loadingMoreModpacks, hasMoreModpacks, modpackSearch, modpackOffset, selectedModpackCategories]);
 
   const loadLoaderVersions = useCallback(async () => {
     if (modLoader === 'vanilla' || !selectedVersion) {
@@ -171,51 +217,6 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     if (node) modpackObserver.current.observe(node);
   }, [modpacksLoading, loadingMoreModpacks, hasMoreModpacks, handleLoadMoreModpacks]);
 
-  useEffect(() => {
-    loadVersions();
-    handleSearchModpacks(""); // Load popular modpacks by default
-  }, [loadVersions, handleSearchModpacks]);
-
-  const filteredVersions = useMemo(() => versions.filter((v) => {
-    const matchesFilter = enabledTypes.length === 0 || enabledTypes.includes(v.version_type);
-    const matchesSearch = v.id.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesFilter && matchesSearch;
-  }), [versions, enabledTypes, searchQuery]);
-
-  const filteredLoaderVersions = useMemo(() => loaderVersions.filter((v) => {
-    return v.version.toLowerCase().includes(loaderSearchQuery.toLowerCase());
-  }), [loaderVersions, loaderSearchQuery]);
-
-  useEffect(() => {
-    if (selectedVersion && modLoader !== 'vanilla') {
-      loadLoaderVersions();
-    }
-  }, [selectedVersion, modLoader, loadLoaderVersions]);
-
-  useEffect(() => {
-    if (selectedModpackVersion) {
-      calculateTotalSize(selectedModpackVersion.id);
-    } else {
-      setModpackTotalSize(null);
-    }
-  }, [selectedModpackVersion, calculateTotalSize]);
-
-  const toggleType = useCallback((type) => {
-    setEnabledTypes(prev =>
-      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
-    );
-  }, []);
-
-  const formatDate = useCallback((isoStr) => {
-    if (!isoStr) return 'Unknown';
-    try {
-      const date = new Date(isoStr);
-      return date.toLocaleDateString(undefined, { year: '2-digit', month: 'numeric', day: 'numeric' });
-    } catch {
-      return isoStr;
-    }
-  }, []);
-
   const getRecommendedJava = useCallback((mcVersion) => {
     if (!mcVersion) return 21;
     try {
@@ -241,41 +242,6 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     }
   }, []);
 
-  useEffect(() => {
-    const checkJava = async () => {
-      setIsJavaChecking(true);
-      try {
-        const installed = await invoke('is_java_version_installed', { version: selectedJava });
-        setIsJavaInstalled(installed);
-      } catch (e) {
-        console.error('Failed to check Java:', e);
-      }
-      setIsJavaChecking(false);
-    };
-
-    if (step === 3) {
-      checkJava();
-    }
-  }, [step, selectedJava]);
-
-  useEffect(() => {
-    // When selected version changes, update recommended java
-    let mcVersion = null;
-    if (creationMode === 'version') {
-      mcVersion = selectedVersion;
-    } else if (creationMode === 'modpack' && selectedModpackVersion) {
-      mcVersion = selectedModpackVersion.game_versions[0];
-    } else if (creationMode === 'share-code' && decodedShareData) {
-      mcVersion = decodedShareData.version;
-    } else if (creationMode === 'import' && importInfo) {
-      mcVersion = importInfo.version_id;
-    }
-
-    if (mcVersion) {
-      setSelectedJava(getRecommendedJava(mcVersion));
-    }
-  }, [selectedVersion, selectedModpackVersion, decodedShareData, importInfo, creationMode, getRecommendedJava]);
-
   const handleSelectModpack = useCallback(async (mp) => {
     setSelectedModpack(mp);
     setModpackVersionsLoading(true);
@@ -291,10 +257,6 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     setModpackVersionsLoading(false);
   }, []);
 
-  // ----------
-  // handleSelectZipFile
-  // Description: Opens a file dialog to select a .zip file for importing
-  // ----------
   const handleSelectZipFile = useCallback(async () => {
     try {
       const selected = await open({
@@ -393,42 +355,79 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
     }
   }, [isJavaInstalled, selectedJava, creationMode, name, selectedVersion, modLoader, selectedLoaderVersion, selectedModpack, selectedModpackVersion, importZipPath, decodedShareData, onCreate]);
 
-  // ----------
-  // Validation logic
-  // Description: Determines when user can proceed to next step or create instance
-  // ----------
-  const canNextFromName = useMemo(() => (creationMode === 'import' || creationMode === 'share-code') ? true : name.trim().length > 0, [creationMode, name]);
-  const canNextFromVersion = useMemo(() => creationMode === 'version'
-    ? !!selectedVersion
-    : creationMode === 'modpack'
-      ? !!selectedModpack
-      : creationMode === 'share-code'
-        ? !!decodedShareData
-        : !!importZipPath, [creationMode, selectedVersion, selectedModpack, decodedShareData, importZipPath]);
-  const canNextFromLoader = useMemo(() => creationMode === 'version'
-    ? (modLoader === 'vanilla' || !!selectedLoaderVersion)
-    : creationMode === 'modpack'
-      ? !!selectedModpackVersion
-      : true, [creationMode, modLoader, selectedLoaderVersion, selectedModpackVersion]);
-  const canCreate = useMemo(() => creationMode === 'version'
-    ? (name.trim() && selectedVersion && (modLoader === 'vanilla' || selectedLoaderVersion))
-    : creationMode === 'modpack'
-      ? (name.trim() && selectedModpack && selectedModpackVersion)
-      : creationMode === 'share-code'
-        ? !!decodedShareData
-        : !!importZipPath, [creationMode, name, selectedVersion, modLoader, selectedLoaderVersion, selectedModpack, selectedModpackVersion, decodedShareData, importZipPath]);
+  // 5. useEffect hooks
+  useEffect(() => {
+    if (creationMode === 'modpack') {
+      handleSearchModpacks();
+    }
+  }, [selectedModpackCategories, handleSearchModpacks, creationMode]);
+
+  useEffect(() => {
+    loadVersions();
+    handleSearchModpacks(""); // Load popular modpacks by default
+  }, [loadVersions, handleSearchModpacks]);
+
+  useEffect(() => {
+    if (selectedVersion && modLoader !== 'vanilla') {
+      loadLoaderVersions();
+    }
+  }, [selectedVersion, modLoader, loadLoaderVersions]);
+
+  useEffect(() => {
+    if (selectedModpackVersion) {
+      calculateTotalSize(selectedModpackVersion.id);
+    } else {
+      setModpackTotalSize(null);
+    }
+  }, [selectedModpackVersion, calculateTotalSize]);
+
+  useEffect(() => {
+    const checkJava = async () => {
+      setIsJavaChecking(true);
+      try {
+        const installed = await invoke('is_java_version_installed', { version: selectedJava });
+        setIsJavaInstalled(installed);
+      } catch (e) {
+        console.error('Failed to check Java:', e);
+      }
+      setIsJavaChecking(false);
+    };
+
+    if (step === 3) {
+      checkJava();
+    }
+  }, [step, selectedJava]);
+
+  useEffect(() => {
+    // When selected version changes, update recommended java
+    let mcVersion = null;
+    if (creationMode === 'version') {
+      mcVersion = selectedVersion;
+    } else if (creationMode === 'modpack' && selectedModpackVersion) {
+      mcVersion = selectedModpackVersion.game_versions[0];
+    } else if (creationMode === 'share-code' && decodedShareData) {
+      mcVersion = decodedShareData.version;
+    } else if (creationMode === 'import' && importInfo) {
+      mcVersion = importInfo.version_id;
+    }
+
+    if (mcVersion) {
+      setSelectedJava(getRecommendedJava(mcVersion));
+    }
+  }, [selectedVersion, selectedModpackVersion, decodedShareData, importInfo, creationMode, getRecommendedJava]);
 
   const isPage = mode === 'page';
 
-  const versionTypes = [
-    { id: 'release', label: 'Releases' },
-    { id: 'snapshot', label: 'Snapshots' },
-    { id: 'old_beta', label: 'Betas' },
-    { id: 'old_alpha', label: 'Alphas' },
-  ];
-
   const content = (
     <div className={isPage ? 'create-page' : 'modal'} onClick={(e) => e.stopPropagation()}>
+      <FilterModal 
+        isOpen={isFilterModalOpen}
+        onClose={() => setIsFilterModalOpen(false)}
+        categories={MODPACK_CATEGORIES}
+        selectedCategories={selectedModpackCategories}
+        onApply={setSelectedModpackCategories}
+        title="Modpack Filters"
+      />
       <div className={isPage ? 'create-header' : 'modal-header'}>
         <h2>{creationMode === 'import'
           ? (step === 0 ? 'Instance Identity' : step === 1 ? 'Select File' : 'Java Environment')
@@ -672,21 +671,36 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
           <div className="modpack-step">
             <div className="modpack-search-container">
               <div className="search-bar">
-                <span className="search-icon">🔍</span>
-                <input
-                  type="text"
-                  value={modpackSearch}
-                  onChange={(e) => setModpackSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearchModpacks()}
-                  placeholder="Search Modrinth modpacks..."
-                  className="modpack-search-input"
-                />
+                <button 
+                  className={`filter-btn-modal ${selectedModpackCategories.length > 0 ? 'active' : ''}`}
+                  onClick={() => setIsFilterModalOpen(true)}
+                  title="Filter by Categories"
+                >
+                  <ListFilterPlus size={18} />
+                  <span>Filters</span>
+                  {selectedModpackCategories.length > 0 && (
+                    <span className="filter-count">{selectedModpackCategories.length}</span>
+                  )}
+                </button>
+
+                <div className="search-input-wrapper-refined">
+                  <div className="search-box-wide">
+                    <input
+                      type="text"
+                      value={modpackSearch}
+                      onChange={(e) => setModpackSearch(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSearchModpacks()}
+                      placeholder="Search Modrinth modpacks..."
+                    />
+                  </div>
+                </div>
+
                 <button
-                  className="btn btn-primary search-btn"
+                  className="search-btn"
                   onClick={() => handleSearchModpacks()}
                   disabled={modpacksLoading}
                 >
-                  {modpacksLoading ? '...' : 'Search'}
+                  {modpacksLoading ? <Loader2 className="spin" size={18} /> : 'Search'}
                 </button>
               </div>
             </div>
@@ -694,7 +708,13 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
             <div className="version-list" style={{ flex: 1, minHeight: 0 }}>
               {modpacks.length === 0 ? (
                 <div className="empty-state">
-                  <p>{modpacksLoading ? 'Searching Modrinth...' : 'Enter a search term to find modpacks'}</p>
+                  <p>
+                    {modpacksLoading 
+                      ? 'Searching Modrinth...' 
+                      : (modpackSearch.trim() || selectedModpackCategories.length > 0 
+                          ? `No modpacks found for your search.` 
+                          : 'Enter a search term to find modpacks.')}
+                  </p>
                 </div>
               ) : (
                 <div className="modpack-grid">

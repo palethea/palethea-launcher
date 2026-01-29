@@ -1,4 +1,4 @@
-use crate::minecraft::downloader::{self, get_assets_dir, get_libraries_dir, get_versions_dir, DownloadProgress};
+use crate::minecraft::downloader::{get_assets_dir, get_libraries_dir, get_versions_dir, DownloadProgress};
 use crate::minecraft::instances::{Instance, ModLoader};
 use crate::minecraft::versions::{self, should_use_library, VersionDetails};
 use crate::minecraft::settings;

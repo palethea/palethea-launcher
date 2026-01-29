@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, memo, useRef } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { sep } from '@tauri-apps/api/path';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { X, Minus, Maximize, Minimize2, Terminal, ChevronDown, Square } from 'lucide-react';
+import { X, Minus, Maximize, Minimize2, Terminal, ChevronDown, Square, List, Shirt, BarChart3, RefreshCcw, Wallpaper, Settings, Download, Trash2, Play } from 'lucide-react';
 import './TitleBar.css';
 
 function TitleBar({ 
@@ -12,18 +12,38 @@ function TitleBar({
   launcherSettings, 
   runningInstances = {}, 
   instances = [],
-  onStopInstance
+  onStopInstance,
+  editingInstanceId = null,
+  downloadQueue = [],
+  downloadHistory = [],
+  onClearDownloadHistory
 }) {
   const [isMaximized, setIsMaximized] = useState(false);
   const [showRunningDropdown, setShowRunningDropdown] = useState(false);
+  const [showDownloadDropdown, setShowDownloadDropdown] = useState(false);
   const [currentTime, setCurrentTime] = useState(Math.floor(Date.now() / 1000));
   const [isClosing, setIsClosing] = useState(false);
+  const [isDownloadClosing, setIsDownloadClosing] = useState(false);
   const [logoMap, setLogoMap] = useState({});
   const dropdownRef = useRef(null);
+  const downloadRef = useRef(null);
   const appWindow = getCurrentWindow();
 
   const runningIds = Object.keys(runningInstances);
   const hasRunning = runningIds.length > 0;
+  const hasDownloads = downloadQueue.length > 0;
+
+  const TABS_CONFIG = {
+    instances: { label: 'Instances', icon: List },
+    skins: { label: 'Skins', icon: Shirt },
+    stats: { label: 'Stats', icon: BarChart3 },
+    updates: { label: 'Updates', icon: RefreshCcw },
+    appearance: { label: 'Appearance', icon: Wallpaper },
+    settings: { label: 'Settings', icon: Settings },
+  };
+
+  const currentTabInfo = TABS_CONFIG[activeTab];
+  const editingInstance = editingInstanceId ? instances.find(i => i.id === editingInstanceId) : null;
 
   // Create a stable key that only changes when logos actually change
   const logoKey = instances.map(i => `${i.id}:${i.logo_filename || 'default'}`).join(',');
@@ -37,6 +57,18 @@ function TitleBar({
       }, 200); // Match CSS animation time
     } else {
       setShowRunningDropdown(true);
+    }
+  };
+
+  const toggleDownloadDropdown = () => {
+    if (showDownloadDropdown) {
+      setIsDownloadClosing(true);
+      setTimeout(() => {
+        setShowDownloadDropdown(false);
+        setIsDownloadClosing(false);
+      }, 200);
+    } else {
+      setShowDownloadDropdown(true);
     }
   };
 
@@ -58,8 +90,10 @@ function TitleBar({
         const logosDir = `${normalizedBase}${s}instance_logos`;
         
         const newLogoMap = {};
+        const idsToLoad = new Set([...runningIds]);
+        if (editingInstanceId) idsToLoad.add(editingInstanceId);
 
-        for (const id of runningIds) {
+        for (const id of idsToLoad) {
           const instance = instances.find(i => i.id === id);
           if (instance) {
             const filename = instance.logo_filename || 'minecraft_logo.png';
@@ -73,12 +107,12 @@ function TitleBar({
       }
     };
 
-    if (hasRunning && instances.length > 0) {
+    if ((hasRunning || editingInstanceId) && instances.length > 0) {
       loadLogos();
-    } else if (!hasRunning) {
+    } else if (!hasRunning && !editingInstanceId) {
       setLogoMap({});
     }
-  }, [hasRunning, runningIds.join(','), logoKey]);
+  }, [hasRunning, runningIds.join(','), logoKey, editingInstanceId]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -87,15 +121,20 @@ function TitleBar({
           toggleDropdown();
         }
       }
+      if (downloadRef.current && !downloadRef.current.contains(event.target)) {
+        if (showDownloadDropdown && !isDownloadClosing) {
+          toggleDownloadDropdown();
+        }
+      }
     };
 
-    if (showRunningDropdown) {
+    if (showRunningDropdown || showDownloadDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showRunningDropdown, isClosing]);
+  }, [showRunningDropdown, isClosing, showDownloadDropdown, isDownloadClosing]);
 
   useEffect(() => {
     const updateMaximized = async () => {
@@ -171,22 +210,46 @@ function TitleBar({
       </div>
 
       <div className="titlebar-center">
-        {hasRunning && !isPopout && (
-          <div className="running-instances-container" ref={dropdownRef}>
-            <button 
-              className={`running-instances-pill ${showRunningDropdown ? 'active' : ''}`}
-              onClick={toggleDropdown}
-            >
-              <div className="pulse-dot"></div>
-              <span>{runningIds.length} {runningIds.length === 1 ? 'instance' : 'instances'} running</span>
-              <ChevronDown size={14} className={`chevron ${showRunningDropdown && !isClosing ? 'inverted' : ''}`} />
-            </button>
+        {editingInstance && (
+          <div className="titlebar-center-tab titlebar-editing-info">
+            <div className="editing-logo">
+              {logoMap[editingInstanceId] ? (
+                <img src={logoMap[editingInstanceId]} alt="" />
+              ) : (
+                <div className="editing-logo-fallback">{editingInstance.name.charAt(0)}</div>
+              )}
+            </div>
+            <span>{editingInstance.name}</span>
+          </div>
+        )}
+        {!isPopout && !editingInstance && currentTabInfo && (
+          <div className="titlebar-center-tab">
+            <currentTabInfo.icon size={16} />
+            <span>{currentTabInfo.label}</span>
+          </div>
+        )}
+      </div>
+      
+      <div className="titlebar-right">
+        <div className="running-instances-container" ref={dropdownRef}>
+          <button 
+            className={`running-instances-pill ${showRunningDropdown ? 'active' : ''} ${!hasRunning ? 'no-running' : ''}`}
+            onClick={toggleDropdown}
+            title="Running Instances"
+          >
+            <Play size={14} fill={hasRunning ? "currentColor" : "none"} className={hasRunning ? 'play-active' : ''} />
+            <span>{runningIds.length}</span>
+            <ChevronDown size={14} className={`chevron ${showRunningDropdown && !isClosing ? 'inverted' : ''}`} />
+          </button>
 
-            {showRunningDropdown && (
-              <div className={`running-dropdown ${isClosing ? 'closing' : ''}`}>
-                <div className="dropdown-header">Running Instances</div>
-                <div className="dropdown-list">
-                  {runningIds.map(id => {
+          {showRunningDropdown && (
+            <div className={`running-dropdown ${isClosing ? 'closing' : ''}`}>
+              <div className="dropdown-header">Running Instances</div>
+              <div className="dropdown-list">
+                {runningIds.length === 0 ? (
+                  <div className="dropdown-empty">No instances running</div>
+                ) : (
+                  runningIds.map(id => {
                     const instance = instances.find(i => i.id === id);
                     if (!instance) return null;
                     const info = runningInstances[id];
@@ -226,15 +289,101 @@ function TitleBar({
                         </button>
                       </div>
                     );
-                  })}
-                </div>
+                  })
+                )}
               </div>
-            )}
-          </div>
-        )}
-      </div>
-      
-      <div className="titlebar-right">
+            </div>
+          )}
+        </div>
+
+        <div className="download-queue-container" ref={downloadRef}>
+          <button 
+            className={`download-queue-btn ${showDownloadDropdown ? 'active' : ''}`}
+            onClick={toggleDownloadDropdown}
+            title="Download Queue"
+          >
+            <Download size={18} />
+            {downloadQueue.length > 0 && <span className="download-count">{downloadQueue.length}</span>}
+          </button>
+
+          {showDownloadDropdown && (
+            <div className={`running-dropdown download-dropdown ${isDownloadClosing ? 'closing' : ''}`}>
+              <div className="dropdown-header">
+                <span>Downloads</span>
+                {downloadHistory.length > 0 && (
+                  <button 
+                    className="clear-history-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClearDownloadHistory?.();
+                    }}
+                    title="Clear History"
+                  >
+                    <Trash2 size={12} />
+                    <span>Clear</span>
+                  </button>
+                )}
+              </div>
+              <div className="dropdown-list">
+                {downloadQueue.length === 0 && downloadHistory.length === 0 ? (
+                  <div className="dropdown-empty">No downloads</div>
+                ) : (
+                  <>
+                    {/* Active Downloads */}
+                    {downloadQueue.map((item, index) => (
+                      <div key={`active-${item.id || index}`} className="running-item">
+                        <div className="running-item-left">
+                          <div className="running-item-logo">
+                            {item.icon ? (
+                              <img src={item.icon} alt="" referrerPolicy="no-referrer" />
+                            ) : (
+                              <div className="logo-fallback">📦</div>
+                            )}
+                          </div>
+                          <div className="running-item-info">
+                            <div className="running-item-name">{item.name}</div>
+                            <div className="running-item-time">{item.status || 'Pending...'}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Separator if both exist */}
+                    {downloadQueue.length > 0 && downloadHistory.length > 0 && (
+                      <div className="download-separator">
+                        <div className="separator-line"></div>
+                        <span>Recent</span>
+                        <div className="separator-line"></div>
+                      </div>
+                    )}
+
+                    {/* History */}
+                    {downloadHistory.map((item, index) => (
+                      <div key={`history-${item.id || index}`} className="running-item items-history">
+                        <div className="running-item-left">
+                          <div className="running-item-logo">
+                            {item.icon ? (
+                              <img src={item.icon} alt="" referrerPolicy="no-referrer" style={{ opacity: 0.6 }} />
+                            ) : (
+                              <div className="logo-fallback" style={{ opacity: 0.6 }}>📦</div>
+                            )}
+                          </div>
+                          <div className="running-item-info" style={{ opacity: 0.6 }}>
+                            <div className="running-item-name">{item.name}</div>
+                            <div className="running-item-time">Installed</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="titlebar-v-separator"></div>
+
         <button className="titlebar-button" onClick={handleMinimize} title="Minimize">
           <Minus size={18} />
         </button>

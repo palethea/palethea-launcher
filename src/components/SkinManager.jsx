@@ -330,9 +330,8 @@ function SkinManager({ activeAccount, showNotification, onSkinChange, onPreviewC
 
   return (
     <div className="skin-manager">
-      <div className="skin-header">
-        <h1>Skin Manager</h1>
-        <p className="subtitle">Customize your in-game appearance</p>
+      <div className="skin-header page-header">
+        <p className="page-subtitle">Personalize your character by uploading custom skins or choosing from your library.</p>
       </div>
 
       <div className="skin-top-row">

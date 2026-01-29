@@ -29,9 +29,8 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
 
   return (
     <div className="settings">
-      <div className="settings-header">
-        <h1>Appearance</h1>
-        <p>Customise how Palethea Launcher looks and feels.</p>
+      <div className="settings-header page-header">
+        <p className="page-subtitle">Tailor the launcher's appearance with custom accent colors, background styles, and UI effects.</p>
       </div>
 
       <div className="settings-content">

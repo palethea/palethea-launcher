@@ -106,9 +106,8 @@ const Stats = () => {
 
     return (
         <div className="stats-container">
-            <header className="stats-header">
-                <h1>Global Statistics</h1>
-                <p>Your Palethea journey at a glance</p>
+            <header className="stats-header page-header">
+                <p className="page-subtitle">Monitor your total playtime, game launches, and favorite versions across all instances.</p>
             </header>
 
             <div className="stats-sections">

@@ -253,9 +253,8 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
 
   return (
     <div className="settings">
-      <div className="settings-header">
-        <h1>Settings</h1>
-        <p className="subtitle">Configure your launcher preferences</p>
+      <div className="settings-header page-header">
+        <p className="page-subtitle">Configure your account settings, launcher behavior, and system options for the best experience.</p>
       </div>
 
       <div className="settings-content">

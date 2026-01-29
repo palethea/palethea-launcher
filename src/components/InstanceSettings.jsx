@@ -5,6 +5,7 @@ import { join } from '@tauri-apps/api/path';
 import { Box, ChevronDown, ChevronUp, Cpu, Save, Trash2, Image, Check, Minus, Plus } from 'lucide-react';
 import VersionSelector from './VersionSelector';
 import IconPicker from './IconPicker';
+import OptionsEditorModal from './OptionsEditorModal';
 
 function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, onDelete, onShowNotification, isScrolled }) {
   const getRecommendedJava = useCallback((mcVersion) => {
@@ -55,6 +56,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
   const [showVersionSelector, setShowVersionSelector] = useState(false);
   const [showLoaderSelector, setShowLoaderSelector] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
+  const [showOptionsEditor, setShowOptionsEditor] = useState(false);
   const [installingLoader, setInstallingLoader] = useState(false);
 
   const loadVersions = useCallback(async () => {
@@ -322,6 +324,16 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
               onChange={(e) => setName(e.target.value)}
             />
           </div>
+          <div className="setting-row">
+            <label>Options File</label>
+            <button
+              className="btn btn-secondary"
+              onClick={() => setShowOptionsEditor(true)}
+              style={{ flex: 1, padding: '10px 12px', textAlign: 'center' }}
+            >
+              Edit options.txt
+            </button>
+          </div>
           <div className="setting-row-vertical">
             <label>Game Version</label>
             <div
@@ -472,7 +484,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
             <label>Quick Java Install</label>
             <div className="java-download-actions">
               <div className="p-dropdown" ref={javaDropdownRef}>
-                <button 
+                <button
                   className={`p-dropdown-trigger ${showJavaDropdown ? 'active' : ''}`}
                   onClick={() => setShowJavaDropdown(!showJavaDropdown)}
                   style={{ minWidth: '160px' }}
@@ -489,7 +501,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
                       const verStr = v.toString();
                       const isRecommended = verStr === getRecommendedJava(versionId).toString();
                       return (
-                        <div 
+                        <div
                           key={v}
                           className={`p-dropdown-item ${javaDownloadVersion === verStr ? 'selected' : ''}`}
                           onClick={() => {
@@ -541,16 +553,16 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
                 step={512}
               />
               <div className="p-stepper-actions">
-                <button 
-                  className="p-stepper-btn" 
+                <button
+                  className="p-stepper-btn"
                   onClick={() => setMemory(Math.max(512, memory - 512))}
                   disabled={memory <= 512}
                   title="Decrease Memory"
                 >
                   <Minus size={16} />
                 </button>
-                <button 
-                  className="p-stepper-btn" 
+                <button
+                  className="p-stepper-btn"
                   onClick={() => setMemory(Math.min(32768, memory + 512))}
                   disabled={memory >= 32768}
                   title="Increase Memory"
@@ -590,6 +602,13 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
           currentIcon={instance.logo_filename}
           onClose={() => setShowIconPicker(false)}
           onSelect={handleIconSelect}
+        />
+      )}
+      {showOptionsEditor && (
+        <OptionsEditorModal
+          instanceId={instance.id}
+          onClose={() => setShowOptionsEditor(false)}
+          onShowNotification={onShowNotification}
         />
       )}
     </div>

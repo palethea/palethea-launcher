@@ -322,6 +322,43 @@ fn clear_instance_logo(instance_id: String) -> Result<instances::Instance, Strin
 }
 
 #[tauri::command]
+fn get_instance_options(instance_id: String) -> Result<String, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let options_path = instance.get_game_directory().join("options.txt");
+    
+    if !options_path.exists() {
+        return Ok("".to_string());
+    }
+    
+    fs::read_to_string(options_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_instance_options(instance_id: String, content: String) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let game_dir = instance.get_game_directory();
+    
+    if !game_dir.exists() {
+        fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let options_path = game_dir.join("options.txt");
+    fs::write(options_path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_instance_options_file(instance_id: String) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let options_path = instance.get_game_directory().join("options.txt");
+    
+    if !options_path.exists() {
+        return Err("options.txt does not exist yet. Launch the game once to generate it or save settings here first.".to_string());
+    }
+    
+    open_path_native(&options_path)
+}
+
+#[tauri::command]
 fn get_available_logos() -> Result<Vec<String>, String> {
     let logos_dir = downloader::get_instance_logos_dir();
     if !logos_dir.exists() {
@@ -2105,18 +2142,20 @@ async fn search_modrinth(
     project_type: String,
     game_version: Option<String>,
     loader: Option<String>,
-    category: Option<String>,
+    categories: Option<Vec<String>>,
     limit: u32,
     offset: u32,
+    index: Option<String>,
 ) -> Result<modrinth::ModrinthSearchResult, String> {
     modrinth::search_projects(
         &query,
         &project_type,
         game_version.as_deref(),
         loader.as_deref(),
-        category.as_deref(),
+        categories,
         limit,
         offset,
+        index.as_deref(),
     )
     .await
     .map_err(|e| e.to_string())
@@ -2188,6 +2227,11 @@ async fn install_modrinth_file(
     author: Option<String>,
     icon_url: Option<String>,
     version_name: Option<String>,
+    // ----------
+    // Categories parameter
+    // Description: Modrinth category tags for filtering installed items
+    // ----------
+    categories: Option<Vec<String>>,
 ) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
     
@@ -2260,6 +2304,7 @@ async fn install_modrinth_file(
             author,
             icon_url,
             version_name,
+            categories,
         };
         let meta_path = dest_dir.join(format!("{}.meta.json", filename));
         if let Ok(json) = serde_json::to_string(&meta) {
@@ -2804,6 +2849,9 @@ pub fn run() {
             delete_instance,
             update_instance,
             clone_instance,
+            get_instance_options,
+            save_instance_options,
+            open_instance_options_file,
             get_instance_details,
             get_available_logos,
             set_instance_logo,

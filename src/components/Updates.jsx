@@ -354,10 +354,9 @@ function Updates() {
 
   return (
     <div className="updates-page">
-      <header className="updates-header">
+      <header className="updates-header page-header">
         <div>
-          <h1>Updates</h1>
-          <p className="subtitle">Keep the launcher current and see what changed.</p>
+          <p className="page-subtitle">Stay up to date with the latest launcher improvements, bug fixes, and feature additions.</p>
         </div>
         <div className="updates-actions">
           <button

@@ -1,6 +1,6 @@
 import './ConfirmModal.css';
 
-function ConfirmModal({ isOpen = true, title, message, confirmText = 'Delete', cancelText = 'Cancel', onConfirm, onCancel, variant = 'danger' }) {
+function ConfirmModal({ isOpen = true, title, message, confirmText = 'Delete', cancelText = 'Cancel', extraConfirmText, onConfirm, onCancel, onExtraConfirm, variant = 'danger' }) {
   if (!isOpen) return null;
   
   return (
@@ -10,12 +10,17 @@ function ConfirmModal({ isOpen = true, title, message, confirmText = 'Delete', c
           <h3>{title}</h3>
         </div>
         <div className="confirm-body">
-          <p>{message}</p>
+          {typeof message === 'string' ? <p>{message}</p> : message}
         </div>
         <div className="confirm-footer">
           {onCancel && cancelText !== null && (
             <button className="confirm-btn cancel" onClick={onCancel}>
               {cancelText}
+            </button>
+          )}
+          {extraConfirmText && (
+            <button className="confirm-btn secondary" onClick={onExtraConfirm}>
+              {extraConfirmText}
             </button>
           )}
           <button className={`confirm-btn ${variant}`} onClick={onConfirm}>

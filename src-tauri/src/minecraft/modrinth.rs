@@ -18,6 +18,14 @@ fn get_user_agent() -> String {
     format!("PaletheaLauncher/{} (github.com/PaletheaLauncher)", super::get_launcher_version())
 }
 
+// Global HTTP client for connection pooling
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .user_agent(get_user_agent())
+        .build()
+        .unwrap()
+});
+
 // Rate limiter: Modrinth allows ~300 requests/min, we'll be conservative with 10 concurrent
 static MODRINTH_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(10));
 
@@ -203,55 +211,73 @@ pub async fn search_projects(
     project_type: &str, // "mod", "resourcepack", "shader"
     game_version: Option<&str>,
     loader: Option<&str>,
-    category: Option<&str>,
+    categories: Option<Vec<String>>,
     limit: u32,
     offset: u32,
+    index: Option<&str>,
 ) -> Result<ModrinthSearchResult, Box<dyn Error + Send + Sync>> {
     // Acquire rate limit permit
     let _permit = MODRINTH_SEMAPHORE.acquire().await?;
     
-    let client = reqwest::Client::new();
+    let mut facet_groups: Vec<Vec<String>> = Vec::new();
     
-    let mut facets = vec![format!("[\"project_type:{}\"]", project_type)];
+    // Base filter: project type
+    facet_groups.push(vec![format!("project_type:{}", project_type)]);
     
     if let Some(version) = game_version {
-        facets.push(format!("[\"versions:{}\"]", version));
+        if !version.is_empty() {
+            facet_groups.push(vec![format!("versions:{}", version)]);
+        }
     }
     
-    if let Some(loader) = loader {
-        facets.push(format!("[\"categories:{}\"]", loader));
+    if let Some(loader_val) = loader {
+        if !loader_val.is_empty() {
+            facet_groups.push(vec![format!("categories:{}", loader_val)]);
+        }
     }
 
-    if let Some(cat) = category {
-        facets.push(format!("[\"categories:{}\"]", cat));
+    if let Some(cats) = categories {
+        for cat in cats {
+            if !cat.is_empty() {
+                // Each category in its own inner array = AND logic
+                facet_groups.push(vec![format!("categories:{}", cat)]);
+            }
+        }
     }
     
-    let facets_str = format!("[{}]", facets.join(","));
+    let facets_str = serde_json::to_string(&facet_groups)?;
     
-    let url = format!(
-        "{}/search?query={}&facets={}&limit={}&offset={}",
-        MODRINTH_API_BASE,
-        urlencoding::encode(query),
-        urlencoding::encode(&facets_str),
-        limit,
-        offset
-    );
+    // Use reqwest's query building for reliable parameter encoding
+    let mut url = format!("{}/search", MODRINTH_API_BASE);
     
-    let response = client
+    let mut params = vec![
+        ("query", query.to_string()),
+        ("facets", facets_str),
+        ("limit", limit.to_string()),
+        ("offset", offset.to_string()),
+    ];
+
+    if let Some(idx) = index {
+        if !idx.is_empty() {
+            params.push(("index", idx.to_string()));
+        }
+    }
+    
+    let response = HTTP_CLIENT
         .get(&url)
-        .header("User-Agent", get_user_agent())
+        .query(&params)
         .send()
         .await?;
     
     let status = response.status();
-    let body = response.text().await?;
+    let body_text = response.text().await?;
     
     if !status.is_success() {
-        return Err(format!("Modrinth API error ({}): {}", status, body).into());
+        return Err(format!("Modrinth API error ({}): {}", status, body_text).into());
     }
     
-    let result: ModrinthSearchResult = serde_json::from_str(&body)
-        .map_err(|e| format!("Failed to parse Modrinth response: {}. Body preview: {}", e, &body[..body.len().min(500)]))?;
+    let result: ModrinthSearchResult = serde_json::from_str(&body_text)
+        .map_err(|e| format!("Failed to parse Modrinth response: {}. Body preview: {}", e, &body_text[..body_text.len().min(500)]))?;
     Ok(result)
 }
 
@@ -804,6 +830,7 @@ pub async fn install_modpack(
                 author: project.map(|p| p.author.clone()),
                 icon_url: project.and_then(|p| p.icon_url.clone()),
                 version_name: version.map(|v| v.version_number.clone()),
+                categories: project.map(|p| p.categories.clone()),
             };
 
             let meta_path = PathBuf::from(format!("{}.meta.json", dest.to_string_lossy()));

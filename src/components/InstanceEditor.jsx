@@ -11,16 +11,19 @@ import InstanceScreenshots from './InstanceScreenshots';
 import InstanceConsole from './InstanceConsole';
 import ConfirmModal from './ConfirmModal';
 
-function InstanceEditor({ 
-  instanceId, 
-  onClose, 
-  onUpdate, 
-  onLaunch, 
-  onStop, 
-  runningInstances, 
-  onDelete, 
+function InstanceEditor({
+  instanceId,
+  onClose,
+  onUpdate,
+  onLaunch,
+  onStop,
+  runningInstances,
+  onDelete,
   onShowNotification,
-  onPopout
+  onPopout,
+  onQueueDownload,
+  onDequeueDownload,
+  onUpdateDownloadStatus
 }) {
   const [instance, setInstance] = useState(null);
   const [activeTab, setActiveTab] = useState('settings');
@@ -155,9 +158,17 @@ function InstanceEditor({
       case 'console':
         return <InstanceConsole instance={instance} onInstanceUpdated={setInstance} onShowNotification={onShowNotification} clearOnMount={consoleClearKey} isScrolled={scrolled} />;
       case 'mods':
-        return <InstanceMods instance={instance} onShowConfirm={handleShowConfirm} onShowNotification={onShowNotification} isScrolled={scrolled} />;
+        return <InstanceMods
+          instance={instance}
+          onShowConfirm={handleShowConfirm}
+          onShowNotification={onShowNotification}
+          isScrolled={scrolled}
+          onQueueDownload={onQueueDownload}
+          onDequeueDownload={onDequeueDownload}
+          onUpdateDownloadStatus={onUpdateDownloadStatus}
+        />;
       case 'resources':
-        return <InstanceResources instance={instance} onShowNotification={onShowNotification} isScrolled={scrolled} />;
+        return <InstanceResources instance={instance} onShowConfirm={handleShowConfirm} onShowNotification={onShowNotification} isScrolled={scrolled} />;
       case 'worlds':
         return <InstanceWorlds instance={instance} onShowNotification={onShowNotification} isScrolled={scrolled} />;
       case 'servers':
@@ -189,19 +200,22 @@ function InstanceEditor({
     <div className="instance-editor">
       <div className="editor-header">
         <div className="header-left">
-          <button className={`back-btn ${isPopout ? 'popout-close-btn' : ''}`} onClick={onClose}>
+          <button className={`back-btn icon-only ${isPopout ? 'popout-close-btn' : ''}`} onClick={onClose} title={isPopout ? 'Close' : 'Back'}>
             {isPopout ? <X size={18} /> : <ArrowLeft size={18} />}
-            <span>{isPopout ? 'Close' : 'Back'}</span>
           </button>
-          <button className="folder-btn" onClick={handleOpenFolder} title="Open Instance Folder">
+          <button className="folder-btn icon-only" onClick={handleOpenFolder} title="Open Instance Folder">
             <FolderOpen size={18} />
-            <span>Files</span>
           </button>
+          {!isPopout && onPopout && (
+            <button className="popout-btn icon-only" onClick={onPopout} title="Open in Pop-out Window">
+              <ExternalLink size={18} />
+            </button>
+          )}
         </div>
+
+        <div className="header-separator" />
+
         <div className="header-title-container">
-          <div className="title-row">
-            <h1>{instance.name}</h1>
-          </div>
           <div className="info-row">
             <span className="info-badge version-badge">
               <Box size={12} />
@@ -235,12 +249,6 @@ function InstanceEditor({
               </>
             )}
           </button>
-          {!isPopout && onPopout && (
-            <button className="popout-btn" onClick={onPopout} title="Open in Pop-out Window">
-              <ExternalLink size={18} />
-              <span>Pop Out</span>
-            </button>
-          )}
         </div>
       </div>
 
@@ -266,6 +274,7 @@ function InstanceEditor({
           message={confirmModal.message}
           confirmText={confirmModal.confirmText}
           cancelText={confirmModal.cancelText}
+          extraConfirmText={confirmModal.extraConfirmText}
           variant={confirmModal.variant}
           onConfirm={() => {
             setConfirmModal(null);
@@ -274,6 +283,10 @@ function InstanceEditor({
           onCancel={confirmModal.cancelText === null ? null : () => {
             setConfirmModal(null);
             if (confirmModal.onCancel) confirmModal.onCancel();
+          }}
+          onExtraConfirm={() => {
+            setConfirmModal(null);
+            if (confirmModal.onExtraConfirm) confirmModal.onExtraConfirm();
           }}
         />
       )}

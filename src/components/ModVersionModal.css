@@ -54,10 +54,12 @@
 }
 
 .version-modal.rich-modal {
-    width: 950px;
-    height: 750px;
-    max-width: 95vw;
-    max-height: 90vh;
+    width: 92%;
+    height: 88%;
+    max-width: 1000px;
+    max-height: 800px;
+    min-width: 320px;
+    min-height: 320px;
 }
 
 .version-modal-header {
@@ -73,11 +75,14 @@
     display: flex;
     align-items: center;
     gap: 16px;
+    min-width: 0;
+    flex: 1;
 }
 
 .project-icon-large {
     width: 56px;
     height: 56px;
+    flex-shrink: 0;
     border-radius: 12px;
     object-fit: cover;
     background: rgba(255, 255, 255, 0.05);
@@ -85,12 +90,21 @@
 }
 
 .project-icon-placeholder {
+    width: 56px;
+    height: 56px;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     background: var(--surface-hover);
     font-size: 24px;
     border: 1px solid var(--border);
+    border-radius: 12px;
+}
+
+.header-text {
+    flex: 1;
+    min-width: 0;
 }
 
 .header-text h3 {
@@ -99,6 +113,9 @@
     font-weight: 700;
     color: #fff;
     letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .header-meta-row {
@@ -130,6 +147,7 @@
     color: var(--muted);
     line-height: 1.4;
     opacity: 0.8;
+    max-width: 100%;
 }
 
 .close-btn {
@@ -138,9 +156,12 @@
     color: var(--muted);
     font-size: 28px;
     cursor: pointer;
-    padding: 4px;
+    padding: 10px;
     line-height: 1;
     transition: all 0.2s;
+    flex-shrink: 0;
+    margin-left: 16px;
+    z-index: 10;
 }
 
 .close-btn:hover {
@@ -155,7 +176,9 @@
 }
 
 .rich-modal-sidebar {
-    width: 200px;
+    width: 20%;
+    min-width: 160px;
+    max-width: 200px;
     border-right: 1px solid var(--border);
     background: rgba(0, 0, 0, 0.15);
     padding: 24px 12px;
@@ -172,10 +195,13 @@
     overflow: hidden;
     background: rgba(0, 0, 0, 0.05);
     border-right: 1px solid var(--border);
+    min-width: 300px;
 }
 
 .rich-modal-versions {
-    width: 280px;
+    width: 25%;
+    min-width: 220px;
+    max-width: 300px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -555,8 +581,8 @@
 
 .gallery-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 20px;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
 }
 
 .gallery-item {
@@ -953,4 +979,232 @@
 .btn-secondary:hover {
     background: var(--surface-hover);
     border-color: var(--muted);
+}
+
+/* Status and Uninstall */
+.sidebar-status-box {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.status-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #4ade80;
+}
+
+.status-indicator {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 8px rgba(74, 222, 128, 0.5);
+}
+
+.status-version-link {
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.status-filename {
+    font-size: 11px;
+    color: var(--muted);
+    word-break: break-all;
+    opacity: 0.7;
+}
+
+.version-mini-item.installed {
+    border-color: rgba(74, 222, 128, 0.3);
+    background: rgba(74, 222, 128, 0.05);
+}
+
+.mini-item-tags {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.installed-label {
+    font-size: 9px;
+    font-weight: 800;
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.1);
+    padding: 1px 4px;
+    border-radius: 3px;
+    letter-spacing: 0.05em;
+}
+
+.uninstall-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    padding: 10px 20px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.uninstall-btn:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.4);
+    transform: translateY(-1px);
+}
+
+/* Dependencies Tab */
+.tab-count {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--muted);
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-size: 10px;
+    margin-left: 6px;
+}
+
+.modal-tab.active .tab-count {
+    background: var(--accent);
+    color: #fff;
+}
+
+.dependencies-pane {
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.dependencies-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.dependency-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    transition: all 0.2s;
+    cursor: default;
+    position: relative;
+}
+
+.dependency-card:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--accent);
+}
+
+
+.dep-icon {
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    background: var(--surface-hover);
+    overflow: hidden;
+}
+
+.dep-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.dep-icon-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+}
+
+.dep-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.dep-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+
+.dep-title-row h4 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.dep-type-tag {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 4px;
+    letter-spacing: 0.02em;
+}
+
+.dep-type-tag.required {
+    background: rgba(var(--accent-rgb), 0.1);
+    color: var(--accent);
+}
+
+.dep-type-tag.optional {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--muted);
+}
+
+.dep-description {
+    margin: 0 0 6px 0;
+    font-size: 13px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+}
+
+.dep-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--muted);
+    opacity: 0.7;
+}
+
+.dep-meta .dot {
+    font-size: 8px;
+}
+
+.dep-external {
+    color: var(--muted);
+    cursor: pointer;
+    transition: color 0.2s;
+    
+    width: fit-content;
+    height: fit-content;
+}
+
+.dep-external:hover {
+    color: var(--accent);
 }

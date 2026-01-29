@@ -18,14 +18,7 @@
 }
 
 .skin-header {
-  margin-bottom: 32px;
-}
-
-.skin-header h1 {
-  font-size: 24px;
-  font-weight: 500;
-  margin: 0;
-  color: var(--foreground);
+  margin-bottom: 20px;
 }
 
 .skin-content {

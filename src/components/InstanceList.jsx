@@ -156,9 +156,12 @@ function InstanceList({
   return (
     <div className="instance-list" onScroll={handleScroll} onContextMenu={handleContainerContextMenu}>
       {instances.length > 0 && (
-        <div className={`instance-header ${scrolled ? 'scrolled' : ''}`}>
-          <h1>Instances</h1>
-          <div className="header-actions">
+        <>
+          <div className="page-header" style={{ marginTop: '20px', marginBottom: '0' }}>
+            <p className="page-subtitle">Manage your Minecraft instances, install mods, and launch your favorite game versions.</p>
+          </div>
+          <div className={`instance-header ${scrolled ? 'scrolled' : ''}`}>
+            <div className="header-actions">
             <div className="sort-controls">
               <span className="p-dropdown-label">Sort by:</span>
               <div className="p-dropdown" ref={sortRef}>
@@ -239,11 +242,13 @@ function InstanceList({
                 </button>
               </div>
             </div>
+            <div style={{ flex: 1 }}></div>
             <button className="btn btn-primary" onClick={onCreate} disabled={isLoading}>
               + New Instance
             </button>
           </div>
         </div>
+        </>
       )}
 
       {instances.length === 0 ? (
