@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PaletheaLauncher",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "identifier": "com.palethea.launcher",
   "build": {
     "frontendDist": "../dist",
@@ -56,7 +56,12 @@
     "resources": [
       "resources/instance_logos/*"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
   },
   "plugins": {
     "updater": {
