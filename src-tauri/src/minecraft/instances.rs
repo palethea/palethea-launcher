@@ -418,12 +418,104 @@ pub fn recover_orphaned_session() -> Option<(String, u64, Option<u32>, u64)> {
     // Credit the playtime
     if let Ok(mut instance) = get_instance(&session.instance_id) {
         instance.playtime_seconds += duration;
-        let _ = update_instance(instance);
+        let _ = update_instance(instance.clone());
+
+        // Log session for activity tracking
+        log_session(&session.instance_id, &instance.name, now, duration);
     }
-    
+
     // Clear the session file
     clear_active_session();
-    
+
     // Return with None PID to indicate it's already accounted for
     Some((session.instance_id, duration, None, original_playtime))
+}
+
+// --- Session History ---
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SessionRecord {
+    pub instance_id: String,
+    pub instance_name: String,
+    pub timestamp: u64,
+    pub duration_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DailyActivity {
+    pub date: String,
+    pub seconds: u64,
+}
+
+fn get_session_history_path() -> PathBuf {
+    get_minecraft_dir().join("session_history.json")
+}
+
+pub fn log_session(instance_id: &str, instance_name: &str, timestamp: u64, duration_seconds: u64) {
+    if duration_seconds == 0 {
+        return;
+    }
+
+    let path = get_session_history_path();
+    let mut records = load_session_history();
+
+    records.push(SessionRecord {
+        instance_id: instance_id.to_string(),
+        instance_name: instance_name.to_string(),
+        timestamp,
+        duration_seconds,
+    });
+
+    if let Ok(json) = serde_json::to_string(&records) {
+        let _ = fs::write(&path, json);
+    }
+}
+
+pub fn load_session_history() -> Vec<SessionRecord> {
+    let path = get_session_history_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn get_daily_activity(days: u32) -> Vec<DailyActivity> {
+    use chrono::{Local, Duration, NaiveDate};
+
+    let today = Local::now().date_naive();
+    let cutoff_date = today - Duration::days(days as i64 - 1);
+    let cutoff_ts = cutoff_date.and_hms_opt(0, 0, 0)
+        .map(|dt| dt.and_local_timezone(Local).unwrap().timestamp() as u64)
+        .unwrap_or(0);
+
+    let records = load_session_history();
+
+    // Build a map of date -> total seconds
+    let mut daily: std::collections::HashMap<NaiveDate, u64> = std::collections::HashMap::new();
+
+    for rec in &records {
+        if rec.timestamp < cutoff_ts {
+            continue;
+        }
+        let date = chrono::DateTime::from_timestamp(rec.timestamp as i64, 0)
+            .map(|dt| dt.with_timezone(&Local).date_naive())
+            .unwrap_or(today);
+        *daily.entry(date).or_insert(0) += rec.duration_seconds;
+    }
+
+    // Build result with all days filled in (including zeros)
+    let mut result = Vec::with_capacity(days as usize);
+    for i in 0..days {
+        let date = cutoff_date + Duration::days(i as i64);
+        let seconds = daily.get(&date).copied().unwrap_or(0);
+        result.push(DailyActivity {
+            date: date.format("%Y-%m-%d").to_string(),
+            seconds,
+        });
+    }
+
+    result
 }

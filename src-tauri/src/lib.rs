@@ -1,6 +1,6 @@
 mod minecraft;
 
-use minecraft::{versions, downloader, instances, launcher, settings, auth, modrinth, files, fabric, forge, java, logger};
+use minecraft::{versions, downloader, instances, launcher, settings, auth, modrinth, files, fabric, forge, java, logger, discord};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -59,40 +59,118 @@ pub struct GlobalStats {
     pub total_launches: u64,
     pub instance_count: u32,
     pub most_played_instance: Option<String>,
+    pub most_played_playtime_seconds: u64,
     pub favorite_version: Option<String>,
+    pub favorite_version_count: u32,
+    pub last_played_instance: Option<String>,
+    pub last_played_date: Option<String>,
+    pub recent_instances: Vec<RecentInstance>,
+    pub daily_activity_week: Vec<instances::DailyActivity>,
+    pub daily_activity_month: Vec<instances::DailyActivity>,
+    pub top_instances: Vec<TopInstance>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RecentInstance {
+    pub name: String,
+    pub version_id: String,
+    pub last_played: Option<String>,
+    pub playtime_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TopInstance {
+    pub name: String,
+    pub version_id: String,
+    pub mod_loader: instances::ModLoader,
+    pub logo_filename: Option<String>,
+    pub playtime_seconds: u64,
+    pub total_launches: u64,
 }
 
 #[tauri::command]
 fn get_global_stats() -> Result<GlobalStats, String> {
     let mut stats = GlobalStats::default();
     let instances = instances::load_instances()?;
-    
-    stats.instance_count = instances.len() as u32;
-    
-    let mut version_counts: HashMap<String, u32> = HashMap::new();
-    let mut max_playtime = 0;
 
-    for inst in instances {
+    stats.instance_count = instances.len() as u32;
+
+    let mut version_counts: HashMap<String, u32> = HashMap::new();
+    let mut max_playtime = 0u64;
+    let mut latest_played: Option<String> = None;
+    let mut latest_played_name: Option<String> = None;
+
+    for inst in &instances {
         stats.total_playtime_seconds += inst.playtime_seconds;
         stats.total_launches += inst.total_launches;
-        
+
         // Track most played
         if inst.playtime_seconds > max_playtime {
             max_playtime = inst.playtime_seconds;
             stats.most_played_instance = Some(inst.name.clone());
+            stats.most_played_playtime_seconds = inst.playtime_seconds;
         }
-        
+
         // Track favorite version
         let count = version_counts.entry(inst.version_id.clone()).or_insert(0);
         *count += 1;
+
+        // Track last played instance
+        if let Some(ref lp) = inst.last_played {
+            let is_newer = match &latest_played {
+                Some(prev) => lp.as_str() > prev.as_str(),
+                None => true,
+            };
+            if is_newer {
+                latest_played = Some(lp.clone());
+                latest_played_name = Some(inst.name.clone());
+            }
+        }
     }
-    
-    // Find favorite version (the one with most instances created)
-    stats.favorite_version = version_counts
+
+    // Last played
+    stats.last_played_date = latest_played;
+    stats.last_played_instance = latest_played_name;
+
+    // Find favorite version
+    if let Some((version, count)) = version_counts
         .into_iter()
         .max_by_key(|&(_, count)| count)
-        .map(|(version, _)| version);
-    
+    {
+        stats.favorite_version = Some(version);
+        stats.favorite_version_count = count;
+    }
+
+    // Recent instances: up to 5 most recently played
+    let mut recent: Vec<_> = instances.iter()
+        .filter(|i| i.last_played.is_some())
+        .collect();
+    recent.sort_by(|a, b| b.last_played.cmp(&a.last_played));
+    stats.recent_instances = recent.into_iter().take(5).map(|i| RecentInstance {
+        name: i.name.clone(),
+        version_id: i.version_id.clone(),
+        last_played: i.last_played.clone(),
+        playtime_seconds: i.playtime_seconds,
+    }).collect();
+
+    // Top instances by playtime (top 5)
+    let mut sorted_instances: Vec<_> = instances.iter()
+        .filter(|i| i.playtime_seconds > 0)
+        .collect();
+    sorted_instances.sort_by(|a, b| b.playtime_seconds.cmp(&a.playtime_seconds));
+    stats.top_instances = sorted_instances.into_iter().take(5).map(|i| TopInstance {
+        name: i.name.clone(),
+        version_id: i.version_id.clone(),
+        mod_loader: i.mod_loader.clone(),
+        logo_filename: i.logo_filename.clone(),
+        playtime_seconds: i.playtime_seconds,
+        total_launches: i.total_launches,
+    }).collect();
+
+    // Daily activity
+    stats.daily_activity_week = instances::get_daily_activity(7);
+    stats.daily_activity_month = instances::get_daily_activity(30);
+
     Ok(stats)
 }
 
@@ -211,14 +289,26 @@ async fn clone_instance(instance_id: String, new_name: String, app_handle: AppHa
         });
 
         copy_dir_with_progress(
-            &source_game_dir, 
-            &new_game_dir, 
-            &app_handle, 
-            total_files, 
+            &source_game_dir,
+            &new_game_dir,
+            &app_handle,
+            total_files,
             &mut current_count
         )?;
     }
-    
+
+    // 5. Copy mod loader config files (stored at instance root, not in game directory)
+    let source_dir = source.get_directory();
+    let cloned_dir = cloned.get_directory();
+    for loader_file in &["fabric.json", "forge.json", "neoforge.json"] {
+        let src_path = source_dir.join(loader_file);
+        if src_path.exists() {
+            let dst_path = cloned_dir.join(loader_file);
+            fs::copy(&src_path, &dst_path)
+                .map_err(|e| format!("Failed to copy {}: {}", loader_file, e))?;
+        }
+    }
+
     let _ = app_handle.emit("refresh-instances", ());
     Ok(cloned)
 }
@@ -1107,6 +1197,7 @@ async fn launch_instance(
             pid: process_id,
             start_time,
         });
+        discord::update_presence(processes.len());
     }
     
     // Spawn a background thread to track playtime
@@ -1127,17 +1218,18 @@ async fn launch_instance(
                 inst.playtime_seconds += session_duration;
                 let _ = instances::update_instance(inst);
             }
-            
-            // Clear the session file since we exited normally
+
+            // Log session for activity tracking
+            instances::log_session(&instance_id_clone, &instance_name, end_time, session_duration);
             instances::clear_active_session();
             
             // Remove from running processes
             if let Ok(mut processes) = RUNNING_PROCESSES.lock() {
                 processes.remove(&instance_id_clone);
+                discord::update_presence(processes.len());
             }
-            
+
             log_info!(&app_handle_clone, "Instance {} exited with status: {:?}, session duration: {}s", instance_name, status, session_duration);
-            log::info!("Game exited with status: {:?}, session: {}s", status, session_duration);
         }
     });
     
@@ -1176,9 +1268,8 @@ fn kill_game(
             {
                 let mut processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
                 processes.remove(&instance_id);
+                discord::update_presence(processes.len());
             }
-            
-            // Clear session file
             instances::clear_active_session();
             
             Ok(format!("Killed game for instance {}", instance_id))
@@ -2718,6 +2809,7 @@ fn exit_app_fully(app: AppHandle) {
     }
     // Clear session file
     instances::clear_active_session();
+    discord::shutdown();
     app.exit(0);
 }
 
@@ -2768,6 +2860,10 @@ pub fn run() {
                 }
             }
         })
+        .on_page_load(|webview, _payload| {
+            // Set transparent background on every webview (main + popout editors) for rounded corners
+            let _ = webview.set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)));
+        })
         .setup(move |app| {
             let version = app.package_info().version.to_string();
             minecraft::set_launcher_version(version);
@@ -2817,24 +2913,39 @@ pub fn run() {
                         let session_duration = end_time.saturating_sub(start_time);
                         
                         if let Ok(mut inst) = instances::get_instance(&instance_id_clone) {
+                            let inst_name = inst.name.clone();
                             inst.playtime_seconds = current_playtime + session_duration;
                             let _ = instances::update_instance(inst);
+
+                            // Log session for activity tracking
+                            instances::log_session(&instance_id_clone, &inst_name, end_time, session_duration);
                         }
                         
                         instances::clear_active_session();
                         
                         if let Ok(mut processes) = RUNNING_PROCESSES.lock() {
                             processes.remove(&instance_id_clone);
+                            discord::update_presence(processes.len());
                         }
-                        
+
                         let _ = handle_clone.emit("refresh-instances", ());
                     });
-                    
+
                     log::info!("Re-registered running instance {} with PID {}", instance_id, pid_val);
                 } else {
                     log::info!("Recovered orphaned session for instance {}: {}s credited", instance_id, current_playtime);
                 }
             }
+
+            // Initialize Discord Rich Presence
+            discord::init();
+
+            // Update Discord presence with any recovered running instances
+            {
+                let processes = RUNNING_PROCESSES.lock().expect("Process state corrupted");
+                discord::update_presence(processes.len());
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

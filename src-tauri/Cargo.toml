@@ -1,6 +1,6 @@
 [package]
 name = "palethea-launcher"
-version = "0.4.6"
+version = "0.4.7"
 description = "A Minecraft Launcher built with Tauri"
 authors = ["Matt"]
 license = "MIT"
@@ -46,3 +46,4 @@ chrono = { version = "0.4.43", features = ["serde"] }
 tauri-plugin-opener = "2"
 open = "5"
 trust-dns-resolver = "0.23"
+discord-rich-presence = "0.2"

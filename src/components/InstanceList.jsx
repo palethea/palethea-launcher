@@ -4,16 +4,21 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { sep } from '@tauri-apps/api/path';
 import './InstanceList.css';
 
-function InstanceList({ 
-  instances, 
-  onLaunch, 
-  onStop, 
-  onDelete, 
-  onEdit, 
-  onCreate, 
-  onContextMenu, 
-  isLoading, 
-  runningInstances = {}, 
+function InstanceList({
+  instances,
+  onLaunch,
+  onStop,
+  onDelete,
+  onEdit,
+  onCreate,
+  onContextMenu,
+  isLoading,
+  launchingInstanceId = null,
+  loadingStatus = '',
+  loadingProgress = 0,
+  loadingBytes = { current: 0, total: 0 },
+  loadingCount = { current: 0, total: 0 },
+  runningInstances = {},
   deletingInstanceId = null,
   openEditors = [],
   launcherSettings = null
@@ -277,7 +282,7 @@ function InstanceList({
           {sortedInstances.map((instance) => (
             <div
               key={instance.id}
-              className={`instance-card ${instance.id === deletingInstanceId ? 'deleting' : ''}`}
+              className={`instance-card ${instance.id === deletingInstanceId ? 'deleting' : ''} ${instance.id === launchingInstanceId ? 'launching' : ''}`}
               style={{
                 '--instance-accent': instance.color_accent || 'var(--accent)',
                 borderLeftWidth: instance.color_accent ? '4px' : '2px',
@@ -293,6 +298,26 @@ function InstanceList({
                 <div className="deleting-overlay">
                   <div className="deleting-spinner" />
                   <span className="deleting-text">Removing...</span>
+                </div>
+              )}
+              {instance.id === launchingInstanceId && (
+                <div className="launching-overlay">
+                  <div className="launching-spinner" />
+                  <span className="launching-status">{loadingStatus || 'Launching...'}</span>
+                  <div className="launching-progress-bar">
+                    <div className="launching-progress-fill" style={{ width: `${loadingProgress}%` }} />
+                  </div>
+                  <span className="launching-percentage">{Number(loadingProgress).toFixed(1)}%</span>
+                  {loadingBytes.total > 0 && (
+                    <span className="launching-bytes">
+                      {(loadingBytes.current / 1024 / 1024).toFixed(1)} / {(loadingBytes.total / 1024 / 1024).toFixed(1)} MB
+                    </span>
+                  )}
+                  {loadingCount.total > 0 && (
+                    <span className="launching-file-count">
+                      {loadingCount.current} / {loadingCount.total} files
+                    </span>
+                  )}
                 </div>
               )}
               <div className="instance-logo-wrapper">

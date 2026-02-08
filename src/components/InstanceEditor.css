@@ -277,12 +277,13 @@
   top: 0;
   z-index: 100;
   background: var(--background);
-  transition: background 0.2s ease, backdrop-filter 0.2s ease, border-color 0.2s ease, padding 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, padding 0.2s ease;
 }
 
 .sub-tabs-row.scrolled {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  will-change: backdrop-filter;
   background: rgba(var(--background-rgb), 0.75);
   border-bottom-color: var(--border);
   padding-top: 16px;
@@ -964,7 +965,7 @@
   padding: 16px 16px 16px 24px;
   margin-bottom: 20px;
   border-bottom: 1px solid transparent;
-  transition: background 0.2s ease, backdrop-filter 0.2s ease, border-color 0.2s ease, padding 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, padding 0.2s ease;
   gap: 12px;
 }
 
@@ -976,6 +977,7 @@
 .tab-header-actions.scrolled {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  will-change: backdrop-filter;
   background: rgba(var(--background-rgb), 0.75);
   border-bottom-color: var(--border);
   padding-top: 16px;

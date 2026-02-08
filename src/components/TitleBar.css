@@ -8,6 +8,7 @@
   border-bottom: 1px solid var(--border);
   z-index: 9999;
   position: relative;
+  border-radius: 10px 10px 0 0;
 }
 
 .titlebar-left {
@@ -257,8 +258,9 @@
   font-size: 11px;
   font-weight: 800;
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   backdrop-filter: blur(8px);
+  will-change: backdrop-filter;
   outline: none !important;
   box-shadow: none !important;
 }
@@ -319,6 +321,7 @@
   overflow: hidden;
   animation: dropdownIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
   backdrop-filter: blur(16px);
+  will-change: backdrop-filter;
 }
 
 .running-dropdown.closing {

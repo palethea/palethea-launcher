@@ -13,13 +13,14 @@
   position: sticky;
   top: 0;
   z-index: 100;
-  transition: background 0.2s ease, backdrop-filter 0.2s ease, border-color 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease;
   background: transparent;
 }
 
 .instance-header.scrolled {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  will-change: backdrop-filter;
   border-bottom-color: var(--border);
 }
 
@@ -631,4 +632,81 @@
 @keyframes fadeInOverlay {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+/* Launching overlay */
+.instance-card.launching > :not(.launching-overlay) {
+  filter: blur(6px) grayscale(0.4);
+  opacity: 0.5;
+}
+
+.launching-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  z-index: 50;
+  border-radius: 14px;
+  gap: 8px;
+  padding: 16px;
+  animation: fadeInOverlay 0.2s ease;
+}
+
+.launching-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spinOverlay 0.8s linear infinite;
+}
+
+.launching-status {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+  text-align: center;
+  max-width: 90%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.launching-progress-bar {
+  width: 80%;
+  max-width: 300px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.launching-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.launching-percentage {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+.launching-bytes,
+.launching-file-count {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  font-variant-numeric: tabular-nums;
+  margin-top: -4px;
 }

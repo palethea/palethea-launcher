@@ -1,14 +1,14 @@
 {
   "name": "palethealauncher",
   "private": true,
-  "version": "0.4.6",
+  "version": "0.4.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "release": "./scripts/release.sh",
+    "release": "python3 ./scripts/release.py",
     "release:win": "powershell -ExecutionPolicy Bypass -File ./scripts/release.ps1",
     "discord": "python scripts/generate_discord_update.py",
     "tauri": "tauri",

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PaletheaLauncher",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "identifier": "com.palethea.launcher",
   "build": {
     "frontendDist": "../dist",
@@ -20,7 +20,10 @@
         "minWidth": 900,
         "minHeight": 600,
         "decorations": false,
-        "shadow": true
+        "shadow": true,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "visible": false
       }
     ],
     "security": {

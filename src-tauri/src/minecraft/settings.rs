@@ -22,6 +22,7 @@ pub struct LauncherSettings {
     pub background_style: Option<String>,
     pub edit_mode_preference: Option<String>,
     pub enable_instance_animations: Option<bool>,
+    pub show_fps_counter: Option<bool>,
 }
 
 fn default_update_channel() -> Option<String> {
@@ -42,6 +43,7 @@ impl Default for LauncherSettings {
             background_style: Some("gradient".to_string()),
             edit_mode_preference: Some("ask".to_string()),
             enable_instance_animations: Some(true),
+            show_fps_counter: Some(false),
         }
     }
 }

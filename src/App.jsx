@@ -27,6 +27,11 @@ import AccountManagerModal from './components/AccountManagerModal';
 import EditChoiceModal from './components/EditChoiceModal';
 import './App.css';
 
+// Detect platform early for CSS perf overrides (WebKitGTK blur is slow on Linux)
+if (navigator.platform.toLowerCase().includes('linux')) {
+  document.documentElement.classList.add('platform-linux');
+}
+
 const startTime = window.initialHtmlLoad ? (performance.now() - window.initialHtmlLoad) : 0;
 let bootstrapOffset = 0;
 let offsetSynced = false;
@@ -54,12 +59,39 @@ const devError = (...args) => {
   }
 };
 
+function FpsCounter() {
+  const [fps, setFps] = useState(0);
+  const framesRef = useRef(0);
+  const lastTimeRef = useRef(performance.now());
+
+  useEffect(() => {
+    let rafId;
+    const tick = (now) => {
+      framesRef.current++;
+      const delta = now - lastTimeRef.current;
+      if (delta >= 500) {
+        setFps(Math.round((framesRef.current * 1000) / delta));
+        framesRef.current = 0;
+        lastTimeRef.current = now;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
+
+  return (
+    <div className="fps-counter">{fps} FPS</div>
+  );
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState('instances');
   const [instances, setInstances] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [activeAccount, setActiveAccount] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [launchingInstanceId, setLaunchingInstanceId] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingBytes, setLoadingBytes] = useState({ current: 0, total: 0 });
@@ -924,6 +956,7 @@ function App() {
       return;
     }
     setIsLoading(true);
+    setLaunchingInstanceId(instanceId);
     setLoadingStatus('Starting launch sequence...');
     setLoadingProgress(5);
 
@@ -948,6 +981,7 @@ function App() {
       showNotification(`Failed to launch: ${error}`, 'error');
     } finally {
       setIsLoading(false);
+      setLaunchingInstanceId(null);
       setLoadingStatus('');
       setLoadingProgress(0);
       setLoadingCount({ current: 0, total: 0 });
@@ -1104,7 +1138,7 @@ function App() {
         minWidth: 800,
         minHeight: 600,
         decorations: false,
-        transparent: false,
+        transparent: true,
         visible: false, // Start hidden to prevent white flash
       });
 
@@ -1294,6 +1328,11 @@ function App() {
             onCreate={() => setActiveTab('create')}
             onContextMenu={handleInstanceContextMenu}
             isLoading={isLoading}
+            launchingInstanceId={launchingInstanceId}
+            loadingStatus={loadingStatus}
+            loadingProgress={loadingProgress}
+            loadingBytes={loadingBytes}
+            loadingCount={loadingCount}
             runningInstances={runningInstances}
             deletingInstanceId={deletingInstanceId}
             openEditors={openEditors}
@@ -1494,6 +1533,8 @@ function App() {
         </main>
       </div>
 
+      {launcherSettings?.show_fps_counter && <FpsCounter />}
+
       {showWelcome && (
         <div className="welcome-overlay" onClick={handleCloseWelcome}>
           <div className="welcome-modal" onClick={(e) => e.stopPropagation()}>
@@ -1561,31 +1602,6 @@ function App() {
         </div>
       )}
 
-      {isLoading && (
-        <div className="loading-overlay">
-          <div className="loading-content">
-            <div className="loading-spinner"></div>
-            {loadingStatus && <p className="loading-status">{loadingStatus}</p>}
-            <div className="progress-bar-container">
-              <div
-                className="progress-bar-fill"
-                style={{ width: `${loadingProgress}%` }}
-              />
-            </div>
-            <p className="loading-percentage">{Number(loadingProgress).toFixed(1)}%</p>
-            {loadingBytes.total > 0 && (
-              <p className="loading-bytes">
-                {(loadingBytes.current / 1024 / 1024).toFixed(1)} MB / {(loadingBytes.total / 1024 / 1024).toFixed(1)} MB
-              </p>
-            )}
-            {loadingCount.total > 0 && (
-              <p className="loading-count">
-                {loadingCount.current} / {loadingCount.total} files
-              </p>
-            )}
-          </div>
-        </div>
-      )}
 
       {contextMenu && (
         <ContextMenu

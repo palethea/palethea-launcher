@@ -196,6 +196,28 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
 
           <div className="setting-item">
             <div className="checkbox-row">
+              <label>FPS Counter</label>
+              <input
+                type="checkbox"
+                className="ios-switch"
+                checked={launcherSettings?.show_fps_counter || false}
+                onChange={async (e) => {
+                  const updated = {
+                    ...launcherSettings,
+                    show_fps_counter: e.target.checked
+                  };
+                  await invoke('save_settings', { newSettings: updated });
+                  onSettingsUpdated();
+                }}
+              />
+            </div>
+            <p className="setting-hint">
+              Show a real-time FPS counter overlay in the bottom-left corner.
+            </p>
+          </div>
+
+          <div className="setting-item">
+            <div className="checkbox-row">
               <label>Account Preview Mode</label>
               <select
                 value={launcherSettings?.account_preview_mode || 'simple'}

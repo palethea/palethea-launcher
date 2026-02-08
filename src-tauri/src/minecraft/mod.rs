@@ -11,6 +11,7 @@ pub mod forge;
 pub mod java;
 pub mod logger;
 pub mod ping;
+pub mod discord;
 
 use std::sync::Mutex;
 static LAUNCHER_VERSION: Mutex<String> = Mutex::new(String::new());
