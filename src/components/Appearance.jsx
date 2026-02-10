@@ -10,6 +10,13 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
   
   const [showBgDropdown, setShowBgDropdown] = useState(false);
   const bgDropdownRef = useRef(null);
+  const backgroundOptions = [
+    { id: 'gradient', label: 'Static Gradient' },
+    { id: 'dynamic', label: 'Animated Aura' },
+    { id: 'gray', label: 'Nice Gray' }
+  ];
+  const activeBackgroundStyle = launcherSettings?.background_style || 'gradient';
+  const activeBackgroundLabel = backgroundOptions.find((opt) => opt.id === activeBackgroundStyle)?.label || 'Static Gradient';
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -108,21 +115,16 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
                   onClick={() => setShowBgDropdown(!showBgDropdown)}
                   style={{ minWidth: '160px' }}
                 >
-                  <span>
-                    {launcherSettings?.background_style === 'dynamic' ? 'Animated Aura' : 'Static Gradient'}
-                  </span>
+                  <span>{activeBackgroundLabel}</span>
                   <ChevronDown size={14} className={`trigger-icon ${showBgDropdown ? 'flip' : ''}`} />
                 </button>
 
                 {showBgDropdown && (
                   <div className="p-dropdown-menu">
-                    {[
-                      { id: 'gradient', label: 'Static Gradient' },
-                      { id: 'dynamic', label: 'Animated Aura' }
-                    ].map((opt) => (
+                    {backgroundOptions.map((opt) => (
                       <div 
                         key={opt.id}
-                        className={`p-dropdown-item ${launcherSettings?.background_style === opt.id ? 'selected' : ''}`}
+                        className={`p-dropdown-item ${activeBackgroundStyle === opt.id ? 'selected' : ''}`}
                         onClick={async () => {
                           const updated = {
                             ...launcherSettings,
@@ -134,7 +136,7 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
                         }}
                       >
                         <span>{opt.label}</span>
-                        {launcherSettings?.background_style === opt.id && <Check size={14} className="selected-icon" />}
+                        {activeBackgroundStyle === opt.id && <Check size={14} className="selected-icon" />}
                       </div>
                     ))}
                   </div>
@@ -142,7 +144,7 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
               </div>
             </div>
             <p className="setting-hint">
-              Choose between a subtle static gradient or an animated atmospheric aura.
+              Choose between a subtle static gradient, an animated atmospheric aura, or a clean neutral gray.
             </p>
           </div>
         </section>

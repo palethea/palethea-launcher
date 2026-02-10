@@ -4,7 +4,14 @@ import ConfirmModal from './ConfirmModal';
 import WorldDatapacks from './WorldDatapacks';
 import './ScreenshotContextMenu.css';
 
-function InstanceWorlds({ instance, onShowNotification, isScrolled }) {
+function InstanceWorlds({
+  instance,
+  onShowNotification,
+  isScrolled,
+  onQueueDownload,
+  onDequeueDownload,
+  onUpdateDownloadStatus
+}) {
   const [worlds, setWorlds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [deleteConfirm, setDeleteConfirm] = useState({ show: false, world: null });
@@ -174,6 +181,9 @@ function InstanceWorlds({ instance, onShowNotification, isScrolled }) {
         onShowNotification={onShowNotification}
         onBack={() => setSelectedWorld(null)}
         isScrolled={isScrolled}
+        onQueueDownload={onQueueDownload}
+        onDequeueDownload={onDequeueDownload}
+        onUpdateDownloadStatus={onUpdateDownloadStatus}
       />
     );
   }

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
 use tauri::{AppHandle, Emitter};
 use futures::stream::{self, StreamExt};
@@ -17,14 +18,6 @@ const MODRINTH_API_BASE: &str = "https://api.modrinth.com/v2";
 fn get_user_agent() -> String {
     format!("PaletheaLauncher/{} (github.com/PaletheaLauncher)", super::get_launcher_version())
 }
-
-// Global HTTP client for connection pooling
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .user_agent(get_user_agent())
-        .build()
-        .unwrap()
-});
 
 // Rate limiter: Modrinth allows ~300 requests/min, we'll be conservative with 10 concurrent
 static MODRINTH_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(10));
@@ -177,6 +170,7 @@ pub struct ModrinthDependency {
     pub dependency_type: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ModpackIndex {
     #[serde(rename = "formatVersion")]
@@ -189,6 +183,7 @@ pub struct ModpackIndex {
     pub files: Vec<ModpackFile>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ModpackFile {
     pub path: String,
@@ -199,6 +194,7 @@ pub struct ModpackFile {
     pub file_size: u64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ModpackEnv {
     pub client: String,
@@ -248,7 +244,7 @@ pub async fn search_projects(
     let facets_str = serde_json::to_string(&facet_groups)?;
     
     // Use reqwest's query building for reliable parameter encoding
-    let mut url = format!("{}/search", MODRINTH_API_BASE);
+    let url = format!("{}/search", MODRINTH_API_BASE);
     
     let mut params = vec![
         ("query", query.to_string()),
@@ -263,9 +259,10 @@ pub async fn search_projects(
         }
     }
     
-    let response = HTTP_CLIENT
+    let response = super::http_client()
         .get(&url)
         .query(&params)
+        .header("User-Agent", get_user_agent())
         .send()
         .await?;
     
@@ -290,7 +287,7 @@ pub async fn get_project_versions(
     // Acquire rate limit permit
     let _permit = MODRINTH_SEMAPHORE.acquire().await?;
     
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     
     let mut url = format!("{}/project/{}/version", MODRINTH_API_BASE, project_id);
     
@@ -310,7 +307,8 @@ pub async fn get_project_versions(
         .get(&url)
         .header("User-Agent", get_user_agent())
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     
     let versions: Vec<ModrinthVersion> = response.json().await?;
     Ok(versions)
@@ -319,9 +317,14 @@ pub async fn get_project_versions(
 /// Get specific version info
 pub async fn get_version(version_id: &str) -> Result<ModrinthVersion, Box<dyn Error + Send + Sync>> {
     let _permit = MODRINTH_SEMAPHORE.acquire().await?;
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     let url = format!("{}/version/{}", MODRINTH_API_BASE, version_id);
-    let response = client.get(&url).header("User-Agent", get_user_agent()).send().await?;
+    let response = client
+        .get(&url)
+        .header("User-Agent", get_user_agent())
+        .send()
+        .await?
+        .error_for_status()?;
     let version: ModrinthVersion = response.json().await?;
     Ok(version)
 }
@@ -333,13 +336,13 @@ pub async fn get_versions_bulk(version_ids: Vec<String>) -> Result<Vec<ModrinthV
     }
 
     let mut all_versions = Vec::new();
-    let client = reqwest::Client::new();
+    let client = super::http_client();
 
     // Modrinth allows bulk versions via /versions?ids=["id1","id2"]
     // Chunk requests into groups of 50 to avoid URL length limits
     for chunk in version_ids.chunks(50) {
         let _permit = MODRINTH_SEMAPHORE.acquire().await?;
-        let ids_json = serde_json::to_string(chunk).unwrap();
+        let ids_json = serde_json::to_string(chunk)?;
         let url = format!("{}/versions?ids={}", MODRINTH_API_BASE, urlencoding::encode(&ids_json));
         
         let response = client
@@ -348,10 +351,9 @@ pub async fn get_versions_bulk(version_ids: Vec<String>) -> Result<Vec<ModrinthV
             .send()
             .await?;
         
-        if response.status().is_success() {
-            let mut versions: Vec<ModrinthVersion> = response.json().await?;
-            all_versions.append(&mut versions);
-        }
+        let response = response.error_for_status()?;
+        let mut versions: Vec<ModrinthVersion> = response.json().await?;
+        all_versions.append(&mut versions);
     }
     
     Ok(all_versions)
@@ -367,7 +369,7 @@ pub async fn download_mod_file(
     // Acquire rate limit permit
     let _permit = MODRINTH_SEMAPHORE.acquire().await?;
     
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     
     // Create parent directories
     if let Some(parent) = destination.parent() {
@@ -378,7 +380,8 @@ pub async fn download_mod_file(
         .get(&file.url)
         .header("User-Agent", get_user_agent())
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
 
     let total_size = response.content_length().unwrap_or(file.size);
     let mut out_file = File::create(destination)?;
@@ -418,7 +421,7 @@ pub async fn get_project(project_id: &str) -> Result<ModrinthProject, Box<dyn Er
     // Acquire rate limit permit
     let _permit = MODRINTH_SEMAPHORE.acquire().await?;
     
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     
     let url = format!("{}/project/{}", MODRINTH_API_BASE, project_id);
     
@@ -470,13 +473,13 @@ pub async fn get_projects(project_ids: Vec<String>) -> Result<Vec<ModrinthProjec
     }
 
     let mut all_projects = Vec::new();
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     
     // Modrinth allows bulk projects via /projects?ids=["id1","id2"]
     // Chunk requests into groups of 50 to avoid URL length limits
     for chunk in project_ids.chunks(50) {
         let _permit = MODRINTH_SEMAPHORE.acquire().await?;
-        let ids_json = serde_json::to_string(chunk).unwrap();
+        let ids_json = serde_json::to_string(chunk)?;
         let url = format!("{}/projects?ids={}", MODRINTH_API_BASE, urlencoding::encode(&ids_json));
         
         let response = client
@@ -485,35 +488,34 @@ pub async fn get_projects(project_ids: Vec<String>) -> Result<Vec<ModrinthProjec
             .send()
             .await?;
         
-        if response.status().is_success() {
-            let mut projects: Vec<ModrinthProject> = response.json().await?;
-            
-            // Fetch authors if missing (bulk response doesn't include them)
-            for project in &mut projects {
-                if project.author.is_empty() {
-                    let members_url = format!("{}/project/{}/members", MODRINTH_API_BASE, project.project_id);
-                    if let Ok(members_res) = client
-                        .get(&members_url)
-                        .header("User-Agent", get_user_agent())
-                        .send()
-                        .await 
-                    {
-                        if let Ok(members) = members_res.json::<Vec<ModrinthMember>>().await {
-                            let author_name = members.iter()
-                                .find(|m| m.role.to_lowercase() == "owner")
-                                .map(|m| m.user.username.clone())
-                                .or_else(|| members.first().map(|m| m.user.username.clone()));
-                            
-                            if let Some(name) = author_name {
-                                project.author = name;
-                            }
+        let response = response.error_for_status()?;
+        let mut projects: Vec<ModrinthProject> = response.json().await?;
+        
+        // Fetch authors if missing (bulk response doesn't include them)
+        for project in &mut projects {
+            if project.author.is_empty() {
+                let members_url = format!("{}/project/{}/members", MODRINTH_API_BASE, project.project_id);
+                if let Ok(members_res) = client
+                    .get(&members_url)
+                    .header("User-Agent", get_user_agent())
+                    .send()
+                    .await 
+                {
+                    if let Ok(members) = members_res.json::<Vec<ModrinthMember>>().await {
+                        let author_name = members.iter()
+                            .find(|m| m.role.to_lowercase() == "owner")
+                            .map(|m| m.user.username.clone())
+                            .or_else(|| members.first().map(|m| m.user.username.clone()));
+                        
+                        if let Some(name) = author_name {
+                            project.author = name;
                         }
                     }
                 }
             }
-            
-            all_projects.append(&mut projects);
         }
+        
+        all_projects.append(&mut projects);
     }
     
     Ok(all_projects)
@@ -691,15 +693,26 @@ pub async fn install_modpack(
     let total_files = index.files.len();
     let downloaded_bytes_counter = Arc::new(AtomicU64::new(0));
     let completed_count = Arc::new(AtomicU32::new(0));
+    let last_progress_emit_ms = Arc::new(AtomicU64::new(0));
     let mods_metadata = Arc::new(Mutex::new(Vec::new()));
     let game_dir = instance.get_game_directory();
-    let client = reqwest::Client::new();
+    let client = super::http_client();
+
+    let _ = app_handle.emit("download-progress", DownloadProgress {
+        stage: format!("Downloading mods 0/{}...", total_files),
+        percentage: 30.0,
+        current: 0,
+        total: total_files as u32,
+        total_bytes: Some(total_mods_size),
+        downloaded_bytes: Some(0),
+    });
 
     stream::iter(index.files.into_iter())
         .for_each_concurrent(15, |mp_file| {
             let app_handle = app_handle.clone();
             let downloaded_bytes_counter = downloaded_bytes_counter.clone();
             let completed_count = completed_count.clone();
+            let last_progress_emit_ms = last_progress_emit_ms.clone();
             let mods_metadata = mods_metadata.clone();
             let game_dir = game_dir.clone();
             let total_mods_size = total_mods_size;
@@ -715,17 +728,74 @@ pub async fn install_modpack(
                     let _permit = MODRINTH_SEMAPHORE.acquire().await.ok();
                     
                     if let Ok(resp) = client.get(url).header("User-Agent", get_user_agent()).send().await {
-                        if let Ok(bytes) = resp.bytes().await {
-                            if let Some(parent) = dest.parent() {
-                                let _ = fs::create_dir_all(parent);
-                            }
-                            if let Ok(mut f) = File::create(&dest) {
-                                if f.write_all(&bytes).is_ok() {
-                                    downloaded = true;
-                                    downloaded_bytes_counter.fetch_add(mp_file.file_size, Ordering::SeqCst);
-                                    break;
+                        if !resp.status().is_success() {
+                            continue;
+                        }
+                        if let Some(parent) = dest.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+                        if let Ok(mut f) = File::create(&dest) {
+                            let mut stream = resp.bytes_stream();
+                            let mut downloaded_for_attempt = 0u64;
+                            let mut attempt_ok = true;
+
+                            while let Some(item) = stream.next().await {
+                                match item {
+                                    Ok(chunk) => {
+                                        if f.write_all(&chunk).is_err() {
+                                            attempt_ok = false;
+                                            break;
+                                        }
+
+                                        let chunk_len = chunk.len() as u64;
+                                        downloaded_for_attempt += chunk_len;
+                                        let current_downloaded = downloaded_bytes_counter.fetch_add(chunk_len, Ordering::SeqCst) + chunk_len;
+
+                                        let now_ms = SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .map(|d| d.as_millis() as u64)
+                                            .unwrap_or(0);
+                                        let last_ms = last_progress_emit_ms.load(Ordering::Relaxed);
+                                        if now_ms.saturating_sub(last_ms) >= 120
+                                            && last_progress_emit_ms
+                                                .compare_exchange(last_ms, now_ms, Ordering::SeqCst, Ordering::Relaxed)
+                                                .is_ok()
+                                        {
+                                            let completed_so_far = completed_count.load(Ordering::SeqCst);
+                                            let byte_ratio = if total_mods_size > 0 {
+                                                (current_downloaded as f32 / total_mods_size as f32).clamp(0.0, 1.0)
+                                            } else if total_files > 0 {
+                                                (completed_so_far as f32 / total_files as f32).clamp(0.0, 1.0)
+                                            } else {
+                                                1.0
+                                            };
+                                            let progress = 30.0 + (byte_ratio * 60.0);
+                                            let _ = app_handle.emit("download-progress", DownloadProgress {
+                                                stage: format!("Downloading mods {}/{}...", completed_so_far, total_files),
+                                                percentage: progress,
+                                                current: completed_so_far,
+                                                total: total_files as u32,
+                                                total_bytes: Some(total_mods_size),
+                                                downloaded_bytes: Some(current_downloaded),
+                                            });
+                                        }
+                                    }
+                                    Err(_) => {
+                                        attempt_ok = false;
+                                        break;
+                                    }
                                 }
                             }
+
+                            if attempt_ok {
+                                downloaded = true;
+                                break;
+                            }
+
+                            if downloaded_for_attempt > 0 {
+                                downloaded_bytes_counter.fetch_sub(downloaded_for_attempt, Ordering::SeqCst);
+                            }
+                            let _ = fs::remove_file(&dest);
                         }
                     }
                 }
@@ -733,9 +803,16 @@ pub async fn install_modpack(
                 let current_completed = completed_count.fetch_add(1, Ordering::SeqCst) + 1;
                 let current_downloaded = downloaded_bytes_counter.load(Ordering::SeqCst);
                 
-                let progress = 30.0 + (current_completed as f32 / total_files as f32) * 60.0;
+                let byte_ratio = if total_mods_size > 0 {
+                    (current_downloaded as f32 / total_mods_size as f32).clamp(0.0, 1.0)
+                } else if total_files > 0 {
+                    (current_completed as f32 / total_files as f32).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                let progress = 30.0 + (byte_ratio * 60.0);
                 let _ = app_handle.emit("download-progress", DownloadProgress { 
-                    stage: format!("Downloading mod {}/{}...", current_completed, total_files), 
+                    stage: format!("Downloading mods {}/{}...", current_completed, total_files), 
                     percentage: progress,
                     current: current_completed,
                     total: total_files as u32,
@@ -790,8 +867,9 @@ pub async fn install_modpack(
                     }
                     
                     if let Some(pid) = project_id {
-                        let mut meta = mods_metadata.lock().unwrap();
-                        meta.push((dest, pid, version_id));
+                        if let Ok(mut meta) = mods_metadata.lock() {
+                            meta.push((dest, pid, version_id));
+                        }
                     }
                 }
             }
@@ -799,7 +877,10 @@ pub async fn install_modpack(
         .await;
 
     // 6. Fetch and write metadata for all mods
-    let mods_metadata_vec = mods_metadata.lock().unwrap().clone();
+    let mods_metadata_vec = mods_metadata
+        .lock()
+        .map(|m| m.clone())
+        .unwrap_or_default();
     if !mods_metadata_vec.is_empty() {
         let _ = app_handle.emit("download-progress", DownloadProgress { 
             stage: "Fetching mod metadata...".to_string(), 
@@ -833,10 +914,7 @@ pub async fn install_modpack(
                 categories: project.map(|p| p.categories.clone()),
             };
 
-            let meta_path = PathBuf::from(format!("{}.meta.json", dest.to_string_lossy()));
-            if let Ok(json) = serde_json::to_string(&meta) {
-                let _ = std::fs::write(meta_path, json);
-            }
+            let _ = crate::minecraft::files::write_meta_for_file(&dest, &meta);
         }
     }
     
@@ -859,10 +937,10 @@ pub async fn install_modpack(
             let mut file = archive.by_index(i)?;
             let name = file.name().to_string();
             
-            let target_rel = if name.starts_with("overrides/") {
-                Some(&name[10..])
-            } else if name.starts_with("client-overrides/") {
-                Some(&name[17..])
+            let target_rel = if let Some(stripped) = name.strip_prefix("overrides/") {
+                Some(stripped)
+            } else if let Some(stripped) = name.strip_prefix("client-overrides/") {
+                Some(stripped)
             } else {
                 None
             };

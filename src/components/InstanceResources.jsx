@@ -5,6 +5,8 @@ import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
 import FilterModal from './FilterModal';
+import useModrinthSearch from '../hooks/useModrinthSearch';
+import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
 import './FilterModal.css';
 
 const RESOURCE_PACK_CATEGORIES = [
@@ -67,39 +69,31 @@ const SHADER_CATEGORIES = [
   { id: 'screenshot', label: 'Screenshot' },
 ];
 
-function InstanceResources({ instance, onShowConfirm, onShowNotification, isScrolled }) {
+function InstanceResources({
+  instance,
+  onShowConfirm,
+  onShowNotification,
+  isScrolled,
+  onQueueDownload,
+  onDequeueDownload,
+  onUpdateDownloadStatus
+}) {
   const [activeSubTab, setActiveSubTab] = useState('resourcepacks');
   const [resourcePacks, setResourcePacks] = useState([]);
   const [shaderPacks, setShaderPacks] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategories, setSelectedCategories] = useState([]);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
-  const [searchResults, setSearchResults] = useState([]);
-  const [popularItems, setPopularItems] = useState([]);
-  const [searching, setSearching] = useState(false);
   const [installing, setInstalling] = useState(null);
   const [updatingItems, setUpdatingItems] = useState([]); // Array of filenames being updated
   const [loading, setLoading] = useState(true);
-  const [loadingPopular, setLoadingPopular] = useState(false);
   const [error, setError] = useState(null);
-  const [searchError, setSearchError] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState({ show: false, item: null, type: null });
   const [versionModal, setVersionModal] = useState({ show: false, project: null, updateItem: null });
   const [selectedItems, setSelectedItems] = useState([]); // Array of filenames
 
-  // Pagination states
-  const [popularOffset, setPopularOffset] = useState(0);
-  const [searchOffset, setSearchOffset] = useState(0);
-  const [hasMorePopular, setHasMorePopular] = useState(true);
-  const [hasMoreSearch, setHasMoreSearch] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const loadingMoreRef = useRef(false);
-  const hasMorePopularRef = useRef(true);
-  const hasMoreSearchRef = useRef(true);
-  const searchEpochRef = useRef(0);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updatesFound, setUpdatesFound] = useState({}); // { project_id: version_obj }
-  const observer = useRef();
   const installedSearchRef = useRef();
   const findSearchRef = useRef();
 
@@ -121,219 +115,29 @@ function InstanceResources({ instance, onShowConfirm, onShowNotification, isScro
     setLoading(false);
   }, [instance.id]);
 
-  const handleSearch = useCallback(async (newOffset = 0) => {
-    const isInitial = newOffset === 0;
+  const discoverProjectType =
+    activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
 
-    if (isInitial) {
-      if (!searchQuery.trim() && selectedCategories.length === 0) {
-        setSearchResults([]);
-        setSearchOffset(0);
-        setHasMoreSearch(false);
-        hasMoreSearchRef.current = false;
-        return;
-      }
-      searchEpochRef.current += 1;
-      setSearching(true);
-      setSearchOffset(0);
-      setHasMoreSearch(true);
-      hasMoreSearchRef.current = true;
-    } else {
-      if (loadingMoreRef.current || !hasMoreSearchRef.current) return;
-      setLoadingMore(true);
-      loadingMoreRef.current = true;
-    }
-
-    const projectType = activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
-    const currentEpoch = searchEpochRef.current;
-    
-    try {
-      const results = await invoke('search_modrinth', {
-        query: searchQuery,
-        projectType: projectType,
-        gameVersion: instance.version_id,
-        loader: null,
-        categories: selectedCategories.length > 0 ? selectedCategories : null,
-        limit: 20,
-        offset: newOffset,
-        index: searchQuery.trim() === '' ? 'downloads' : 'relevance'
-      });
-      
-      if (currentEpoch !== searchEpochRef.current) return;
-
-      const newHits = results.hits || [];
-      if (isInitial) {
-        setSearchResults(newHits);
-      } else {
-        setSearchResults(prev => [...prev, ...newHits]);
-      }
-
-      const totalHits = results.total_hits || 0;
-      const currentTotal = isInitial ? newHits.length : (searchResults.length + newHits.length);
-      const more = newHits.length === 20 && currentTotal < totalHits;
-      
-      setHasMoreSearch(more);
-      hasMoreSearchRef.current = more;
-      setSearchOffset(isInitial ? newHits.length : (searchOffset + newHits.length));
-    } catch (error) {
-      console.error('Failed to search:', error);
-    } finally {
-      if (currentEpoch === searchEpochRef.current) {
-        if (isInitial) setSearching(false);
-        else {
-          setLoadingMore(false);
-          loadingMoreRef.current = false;
-        }
-      }
-    }
-  }, [searchQuery, activeSubTab, instance.version_id, selectedCategories]);
-
-  const loadPopularItems = useCallback(async () => {
-    const projectType = activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
-    
-    searchEpochRef.current += 1;
-    const currentEpoch = searchEpochRef.current;
-
-    setLoadingPopular(true);
-    setSearchResults([]);
-    setSearchQuery('');
-    setError(null);
-    setSearchError(null);
-    setSearchOffset(0);
-    setPopularOffset(0);
-    setHasMorePopular(true);
-    hasMorePopularRef.current = true;
-
-    try {
-      const results = await invoke('search_modrinth', {
-        query: '',
-        projectType: projectType,
-        gameVersion: instance.version_id,
-        loader: null,
-        categories: selectedCategories.length > 0 ? selectedCategories : null,
-        limit: 20,
-        offset: 0,
-        index: 'downloads'
-      });
-
-      if (currentEpoch !== searchEpochRef.current) return;
-
-      setPopularItems(results?.hits || []);
-      const more = (results.hits?.length || 0) === 20 && results.total_hits > 20;
-      setHasMorePopular(more);
-      hasMorePopularRef.current = more;
-      setPopularOffset(results.hits?.length || 0);
-    } catch (err) {
-      console.error('Failed to load popular items:', err);
-      if (currentEpoch === searchEpochRef.current) {
-        setSearchError(err.toString());
-        setPopularItems([]);
-      }
-    } finally {
-      if (currentEpoch === searchEpochRef.current) {
-        setLoadingPopular(false);
-      }
-    }
-  }, [activeSubTab, instance.version_id, selectedCategories]);
-
-  const loadMorePopular = useCallback(async () => {
-    if (loadingMoreRef.current || !hasMorePopularRef.current) return;
-    const projectType = activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
-    
-    setLoadingMore(true);
-    loadingMoreRef.current = true;
-    
-    const currentEpoch = searchEpochRef.current;
-
-    try {
-      const results = await invoke('search_modrinth', {
-        query: '',
-        projectType: projectType,
-        gameVersion: instance.version_id,
-        loader: null,
-        categories: selectedCategories.length > 0 ? selectedCategories : null,
-        limit: 20,
-        offset: popularOffset,
-        index: 'downloads'
-      });
-
-      if (currentEpoch !== searchEpochRef.current) return;
-
-      const newHits = results.hits || [];
-      if (newHits.length > 0) {
-        setPopularItems(prev => [...prev, ...newHits]);
-        setPopularOffset(prev => prev + newHits.length);
-      }
-      const more = newHits.length === 20 && (popularOffset + newHits.length) < results.total_hits;
-      setHasMorePopular(more);
-      hasMorePopularRef.current = more;
-    } catch (err) {
-      console.error('Failed to load more popular items:', err);
-    } finally {
-      if (currentEpoch === searchEpochRef.current) {
-        setLoadingMore(false);
-        loadingMoreRef.current = false;
-      }
-    }
-  }, [instance.version_id, popularOffset, selectedCategories, activeSubTab]);
-
-  const loadMoreSearch = useCallback(async () => {
-    if (loadingMoreRef.current || !hasMoreSearchRef.current) return;
-    const projectType = activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
-    
-    setLoadingMore(true);
-    loadingMoreRef.current = true;
-    
-    const currentEpoch = searchEpochRef.current;
-
-    try {
-      const results = await invoke('search_modrinth', {
-        query: searchQuery,
-        projectType: projectType,
-        gameVersion: instance.version_id,
-        loader: null,
-        categories: selectedCategories.length > 0 ? selectedCategories : null,
-        limit: 20,
-        offset: searchOffset,
-        index: !searchQuery.trim() ? 'downloads' : 'relevance'
-      });
-
-      if (currentEpoch !== searchEpochRef.current) return;
-
-      const newHits = results.hits || [];
-      if (newHits.length > 0) {
-        setSearchResults(prev => [...prev, ...newHits]);
-        setSearchOffset(prev => prev + newHits.length);
-      }
-      const more = newHits.length === 20 && (searchOffset + newHits.length) < results.total_hits;
-      setHasMoreSearch(more);
-      hasMoreSearchRef.current = more;
-    } catch (err) {
-      console.error('Failed to load more search results:', err);
-    } finally {
-      if (currentEpoch === searchEpochRef.current) {
-        setLoadingMore(false);
-        loadingMoreRef.current = false;
-      }
-    }
-  }, [searchQuery, instance.version_id, searchOffset, selectedCategories, activeSubTab]);
-
-  const lastElementRef = useCallback(node => {
-    if (loadingMoreRef.current || searching || loadingPopular) return;
-    if (observer.current) observer.current.disconnect();
-
-    observer.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting) {
-        const isSearchType = searchQuery.trim().length > 0 || selectedCategories.length > 0;
-        if (isSearchType && hasMoreSearchRef.current && !loadingMoreRef.current) {
-          loadMoreSearch();
-        } else if (!isSearchType && hasMorePopularRef.current && !loadingMoreRef.current) {
-          loadMorePopular();
-        }
-      }
-    });
-
-    if (node) observer.current.observe(node);
-  }, [loadingPopular, searching, searchQuery, selectedCategories, loadMoreSearch, loadMorePopular]);
+  const {
+    searchResults,
+    popularItems,
+    searching,
+    loadingPopular,
+    loadingMore,
+    searchError,
+    handleSearch,
+    loadPopularItems,
+    lastElementRef,
+    resetFeed,
+  } = useModrinthSearch({
+    projectType: discoverProjectType,
+    gameVersion: instance.version_id,
+    loader: null,
+    categories: selectedCategories,
+    query: searchQuery,
+    withPopular: true,
+    searchEmptyQuery: false,
+  });
 
   // Effects
   useEffect(() => {
@@ -345,7 +149,8 @@ function InstanceResources({ instance, onShowConfirm, onShowNotification, isScro
     setSelectedCategories([]);
     setSearchQuery('');
     setSelectedItems([]);
-  }, [activeSubTab]);
+    resetFeed();
+  }, [activeSubTab, resetFeed]);
 
   useEffect(() => {
     if (activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders') {
@@ -380,28 +185,7 @@ function InstanceResources({ instance, onShowConfirm, onShowNotification, isScro
   const getInstalledItem = useCallback((project) => {
     const isResourcePack = activeSubTab === 'find-resourcepacks';
     const installedList = isResourcePack ? resourcePacks : shaderPacks;
-
-    if (!installedList || installedList.length === 0) return null;
-
-    const projectId = project.project_id || project.id;
-
-    // First check by project_id
-    if (projectId) {
-      const byId = installedList.find(m => m.project_id === projectId);
-      if (byId) return byId;
-    }
-
-    // Normalize: remove all non-alphanumeric characters and lowercase
-    const searchTitle = (project.title || project.name || '').toLowerCase().trim();
-    const searchSlug = (project.slug || '').toLowerCase().trim();
-
-    return installedList.find(item => {
-      const itemTitle = (item.name || '').toLowerCase().trim();
-      const itemFilename = (item.filename || '').toLowerCase().trim();
-
-      return (searchTitle && (itemTitle === searchTitle || itemFilename.includes(searchTitle))) ||
-        (searchSlug && (itemFilename.includes(searchSlug) || itemTitle.includes(searchSlug)));
-    });
+    return findInstalledProject(installedList, project);
   }, [activeSubTab, resourcePacks, shaderPacks]);
 
   const isItemInstalled = useCallback((project) => {
@@ -460,6 +244,17 @@ function InstanceResources({ instance, onShowConfirm, onShowNotification, isScro
   }, []);
 
   const handleInstall = useCallback(async (project, selectedVersion = null, skipDependencyCheck = false, updateItem = null) => {
+    const downloadId = project.project_id || project.id || project.slug;
+
+    if (onQueueDownload) {
+      onQueueDownload({
+        id: downloadId,
+        name: project.title || project.name,
+        icon: project.icon_url || project.thumbnail,
+        status: 'Preparing...'
+      });
+    }
+
     setInstalling(project.slug || project.project_id || project.id);
     if (updateItem) {
       setUpdatingItems(prev => [...prev, updateItem.filename]);
@@ -467,6 +262,10 @@ function InstanceResources({ instance, onShowConfirm, onShowNotification, isScro
     try {
       const fileType = project.project_type || (activeSubTab.includes('resourcepack') ? 'resourcepack' : 'shader');
       let version = selectedVersion;
+
+      if (onUpdateDownloadStatus) {
+        onUpdateDownloadStatus(downloadId, 'Fetching version...');
+      }
 
       if (!version) {
         const versions = await invoke('get_modrinth_versions', {
@@ -480,6 +279,12 @@ function InstanceResources({ instance, onShowConfirm, onShowNotification, isScro
             onShowNotification('No compatible version found', 'error');
           }
           setInstalling(null);
+          if (onDequeueDownload) {
+            onDequeueDownload(downloadId, false);
+          }
+          if (updateItem) {
+            setUpdatingItems(prev => prev.filter(f => f !== updateItem.filename));
+          }
           return;
         }
 
@@ -487,6 +292,10 @@ function InstanceResources({ instance, onShowConfirm, onShowNotification, isScro
       }
 
       const file = version.files.find(f => f.primary) || version.files[0];
+
+      if (onUpdateDownloadStatus) {
+        onUpdateDownloadStatus(downloadId, 'Downloading...');
+      }
 
       await invoke('install_modrinth_file', {
         instanceId: instance.id,
@@ -535,10 +344,13 @@ function InstanceResources({ instance, onShowConfirm, onShowNotification, isScro
       }
     }
     setInstalling(null);
+    if (onDequeueDownload) {
+      setTimeout(() => onDequeueDownload(downloadId), 1000);
+    }
     if (updateItem) {
       setUpdatingItems(prev => prev.filter(f => f !== updateItem.filename));
     }
-  }, [activeSubTab, instance.version_id, instance.id, loadResources, onShowNotification]);
+  }, [activeSubTab, instance.version_id, instance.id, loadResources, onShowNotification, onQueueDownload, onDequeueDownload, onUpdateDownloadStatus]);
 
   const handleDelete = useCallback(async (item, type) => {
     setDeleteConfirm({ show: true, item, type });
@@ -711,9 +523,7 @@ function InstanceResources({ instance, onShowConfirm, onShowNotification, isScro
   }, [instance.id, onShowNotification]);
 
   const matchesAllSelectedCategories = useCallback((project) => {
-    if (selectedCategories.length === 0) return true;
-    const categories = project?.categories || project?.display_categories || [];
-    return selectedCategories.every(cat => categories.includes(cat));
+    return matchesSelectedCategories(project, selectedCategories);
   }, [selectedCategories]);
 
   const displayItems = useMemo(() => {

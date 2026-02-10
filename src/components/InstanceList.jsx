@@ -1,7 +1,8 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { Clock, Plus, Box, LayoutGrid, List, ChevronDown, Check } from 'lucide-react';
+import { Clock, Plus, Box, LayoutGrid, List, ChevronDown, Check, User, Tag, CalendarDays, Play, Square, Pencil, Trash2, MoreVertical } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { sep } from '@tauri-apps/api/path';
+import { clampProgress, formatBytes, formatSpeed } from '../utils/downloadTelemetry';
 import './InstanceList.css';
 
 function InstanceList({
@@ -13,12 +14,16 @@ function InstanceList({
   onCreate,
   onContextMenu,
   isLoading,
+  launchingInstanceIds = [],
   launchingInstanceId = null,
   loadingStatus = '',
   loadingProgress = 0,
   loadingBytes = { current: 0, total: 0 },
   loadingCount = { current: 0, total: 0 },
+  loadingTelemetry = { stageLabel: '', currentItem: '', speedBps: 0, etaSeconds: null },
+  launchProgressByInstance = {},
   runningInstances = {},
+  stoppingInstanceIds = [],
   deletingInstanceId = null,
   openEditors = [],
   launcherSettings = null
@@ -28,6 +33,7 @@ function InstanceList({
   const [viewMode, setViewMode] = useState(localStorage.getItem('instance_view_mode') || 'list');
   const [scrolled, setScrolled] = useState(false);
   const [isSortOpen, setIsSortOpen] = useState(false);
+  const [openActionMenuId, setOpenActionMenuId] = useState(null);
   const sortRef = useRef(null);
 
   const handleScroll = useCallback((e) => {
@@ -40,10 +46,23 @@ function InstanceList({
       if (sortRef.current && !sortRef.current.contains(event.target)) {
         setIsSortOpen(false);
       }
+      if (!(event.target instanceof Element) || !event.target.closest('.instance-row-menu-anchor')) {
+        setOpenActionMenuId(null);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setOpenActionMenuId(null);
+      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
   }, []);
 
   const sortedInstances = useMemo(() => {
@@ -159,12 +178,9 @@ function InstanceList({
   }, [logoKey]);
 
   return (
-    <div className="instance-list" onScroll={handleScroll} onContextMenu={handleContainerContextMenu}>
+    <div className={`instance-list ${viewMode === 'list' ? 'list-mode' : 'grid-mode'}`} onScroll={handleScroll} onContextMenu={handleContainerContextMenu}>
       {instances.length > 0 && (
         <>
-          <div className="page-header" style={{ marginTop: '20px', marginBottom: '0' }}>
-            <p className="page-subtitle">Manage your Minecraft instances, install mods, and launch your favorite game versions.</p>
-          </div>
           <div className={`instance-header ${scrolled ? 'scrolled' : ''}`}>
             <div className="header-actions">
             <div className="sort-controls">
@@ -279,151 +295,360 @@ function InstanceList({
         </div>
       ) : (
         <div className={`instances-grid ${viewMode} ${launcherSettings?.enable_instance_animations === false ? 'no-animations' : ''}`}>
-          {sortedInstances.map((instance) => (
-            <div
-              key={instance.id}
-              className={`instance-card ${instance.id === deletingInstanceId ? 'deleting' : ''} ${instance.id === launchingInstanceId ? 'launching' : ''}`}
-              style={{
-                '--instance-accent': instance.color_accent || 'var(--accent)',
-                borderLeftWidth: instance.color_accent ? '4px' : '2px',
-                borderLeftColor: instance.color_accent || 'var(--border)'
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onContextMenu(e, instance);
-              }}
-            >
-              {instance.id === deletingInstanceId && (
-                <div className="deleting-overlay">
-                  <div className="deleting-spinner" />
-                  <span className="deleting-text">Removing...</span>
-                </div>
-              )}
-              {instance.id === launchingInstanceId && (
-                <div className="launching-overlay">
-                  <div className="launching-spinner" />
-                  <span className="launching-status">{loadingStatus || 'Launching...'}</span>
-                  <div className="launching-progress-bar">
-                    <div className="launching-progress-fill" style={{ width: `${loadingProgress}%` }} />
+          {sortedInstances.map((instance) => {
+            const loaderClass = (instance.mod_loader || '').toLowerCase().replace(' ', '-');
+            const hasPinnedAccount = Boolean(instance.preferred_account && instance.preferred_account.trim() !== '');
+            const playtimeLabel = formatPlaytime(instance.playtime_seconds);
+            const isGridView = viewMode === 'grid';
+            const isLaunching = launchingInstanceIds.includes(instance.id) || instance.id === launchingInstanceId;
+            const isStopping = stoppingInstanceIds.includes(instance.id);
+            const launchData = launchProgressByInstance[instance.id];
+            const launchTelemetry = launchData?.telemetry || loadingTelemetry;
+            const launchBytes = launchData?.bytes || loadingBytes;
+            const launchCount = launchData?.count || loadingCount;
+            const launchProgress = clampProgress(launchData?.progress ?? loadingProgress);
+            const launchStageLabel = launchTelemetry.stageLabel || launchData?.status || loadingStatus || 'Launching...';
+
+            return (
+              <div
+                key={instance.id}
+                className={`instance-card ${runningInstances[instance.id] ? 'is-running' : ''} ${instance.id === deletingInstanceId ? 'deleting' : ''} ${isLaunching ? 'launching' : ''} ${isStopping ? 'stopping' : ''} ${openActionMenuId === instance.id ? 'menu-open' : ''}`}
+                style={{
+                  '--instance-accent': instance.color_accent || 'var(--accent)',
+                  '--instance-icon-accent': instance.color_accent || 'var(--border)',
+                  ...(isGridView
+                    ? {
+                      borderLeftWidth: instance.color_accent ? '4px' : '2px',
+                      borderLeftColor: instance.color_accent || 'var(--border)'
+                    }
+                    : {})
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onContextMenu(e, instance);
+                }}
+              >
+                {instance.id === deletingInstanceId && (
+                  <div className="deleting-overlay">
+                    <div className="deleting-spinner" />
+                    <span className="deleting-text">Removing...</span>
                   </div>
-                  <span className="launching-percentage">{Number(loadingProgress).toFixed(1)}%</span>
-                  {loadingBytes.total > 0 && (
-                    <span className="launching-bytes">
-                      {(loadingBytes.current / 1024 / 1024).toFixed(1)} / {(loadingBytes.total / 1024 / 1024).toFixed(1)} MB
-                    </span>
-                  )}
-                  {loadingCount.total > 0 && (
-                    <span className="launching-file-count">
-                      {loadingCount.current} / {loadingCount.total} files
-                    </span>
-                  )}
-                </div>
-              )}
-              <div className="instance-logo-wrapper">
-                <div className="instance-logo">
-                  {logoMap[instance.id] ? (
-                    <img
-                      src={logoMap[instance.id]}
-                      alt=""
-                      onError={(e) => {
-                        // If it's not already the fallback, try the fallback
-                        if (!e.target.src.endsWith('/minecraft_logo.png')) {
-                          e.target.src = '/minecraft_logo.png';
-                        } else {
-                          // If fallback also fails, hide it
-                          e.target.style.display = 'none';
-                          if (e.target.nextSibling) {
-                            e.target.nextSibling.style.display = 'block';
-                          }
-                        }
-                      }}
-                    />
-                  ) : null}
-                  <div
-                    className="instance-logo-fallback"
-                    style={{ display: logoMap[instance.id] ? 'none' : 'block' }}
-                  />
-                </div>
-                {instance.mod_loader && instance.mod_loader !== 'Vanilla' && (
-                  <span className={`instance-loader-badge ${(instance.mod_loader || '').toLowerCase().replace(' ', '-')}`}>
-                    {instance.mod_loader}
-                  </span>
                 )}
-              </div>
-              <div className="instance-info">
-                <div className="instance-title">
-                  <h3 className="instance-name">{instance.name}</h3>
-                  {instance.mod_loader && instance.mod_loader !== 'Vanilla' && (
-                    <span className={`loader-inline ${(instance.mod_loader || '').toLowerCase().replace(' ', '-')}`}>{instance.mod_loader}</span>
-                  )}
-                </div>
-                <div className="instance-meta">
-                  <div className="meta-row">
-                    <span className="version-pill">{instance.version_id}</span>
-                    {formatPlaytime(instance.playtime_seconds) && (
-                      <span className="time-pill">
-                        <Clock className="meta-icon" size={12} />
-                        {formatPlaytime(instance.playtime_seconds)}
-                      </span>
-                    )}
-                    <span className="last-played-pill">
-                      Last played: {formatDate(instance.last_played)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <div className="instance-actions">
-                {runningInstances[instance.id] ? (
-                  <button
-                    className="btn btn-danger"
-                    onClick={() => onStop(instance.id)}
-                    disabled={isLoading}
-                  >
-                    Stop
-                  </button>
+                {isStopping ? (
+                  isGridView ? (
+                    <div className="stopping-overlay">
+                      <div className="stopping-spinner" />
+                      <span className="stopping-status">Stopping instance...</span>
+                      <div className="stopping-progress-bar">
+                        <div className="stopping-progress-fill" />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="stopping-overlay stopping-overlay-list">
+                      <div className="stopping-list-top">
+                        <div className="stopping-spinner" />
+                        <span className="stopping-status">Stopping instance...</span>
+                      </div>
+                      <div className="stopping-progress-bar">
+                        <div className="stopping-progress-fill" />
+                      </div>
+                    </div>
+                  )
+                ) : isLaunching ? (
+                  isGridView ? (
+                    <div className="launching-overlay">
+                      <div className="launching-spinner" />
+                      <span className="launching-status">{launchStageLabel}</span>
+                      {launchTelemetry.currentItem && (
+                        <span className="launching-item">{launchTelemetry.currentItem}</span>
+                      )}
+                      <div className="launching-progress-bar">
+                        <div className="launching-progress-fill" style={{ width: `${launchProgress}%` }} />
+                      </div>
+                      <span className="launching-percentage">{launchProgress.toFixed(1)}%</span>
+                      {launchBytes.total > 0 && (
+                        <span className="launching-bytes">
+                          {formatBytes(launchBytes.current)} / {formatBytes(launchBytes.total)}
+                        </span>
+                      )}
+                      {launchCount.total > 0 && (
+                        <span className="launching-file-count">
+                          {launchCount.current} / {launchCount.total} files
+                        </span>
+                      )}
+                      {launchTelemetry.speedBps > 0 && (
+                        <span className="launching-transfer-meta">
+                          {formatSpeed(launchTelemetry.speedBps)}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="launching-overlay launching-overlay-list">
+                      <div className="launching-list-top">
+                        <div className="launching-spinner" />
+                        <span className="launching-status">{launchStageLabel}</span>
+                        <span className="launching-percentage">{launchProgress.toFixed(1)}%</span>
+                      </div>
+                      <div className="launching-progress-bar">
+                        <div className="launching-progress-fill" style={{ width: `${launchProgress}%` }} />
+                      </div>
+                      {launchTelemetry.currentItem && (
+                        <span className="launching-item">{launchTelemetry.currentItem}</span>
+                      )}
+                      {(launchBytes.total > 0 || launchCount.total > 0 || launchTelemetry.speedBps > 0) && (
+                        <div className="launching-list-meta">
+                          {launchBytes.total > 0 && (
+                            <span className="launching-bytes">
+                              {formatBytes(launchBytes.current)} / {formatBytes(launchBytes.total)}
+                            </span>
+                          )}
+                          {launchCount.total > 0 && (
+                            <span className="launching-file-count">
+                              {launchCount.current} / {launchCount.total} files
+                            </span>
+                          )}
+                          {launchTelemetry.speedBps > 0 && (
+                            <span className="launching-transfer-meta">
+                              {formatSpeed(launchTelemetry.speedBps)}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                ) : null}
+
+                {isGridView ? (
+                  <>
+                    <div className="instance-logo-wrapper">
+                      <div className="instance-logo">
+                        {logoMap[instance.id] ? (
+                          <img
+                            src={logoMap[instance.id]}
+                            alt=""
+                            onError={(e) => {
+                              if (!e.target.src.endsWith('/minecraft_logo.png')) {
+                                e.target.src = '/minecraft_logo.png';
+                              } else {
+                                e.target.style.display = 'none';
+                                if (e.target.nextSibling) {
+                                  e.target.nextSibling.style.display = 'block';
+                                }
+                              }
+                            }}
+                          />
+                        ) : null}
+                        <div
+                          className="instance-logo-fallback"
+                          style={{ display: logoMap[instance.id] ? 'none' : 'block' }}
+                        />
+                      </div>
+                      {instance.mod_loader && instance.mod_loader !== 'Vanilla' && (
+                        <span className={`instance-loader-badge ${loaderClass}`}>
+                          {instance.mod_loader}
+                        </span>
+                      )}
+                    </div>
+                    <div className="instance-info">
+                      <div className="instance-title">
+                        <h3 className="instance-name">{instance.name}</h3>
+                        <span className="last-played-inline" title={`Last played: ${formatDate(instance.last_played)}`}>
+                          <CalendarDays className="meta-icon" size={12} />
+                          {formatDate(instance.last_played)}
+                        </span>
+                        {instance.mod_loader && instance.mod_loader !== 'Vanilla' && (
+                          <span className={`loader-inline ${loaderClass}`}>{instance.mod_loader}</span>
+                        )}
+                      </div>
+                      <div className="instance-meta">
+                        <div className="meta-row">
+                          <span className="version-pill">
+                            <Tag className="meta-icon" size={12} />
+                            {instance.version_id}
+                          </span>
+                          {hasPinnedAccount && (
+                            <span className="account-pinned-pill" title={`Launches with ${instance.preferred_account}`}>
+                              <User className="meta-icon" size={12} />
+                              {instance.preferred_account}
+                            </span>
+                          )}
+                          {playtimeLabel && (
+                            <span className="time-pill">
+                              <Clock className="meta-icon" size={12} />
+                              {playtimeLabel}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </>
                 ) : (
-                  <button
-                    className="btn btn-play"
-                    onClick={() => onLaunch(instance.id)}
-                    disabled={isLoading}
-                  >
-                    Play
-                  </button>
+                  <div className="instance-row-main">
+                    <div className="instance-logo-wrapper">
+                      <div className="instance-logo">
+                        {logoMap[instance.id] ? (
+                          <img
+                            src={logoMap[instance.id]}
+                            alt=""
+                            onError={(e) => {
+                              if (!e.target.src.endsWith('/minecraft_logo.png')) {
+                                e.target.src = '/minecraft_logo.png';
+                              } else {
+                                e.target.style.display = 'none';
+                                if (e.target.nextSibling) {
+                                  e.target.nextSibling.style.display = 'block';
+                                }
+                              }
+                            }}
+                          />
+                        ) : null}
+                        <div
+                          className="instance-logo-fallback"
+                          style={{ display: logoMap[instance.id] ? 'none' : 'block' }}
+                        />
+                      </div>
+                    </div>
+                    <div className="instance-info instance-info-list">
+                      <div className="instance-row-title">
+                        <h3 className="instance-name">{instance.name}</h3>
+                        {runningInstances[instance.id] && (
+                          <span
+                            className="instance-running-blob"
+                            title="Running"
+                            aria-label="Running"
+                          />
+                        )}
+                      </div>
+                      <div className="instance-list-meta-line">
+                        <span className="instance-meta-text version" title={`Minecraft version ${instance.version_id}`}>
+                          <Tag className="meta-icon" size={12} />
+                          {instance.version_id}
+                        </span>
+                        {instance.mod_loader && instance.mod_loader !== 'Vanilla' && (
+                          <span className={`instance-meta-text mod-loader ${loaderClass}`}>
+                            {instance.mod_loader}
+                          </span>
+                        )}
+                        <span className="instance-meta-text played">
+                          <CalendarDays className="meta-icon" size={12} />
+                          {formatDate(instance.last_played)}
+                        </span>
+                        {playtimeLabel && (
+                          <span className="instance-meta-text playtime">
+                            <Clock className="meta-icon" size={12} />
+                            {playtimeLabel}
+                          </span>
+                        )}
+                        {hasPinnedAccount && (
+                          <span className="instance-meta-text account" title={`Launches with ${instance.preferred_account}`}>
+                            <User className="meta-icon" size={12} />
+                            {instance.preferred_account}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 )}
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => onEdit(instance.id)}
-                  disabled={isLoading || openEditors.includes(instance.id)}
-                  title={openEditors.includes(instance.id) ? "Editor already open" : "Edit instance"}
-                >
-                  {openEditors.includes(instance.id) ? "Editing..." : "Edit"}
-                </button>
-                <button
-                  className="delete-btn-standalone"
-                  onClick={() => onDelete(instance.id)}
-                  disabled={isLoading}
-                  title="Delete instance"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="#f87171"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M3 6h18" />
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-                    <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                    <line x1="10" y1="11" x2="10" y2="17" />
-                    <line x1="14" y1="11" x2="14" y2="17" />
-                  </svg>
-                </button>
+
+                <div className="instance-actions">
+                  {isGridView ? (
+                    <>
+                      {runningInstances[instance.id] ? (
+                        <button
+                          className="btn btn-danger"
+                          onClick={() => onStop(instance.id)}
+                          disabled={isLoading || isStopping}
+                        >
+                          {isStopping ? 'Stopping...' : 'Stop'}
+                        </button>
+                      ) : (
+                        <button
+                          className="btn btn-play"
+                          onClick={() => onLaunch(instance.id)}
+                          disabled={isLoading || isLaunching || isStopping}
+                        >
+                          {isLaunching ? 'Launching...' : 'Play'}
+                        </button>
+                      )}
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => onEdit(instance.id)}
+                        disabled={isLoading || isStopping || openEditors.includes(instance.id)}
+                        title={openEditors.includes(instance.id) ? 'Editor already open' : 'Edit instance'}
+                      >
+                        {openEditors.includes(instance.id) ? 'Editing...' : 'Edit'}
+                      </button>
+                      <button
+                        className="delete-btn-standalone"
+                        onClick={() => onDelete(instance.id)}
+                        disabled={isLoading || isStopping}
+                        title="Delete instance"
+                        aria-label="Delete instance"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        className={`instance-list-play-btn ${runningInstances[instance.id] ? 'is-running' : ''} ${isLaunching && !runningInstances[instance.id] ? 'is-launching' : ''} ${isStopping ? 'is-stopping' : ''}`}
+                        onClick={() => (runningInstances[instance.id] ? onStop(instance.id) : onLaunch(instance.id))}
+                        disabled={isLoading || isLaunching || isStopping}
+                        title={runningInstances[instance.id] ? 'Stop instance' : 'Launch instance'}
+                        aria-label={runningInstances[instance.id] ? 'Stop instance' : 'Launch instance'}
+                      >
+                        {runningInstances[instance.id] ? <Square size={15} /> : <Play size={15} />}
+                        <span>{runningInstances[instance.id] ? (isStopping ? 'Stopping...' : 'Playing') : (isLaunching ? 'Launching...' : 'Play')}</span>
+                      </button>
+
+                      <div className="instance-row-menu-anchor">
+                        <button
+                          className="instance-kebab-btn"
+                          type="button"
+                          title="More actions"
+                          aria-label="More actions"
+                          aria-expanded={openActionMenuId === instance.id}
+                          disabled={isStopping}
+                          onClick={() => setOpenActionMenuId((prev) => (prev === instance.id ? null : instance.id))}
+                        >
+                          <MoreVertical size={18} />
+                        </button>
+                        {openActionMenuId === instance.id && (
+                          <div className="instance-kebab-menu" role="menu">
+                            <button
+                              className="instance-kebab-item"
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                onEdit(instance.id);
+                              }}
+                              disabled={isLoading || isStopping || openEditors.includes(instance.id)}
+                            >
+                              <Pencil size={14} />
+                              <span>{openEditors.includes(instance.id) ? 'Editing...' : 'Edit'}</span>
+                            </button>
+                            <button
+                              className="instance-kebab-item danger"
+                              type="button"
+                              onClick={() => {
+                                setOpenActionMenuId(null);
+                                onDelete(instance.id);
+                              }}
+                              disabled={isLoading || isStopping}
+                            >
+                              <Trash2 size={14} />
+                              <span>Delete</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

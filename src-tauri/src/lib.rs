@@ -13,10 +13,13 @@ use tauri::{State, AppHandle, Emitter, Manager};
 pub struct RunningProcessInfo {
     pub pid: u32,
     pub start_time: u64,
+    #[serde(default)]
+    pub launch_username: Option<String>,
 }
 
 static RUNNING_PROCESSES: LazyLock<Mutex<HashMap<String, RunningProcessInfo>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static BOOTSTRAP_START: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
+
 
 // App state for storing user info
 pub struct AppState {
@@ -36,6 +39,304 @@ impl Default for AppState {
             is_microsoft_auth: Mutex::new(false),
             refresh_token: Mutex::new(None),
         }
+    }
+}
+
+fn set_auth_state(
+    state: &AppState,
+    username: String,
+    uuid: String,
+    access_token: String,
+    is_microsoft_auth: bool,
+    refresh_token: Option<String>,
+) -> Result<(), String> {
+    *state.username.lock().map_err(|_| "Auth state corrupted")? = username;
+    *state.uuid.lock().map_err(|_| "Auth state corrupted")? = uuid;
+    *state.access_token.lock().map_err(|_| "Auth state corrupted")? = access_token;
+    *state.is_microsoft_auth.lock().map_err(|_| "Auth state corrupted")? = is_microsoft_auth;
+    *state.refresh_token.lock().map_err(|_| "Auth state corrupted")? = refresh_token;
+    Ok(())
+}
+
+fn terminate_pid(pid: u32) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let status = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .status()
+            .map_err(|e| format!("Failed to kill process {}: {}", pid, e))?;
+        if !status.success() {
+            return Err(format!("taskkill failed for PID {}", pid));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let status = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .map_err(|e| format!("Failed to kill process {}: {}", pid, e))?;
+        if !status.success() {
+            return Err(format!("kill -9 failed for PID {}", pid));
+        }
+    }
+
+    for _ in 0..20 {
+        if !instances::is_process_running(pid) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    Err(format!("Process {} still running after kill attempt", pid))
+}
+
+fn has_running_processes() -> bool {
+    RUNNING_PROCESSES
+        .lock()
+        .map(|processes| !processes.is_empty())
+        .unwrap_or(false)
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn request_exit_confirmation(app: &AppHandle) {
+    show_main_window(app);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("show-exit-confirm", ());
+    }
+}
+
+const TRAY_ID_SHOW: &str = "tray_show";
+const TRAY_ID_EXIT: &str = "tray_exit";
+const TRAY_LAUNCH_PREFIX: &str = "tray_launch::";
+const TRAY_STOP_PREFIX: &str = "tray_stop::";
+const DEFAULT_TRAY_INSTANCE_LOGO: &str = "minecraft_logo.png";
+
+fn format_short_playtime(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    if hours > 0 {
+        format!("{}h {}m", hours, minutes)
+    } else {
+        format!("{}m", minutes)
+    }
+}
+
+fn tray_label_with_icon(label: &str, icon: &str) -> String {
+    format!("{} {}", label, icon)
+}
+
+fn tray_submenu_title(icon: &str, title: &str) -> String {
+    // Native Linux tray menus can render submenu arrows too close to text.
+    // Padding here gives the arrow visual spacing.
+    format!("{}   ", tray_label_with_icon(title, icon))
+}
+
+fn resolve_tray_instance_logo_path(instance: &instances::Instance) -> std::path::PathBuf {
+    let logos_dir = downloader::get_instance_logos_dir();
+    let configured_logo = instance
+        .logo_filename
+        .as_deref()
+        .unwrap_or(DEFAULT_TRAY_INSTANCE_LOGO);
+    let configured_path = logos_dir.join(configured_logo);
+
+    if configured_path.exists() {
+        configured_path
+    } else {
+        logos_dir.join(DEFAULT_TRAY_INSTANCE_LOGO)
+    }
+}
+
+fn load_tray_instance_icon(instance: &instances::Instance) -> Option<tauri::image::Image<'static>> {
+    let logo_path = resolve_tray_instance_logo_path(instance);
+    tauri::image::Image::from_path(logo_path)
+        .ok()
+        .map(|img| img.to_owned())
+}
+
+fn append_tray_item_with_optional_icon(
+    app: &AppHandle,
+    submenu: &tauri::menu::Submenu<tauri::Wry>,
+    id: String,
+    text: String,
+    icon: Option<tauri::image::Image<'static>>,
+) -> tauri::Result<()> {
+    if let Some(icon) = icon {
+        let item = tauri::menu::IconMenuItem::with_id(app, id, text, true, Some(icon), None::<&str>)?;
+        submenu.append(&item)?;
+    } else {
+        let item = tauri::menu::MenuItem::with_id(app, id, text, true, None::<&str>)?;
+        submenu.append(&item)?;
+    }
+    Ok(())
+}
+
+fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    let all_instances = instances::load_instances().unwrap_or_default();
+
+    let mut top_played = all_instances.clone();
+    top_played.sort_by(|a, b| b.playtime_seconds.cmp(&a.playtime_seconds));
+    top_played.retain(|i| i.playtime_seconds > 0);
+    top_played.truncate(3);
+
+    let mut recent = all_instances.clone();
+    recent.sort_by(|a, b| {
+        let a_ts = a
+            .last_played
+            .as_deref()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let b_ts = b
+            .last_played
+            .as_deref()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        b_ts.cmp(&a_ts)
+    });
+    recent.retain(|i| i.last_played.is_some());
+    recent.truncate(3);
+
+    let instance_names: HashMap<String, String> = all_instances
+        .iter()
+        .map(|i| (i.id.clone(), i.name.clone()))
+        .collect();
+    let instances_by_id: HashMap<String, instances::Instance> = all_instances
+        .iter()
+        .cloned()
+        .map(|i| (i.id.clone(), i))
+        .collect();
+    let running_infos = RUNNING_PROCESSES.lock().map(|m| m.clone()).unwrap_or_default();
+
+    let quick_launch_submenu = tauri::menu::Submenu::new(
+        app,
+        tray_submenu_title("▶", "Quick Launch (Top 3)"),
+        true,
+    )?;
+    if top_played.is_empty() {
+        let empty = tauri::menu::MenuItem::new(app, "No played instances yet", false, None::<&str>)?;
+        quick_launch_submenu.append(&empty)?;
+    } else {
+        for instance in top_played {
+            let id = format!("{}{}", TRAY_LAUNCH_PREFIX, instance.id);
+            let text = format!("{}  ({})  ▶", instance.name, format_short_playtime(instance.playtime_seconds));
+            let icon = load_tray_instance_icon(&instance);
+            append_tray_item_with_optional_icon(app, &quick_launch_submenu, id, text, icon)?;
+        }
+    }
+
+    let recent_submenu = tauri::menu::Submenu::new(
+        app,
+        tray_submenu_title("⏱", "Recent Instances"),
+        true,
+    )?;
+    if recent.is_empty() {
+        let empty = tauri::menu::MenuItem::new(app, "No recent instances", false, None::<&str>)?;
+        recent_submenu.append(&empty)?;
+    } else {
+        for instance in recent {
+            let id = format!("{}{}", TRAY_LAUNCH_PREFIX, instance.id);
+            let text = format!("{}  ({})  ⏱", instance.name, instance.version_id);
+            let icon = load_tray_instance_icon(&instance);
+            append_tray_item_with_optional_icon(app, &recent_submenu, id, text, icon)?;
+        }
+    }
+
+    let running_submenu = tauri::menu::Submenu::new(
+        app,
+        tray_submenu_title("●", "Running Instances"),
+        true,
+    )?;
+    if running_infos.is_empty() {
+        let empty = tauri::menu::MenuItem::new(app, "No running instances", false, None::<&str>)?;
+        running_submenu.append(&empty)?;
+    } else {
+        let mut running_rows: Vec<(String, RunningProcessInfo)> = running_infos.into_iter().collect();
+        running_rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (instance_id, info) in running_rows {
+            let instance_name = instance_names
+                .get(&instance_id)
+                .cloned()
+                .unwrap_or_else(|| "Unknown Instance".to_string());
+            let running_for = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_sub(info.start_time);
+            let id = format!("{}{}", TRAY_STOP_PREFIX, instance_id);
+            let text = format!("Stop {}  ({})  ■", instance_name, format_short_playtime(running_for));
+            let icon = instances_by_id
+                .get(&instance_id)
+                .and_then(load_tray_instance_icon);
+            append_tray_item_with_optional_icon(app, &running_submenu, id, text, icon)?;
+        }
+    }
+
+    let open_item = tauri::menu::MenuItem::with_id(
+        app,
+        TRAY_ID_SHOW,
+        tray_label_with_icon("Open Palethea", "↑"),
+        true,
+        None::<&str>,
+    )?;
+    let exit_item = tauri::menu::MenuItem::with_id(
+        app,
+        TRAY_ID_EXIT,
+        tray_label_with_icon("Exit", "✕"),
+        true,
+        None::<&str>,
+    )?;
+    let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+
+    tauri::menu::Menu::with_items(
+        app,
+        &[
+            &open_item,
+            &quick_launch_submenu,
+            &recent_submenu,
+            &running_submenu,
+            &separator,
+            &exit_item,
+        ],
+    )
+}
+
+fn refresh_tray_menu(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        if let Ok(menu) = build_tray_menu(app) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+}
+
+fn stop_running_instance(instance_id: &str, app_handle: &AppHandle) -> Result<String, String> {
+    let process_info = {
+        let processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
+        processes.get(instance_id).cloned()
+    };
+
+    match process_info {
+        Some(info) => {
+            terminate_pid(info.pid)?;
+
+            {
+                let mut processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
+                processes.remove(instance_id);
+                discord::update_presence(processes.len());
+            }
+            instances::clear_active_session(instance_id);
+            refresh_tray_menu(app_handle);
+            let _ = app_handle.emit("refresh-instances", ());
+
+            Ok(format!("Killed game for instance {}", instance_id))
+        }
+        None => Err("Instance is not running".to_string()),
     }
 }
 
@@ -266,6 +567,7 @@ async fn clone_instance(instance_id: String, new_name: String, app_handle: AppHa
     cloned.console_auto_update = source.console_auto_update;
     cloned.logo_filename = source.logo_filename.clone();
     cloned.color_accent = source.color_accent.clone();
+    cloned.preferred_account = source.preferred_account.clone();
     
     // Update the saved metadata
     instances::update_instance(cloned.clone())?;
@@ -358,12 +660,14 @@ async fn set_instance_logo_from_url(instance_id: String, logo_url: String, app_h
     let mut instance = instances::get_instance(&instance_id)?;
     downloader::ensure_instance_logos_dir()?;
 
-    let client = reqwest::Client::new();
+    let client = minecraft::http_client();
     let response = client.get(&logo_url)
         .header("User-Agent", "PaletheaLauncher/0.1.0")
         .send()
         .await
-        .map_err(|e| format!("Failed to download logo: {}", e))?;
+        .map_err(|e| format!("Failed to download logo: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("Logo download returned an error status: {}", e))?;
 
     let bytes = response.bytes().await.map_err(|e| format!("Failed to get logo bytes: {}", e))?;
 
@@ -628,7 +932,9 @@ async fn export_instance_zip(instance_id: String, destination_path: String, app_
     
     zip.start_file("palethea_instance.json", options)
         .map_err(|e| format!("Failed to add metadata: {}", e))?;
-    zip.write_all(serde_json::to_string_pretty(&metadata).unwrap().as_bytes())
+    let metadata_json = serde_json::to_string_pretty(&metadata)
+        .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
+    zip.write_all(metadata_json.as_bytes())
         .map_err(|e| format!("Failed to write metadata: {}", e))?;
     
     // Recursively add all files from game directory
@@ -913,7 +1219,7 @@ fn get_instance_share_code(instance_id: String) -> Result<String, String> {
         .into_iter()
         .filter(|m| m.project_id.is_some())
         .map(|m| ShareItem {
-            project_id: m.project_id.unwrap(),
+            project_id: m.project_id.unwrap_or_default(),
             version_id: m.version_id,
             filename: Some(m.filename),
             name: m.name,
@@ -926,7 +1232,7 @@ fn get_instance_share_code(instance_id: String) -> Result<String, String> {
         .into_iter()
         .filter(|p| p.project_id.is_some())
         .map(|p| ShareItem {
-            project_id: p.project_id.unwrap(),
+            project_id: p.project_id.unwrap_or_default(),
             version_id: p.version_id,
             filename: Some(p.filename),
             name: p.name,
@@ -939,7 +1245,7 @@ fn get_instance_share_code(instance_id: String) -> Result<String, String> {
         .into_iter()
         .filter(|s| s.project_id.is_some())
         .map(|s| ShareItem {
-            project_id: s.project_id.unwrap(),
+            project_id: s.project_id.unwrap_or_default(),
             version_id: s.version_id,
             filename: Some(s.filename),
             name: s.name,
@@ -1010,7 +1316,7 @@ fn get_instance_mods_share_code(instance_id: String) -> Result<String, String> {
         .into_iter()
         .filter(|m| m.project_id.is_some())
         .map(|m| ShareItem {
-            project_id: m.project_id.unwrap(),
+            project_id: m.project_id.unwrap_or_default(),
             version_id: m.version_id,
             filename: Some(m.filename),
             name: m.name,
@@ -1108,7 +1414,7 @@ async fn install_neoforge(instance_id: String, loader_version: String) -> Result
 
 #[tauri::command]
 async fn download_version(version_id: String, app_handle: AppHandle) -> Result<String, String> {
-    downloader::download_version(&version_id, Some(&app_handle))
+    downloader::download_version(&version_id, Some(&app_handle), None)
         .await
         .map_err(|e| e.to_string())?;
     
@@ -1142,14 +1448,14 @@ async fn launch_instance(
         }
     }
 
-    let _ = app_handle.emit("download-progress", downloader::DownloadProgress {
+    downloader::emit_download_progress(&app_handle, downloader::DownloadProgress {
         stage: format!("Preparing to launch {}...", instance.name),
         percentage: 10.0,
         total_bytes: None,
         downloaded_bytes: None,
         current: 0,
         total: 0,
-    });
+    }, Some(&instance_id));
     
     // Check if version is downloaded
     let versions_dir = downloader::get_versions_dir();
@@ -1159,10 +1465,150 @@ async fn launch_instance(
     let version_details: versions::VersionDetails = serde_json::from_str(&json_content)
         .map_err(|e| format!("Failed to parse version JSON: {}", e))?;
     
-    let username = state.username.lock().map_err(|_| "Auth state corrupted")?.clone();
-    let uuid = state.uuid.lock().map_err(|_| "Auth state corrupted")?.clone();
-    let access_token = state.access_token.lock().map_err(|_| "Auth state corrupted")?.clone();
-    
+    let mut using_preferred_account = false;
+    let (mut username, mut uuid, mut access_token, is_microsoft, refresh_token) =
+        if let Some(preferred_username) = instance.preferred_account.clone() {
+            let accounts = auth::load_accounts();
+            if let Some(account) = accounts
+                .accounts
+                .into_iter()
+                .find(|a| a.username == preferred_username)
+            {
+                using_preferred_account = true;
+                log_info!(
+                    &app_handle,
+                    "Launching {} with instance-bound account {}",
+                    instance.name,
+                    account.username
+                );
+                (
+                    account.username,
+                    account.uuid,
+                    account.access_token,
+                    account.is_microsoft,
+                    account.refresh_token,
+                )
+            } else {
+                log_warn!(
+                    &app_handle,
+                    "Preferred account '{}' for instance {} was not found. Falling back to active account.",
+                    preferred_username,
+                    instance.name
+                );
+
+                // Clear stale preferred binding if account no longer exists
+                let mut rebound_instance = instance.clone();
+                rebound_instance.preferred_account = None;
+                if instances::update_instance(rebound_instance).is_ok() {
+                    let _ = app_handle.emit("refresh-instances", ());
+                }
+
+                (
+                    state.username.lock().map_err(|_| "Auth state corrupted")?.clone(),
+                    state.uuid.lock().map_err(|_| "Auth state corrupted")?.clone(),
+                    state.access_token.lock().map_err(|_| "Auth state corrupted")?.clone(),
+                    *state
+                        .is_microsoft_auth
+                        .lock()
+                        .map_err(|_| "Auth state corrupted")?,
+                    state
+                        .refresh_token
+                        .lock()
+                        .map_err(|_| "Auth state corrupted")?
+                        .clone(),
+                )
+            }
+        } else {
+            (
+                state.username.lock().map_err(|_| "Auth state corrupted")?.clone(),
+                state.uuid.lock().map_err(|_| "Auth state corrupted")?.clone(),
+                state.access_token.lock().map_err(|_| "Auth state corrupted")?.clone(),
+                *state
+                    .is_microsoft_auth
+                    .lock()
+                    .map_err(|_| "Auth state corrupted")?,
+                state
+                    .refresh_token
+                    .lock()
+                    .map_err(|_| "Auth state corrupted")?
+                    .clone(),
+            )
+        };
+
+    // Validate and refresh Microsoft token before launch
+    if is_microsoft {
+        downloader::emit_download_progress(&app_handle, downloader::DownloadProgress {
+            stage: "Validating session...".to_string(),
+            percentage: 5.0,
+            total_bytes: None,
+            downloaded_bytes: None,
+            current: 0,
+            total: 0,
+        }, Some(&instance_id));
+
+        if !auth::validate_token(&access_token).await {
+            println!("[Auth] Access token expired for {}, attempting refresh...", username);
+
+            if let Some(ref tok) = refresh_token {
+                match auth::refresh_token(tok).await {
+                    Ok(token_response) => {
+                        if let Some(new_ms_token) = token_response.access_token {
+                            match auth::complete_authentication(
+                                &new_ms_token,
+                                token_response.refresh_token.or(refresh_token.clone()),
+                            ).await {
+                                Ok(new_account) => {
+                                    println!("[Auth] Token refreshed successfully for {}", new_account.username);
+                                    username = new_account.username.clone();
+                                    uuid = new_account.uuid.clone();
+                                    access_token = new_account.access_token.clone();
+
+                                    let saved = auth::SavedAccount {
+                                        username: new_account.username.clone(),
+                                        uuid: new_account.uuid.clone(),
+                                        access_token: new_account.access_token.clone(),
+                                        refresh_token: new_account.refresh_token.clone(),
+                                        is_microsoft: true,
+                                    };
+                                    let _ = auth::add_account(saved);
+
+                                    // Only update global active auth state when launching with active account.
+                                    if !using_preferred_account {
+                                        set_auth_state(
+                                            &state,
+                                            new_account.username,
+                                            new_account.uuid,
+                                            new_account.access_token,
+                                            true,
+                                            new_account.refresh_token,
+                                        )?;
+                                    } else if instance.preferred_account.as_deref() != Some(&username) {
+                                        // Keep preferred binding aligned if account username changed.
+                                        let mut rebound_instance = instance.clone();
+                                        rebound_instance.preferred_account = Some(username.clone());
+                                        if instances::update_instance(rebound_instance).is_ok() {
+                                            let _ = app_handle.emit("refresh-instances", ());
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    return Err(format!("Session expired and refresh failed: {}. Please log out and log in again.", e));
+                                }
+                            }
+                        } else {
+                            return Err("Session expired and no new token received. Please log out and log in again.".to_string());
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!("Session expired and refresh failed: {}. Please log out and log in again.", e));
+                    }
+                }
+            } else {
+                return Err("Session expired and no refresh token available. Please log out and log in again.".to_string());
+            }
+        }
+    }
+
     // Update last played and launch count
     let mut updated_instance = instance.clone();
     let start_time = std::time::SystemTime::now()
@@ -1173,32 +1619,47 @@ async fn launch_instance(
     updated_instance.total_launches += 1;
     instances::update_instance(updated_instance)?;
     
-    let _ = app_handle.emit("download-progress", downloader::DownloadProgress {
+    downloader::emit_download_progress(&app_handle, downloader::DownloadProgress {
         stage: format!("Preparing to launch {}...", instance.name),
         percentage: 0.0,
         total_bytes: None,
         downloaded_bytes: None,
         current: 0,
         total: 0,
-    });
+    }, Some(&instance_id));
     
     // Launch the game
-    let mut child = launcher::launch_game(&instance, &version_details, &username, &access_token, &uuid, &app_handle).await?;
+    let mut child = launcher::launch_game(
+        &instance,
+        &version_details,
+        &username,
+        &access_token,
+        &uuid,
+        &app_handle,
+        Some(&instance_id),
+    ).await?;
     
     // Store the process ID
     let process_id = child.id();
     
     // Write session file for crash recovery (include PID)
-    let _ = instances::write_active_session(&instance_id, start_time, Some(process_id));
+    let _ = instances::write_active_session(
+        &instance_id,
+        start_time,
+        Some(process_id),
+        Some(username.clone()),
+    );
     
     {
         let mut processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
         processes.insert(instance_id.clone(), RunningProcessInfo {
             pid: process_id,
             start_time,
+            launch_username: Some(username.clone()),
         });
         discord::update_presence(processes.len());
     }
+    refresh_tray_menu(&app_handle);
     
     // Spawn a background thread to track playtime
     let instance_id_clone = instance_id.clone();
@@ -1221,13 +1682,15 @@ async fn launch_instance(
 
             // Log session for activity tracking
             instances::log_session(&instance_id_clone, &instance_name, end_time, session_duration);
-            instances::clear_active_session();
+            instances::clear_active_session(&instance_id_clone);
             
             // Remove from running processes
             if let Ok(mut processes) = RUNNING_PROCESSES.lock() {
                 processes.remove(&instance_id_clone);
                 discord::update_presence(processes.len());
             }
+            refresh_tray_menu(&app_handle_clone);
+            let _ = app_handle_clone.emit("refresh-instances", ());
 
             log_info!(&app_handle_clone, "Instance {} exited with status: {:?}, session duration: {}s", instance_name, status, session_duration);
         }
@@ -1237,45 +1700,15 @@ async fn launch_instance(
 }
 
 #[tauri::command]
-fn kill_game(
+async fn kill_game(
     instance_id: String,
+    app_handle: AppHandle,
 ) -> Result<String, String> {
-    let process_info = {
-        let processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
-        processes.get(&instance_id).cloned()
-    };
-    
-    match process_info {
-        Some(info) => {
-            let pid = info.pid;
-            // Kill the process using system commands
-            #[cfg(target_os = "windows")]
-            {
-                std::process::Command::new("taskkill")
-                    .args(&["/F", "/PID", &pid.to_string()])
-                    .spawn()
-                    .map_err(|e| format!("Failed to kill process: {}", e))?;
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                std::process::Command::new("kill")
-                    .args(&["-9", &pid.to_string()])
-                    .spawn()
-                    .map_err(|e| format!("Failed to kill process: {}", e))?;
-            }
-            
-            // Remove from running processes
-            {
-                let mut processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
-                processes.remove(&instance_id);
-                discord::update_presence(processes.len());
-            }
-            instances::clear_active_session();
-            
-            Ok(format!("Killed game for instance {}", instance_id))
-        }
-        None => Err("Instance is not running".to_string())
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        stop_running_instance(&instance_id, &app_handle)
+    })
+    .await
+    .map_err(|e| format!("Failed to join stop task: {}", e))?
 }
 
 #[tauri::command]
@@ -1370,7 +1803,7 @@ pub struct GitHubRelease {
 // ----------
 #[tauri::command]
 async fn get_github_releases(include_prerelease: bool) -> Result<Vec<GitHubRelease>, String> {
-    let client = reqwest::Client::new();
+    let client = minecraft::http_client();
     let url = "https://api.github.com/repos/mwsk75996/palethea-launcher/releases";
     
     let response = client
@@ -1507,7 +1940,7 @@ async fn download_and_run_installer(version: String, window: tauri::Window) -> R
     let installer_path = temp_dir.join(&asset_name);
     
     // Download the installer
-    let client = reqwest::Client::new();
+    let client = minecraft::http_client();
     let response = client
         .get(&download_url)
         .header("User-Agent", "PaletheaLauncher/0.1.0")
@@ -1612,11 +2045,14 @@ async fn poll_microsoft_login(device_code: String, state: State<'_, AppState>) -
         .map_err(|e| e.to_string())?;
     
     // Update state
-    *state.username.lock().unwrap() = account.username.clone();
-    *state.uuid.lock().unwrap() = account.uuid.clone();
-    *state.access_token.lock().unwrap() = account.access_token.clone();
-    *state.is_microsoft_auth.lock().unwrap() = true;
-    *state.refresh_token.lock().unwrap() = account.refresh_token.clone();
+    set_auth_state(
+        &state,
+        account.username.clone(),
+        account.uuid.clone(),
+        account.access_token.clone(),
+        true,
+        account.refresh_token.clone(),
+    )?;
     
     // Save account to disk
     let saved = auth::SavedAccount {
@@ -1634,22 +2070,31 @@ async fn poll_microsoft_login(device_code: String, state: State<'_, AppState>) -
 
 #[tauri::command]
 fn logout(state: State<'_, AppState>) -> Result<(), String> {
-    *state.username.lock().unwrap() = "Player".to_string();
-    *state.uuid.lock().unwrap() = uuid::Uuid::new_v4().to_string().replace("-", "");
-    *state.access_token.lock().unwrap() = "0".to_string();
-    *state.is_microsoft_auth.lock().unwrap() = false;
-    *state.refresh_token.lock().unwrap() = None;
+    set_auth_state(
+        &state,
+        "Player".to_string(),
+        uuid::Uuid::new_v4().to_string().replace("-", ""),
+        "0".to_string(),
+        false,
+        None,
+    )?;
     Ok(())
 }
 
 #[tauri::command]
 fn is_logged_in(state: State<'_, AppState>) -> bool {
-    *state.is_microsoft_auth.lock().unwrap()
+    state.is_microsoft_auth
+        .lock()
+        .map(|v| *v)
+        .unwrap_or(false)
 }
 
 #[tauri::command]
 fn get_current_uuid(state: State<'_, AppState>) -> String {
-    state.uuid.lock().unwrap().clone()
+    state.uuid
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -1658,8 +2103,21 @@ fn get_saved_accounts() -> auth::AccountsData {
 }
 
 #[tauri::command]
-fn remove_saved_account(username: String) -> Result<(), String> {
-    auth::remove_account(&username)
+fn remove_saved_account(username: String, app_handle: AppHandle) -> Result<(), String> {
+    auth::remove_account(&username)?;
+
+    let cleared = instances::clear_preferred_account(&username)?;
+    if cleared > 0 {
+        log_info!(
+            &app_handle,
+            "Cleared preferred account binding for {} instance(s) after removing {}",
+            cleared,
+            username
+        );
+    }
+
+    let _ = app_handle.emit("refresh-instances", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -1669,7 +2127,7 @@ async fn validate_account(access_token: String) -> bool {
 
 #[tauri::command]
 async fn get_mc_profile_full(state: State<'_, AppState>) -> Result<auth::FullProfile, String> {
-    let token = state.access_token.lock().unwrap().clone();
+    let token = state.access_token.lock().map_err(|_| "Auth state corrupted")?.clone();
     if token == "0" {
         return Err("Not logged in".to_string());
     }
@@ -1681,7 +2139,7 @@ async fn get_mc_profile_full(state: State<'_, AppState>) -> Result<auth::FullPro
 
 #[tauri::command]
 async fn upload_skin(state: State<'_, AppState>, file_path: String, variant: String) -> Result<(), String> {
-    let token = state.access_token.lock().unwrap().clone();
+    let token = state.access_token.lock().map_err(|_| "Auth state corrupted")?.clone();
     if token == "0" {
         return Err("Not logged in".to_string());
     }
@@ -1693,7 +2151,7 @@ async fn upload_skin(state: State<'_, AppState>, file_path: String, variant: Str
 
 #[tauri::command]
 async fn reset_skin(state: State<'_, AppState>) -> Result<(), String> {
-    let token = state.access_token.lock().unwrap().clone();
+    let token = state.access_token.lock().map_err(|_| "Auth state corrupted")?.clone();
     if token == "0" {
         return Err("Not logged in".to_string());
     }
@@ -1746,35 +2204,89 @@ async fn refresh_account(username: String, state: State<'_, AppState>) -> Result
     auth::add_account(saved)?;
     
     // Update state if this is the active account
-    if state.username.lock().unwrap().clone() == username {
-        *state.username.lock().unwrap() = new_account.username;
-        *state.uuid.lock().unwrap() = new_account.uuid;
-        *state.access_token.lock().unwrap() = new_account.access_token;
-        *state.is_microsoft_auth.lock().unwrap() = true;
-        *state.refresh_token.lock().unwrap() = new_account.refresh_token;
+    if state.username.lock().map_err(|_| "Auth state corrupted")?.clone() == username {
+        set_auth_state(
+            &state,
+            new_account.username,
+            new_account.uuid,
+            new_account.access_token,
+            true,
+            new_account.refresh_token,
+        )?;
     }
     
     Ok(true)
 }
 
 #[tauri::command]
-fn switch_account(username: String, state: State<'_, AppState>) -> Result<(), String> {
+async fn switch_account(username: String, state: State<'_, AppState>) -> Result<(), String> {
     let data = auth::load_accounts();
-    
+
     let account = data.accounts.iter()
         .find(|a| a.username == username)
-        .ok_or("Account not found")?;
-    
-    // Update state
-    *state.username.lock().unwrap() = account.username.clone();
-    *state.uuid.lock().unwrap() = account.uuid.clone();
-    *state.access_token.lock().unwrap() = account.access_token.clone();
-    *state.is_microsoft_auth.lock().unwrap() = account.is_microsoft;
-    *state.refresh_token.lock().unwrap() = account.refresh_token.clone();
-    
+        .ok_or("Account not found")?
+        .clone();
+
+    let mut access_token = account.access_token.clone();
+    let mut refresh_token_val = account.refresh_token.clone();
+
+    // Validate and refresh token for Microsoft accounts
+    if account.is_microsoft {
+        if !auth::validate_token(&access_token).await {
+            println!("[Auth] Token expired for {}, refreshing on switch...", username);
+            if let Some(ref tok) = account.refresh_token {
+                match auth::refresh_token(tok).await {
+                    Ok(token_response) => {
+                        if let Some(new_ms_token) = token_response.access_token {
+                            match auth::complete_authentication(
+                                &new_ms_token,
+                                token_response.refresh_token.or(Some(tok.clone())),
+                            ).await {
+                                Ok(new_account) => {
+                                    println!("[Auth] Token refreshed for {} on switch", new_account.username);
+                                    access_token = new_account.access_token.clone();
+                                    refresh_token_val = new_account.refresh_token.clone();
+
+                                    let saved = auth::SavedAccount {
+                                        username: new_account.username,
+                                        uuid: new_account.uuid,
+                                        access_token: new_account.access_token,
+                                        refresh_token: new_account.refresh_token,
+                                        is_microsoft: true,
+                                    };
+                                    let _ = auth::add_account(saved);
+                                }
+                                Err(e) => {
+                                    return Err(format!("Session expired for {}. Please remove and re-login: {}", username, e));
+                                }
+                            }
+                        } else {
+                            return Err(format!("Session expired for {}. Please remove and re-login.", username));
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!("Session expired for {}. Please remove and re-login: {}", username, e));
+                    }
+                }
+            } else {
+                return Err(format!("Session expired for {} and no refresh token. Please remove and re-login.", username));
+            }
+        }
+    }
+
+    // Update state with validated/refreshed tokens
+    set_auth_state(
+        &state,
+        account.username.clone(),
+        account.uuid.clone(),
+        access_token,
+        account.is_microsoft,
+        refresh_token_val,
+    )?;
+
     // Update active account
     auth::set_active_account(&username)?;
-    
+
     Ok(())
 }
 
@@ -1784,11 +2296,14 @@ fn switch_account(username: String, state: State<'_, AppState>) -> Result<(), St
 fn set_offline_user(username: String, state: State<'_, AppState>) -> Result<(), String> {
     let uuid = uuid::Uuid::new_v4().to_string().replace("-", "");
     
-    *state.username.lock().unwrap() = username.clone();
-    *state.uuid.lock().unwrap() = uuid.clone();
-    *state.access_token.lock().unwrap() = "0".to_string();
-    *state.is_microsoft_auth.lock().unwrap() = false;
-    *state.refresh_token.lock().unwrap() = None;
+    set_auth_state(
+        &state,
+        username.clone(),
+        uuid.clone(),
+        "0".to_string(),
+        false,
+        None,
+    )?;
     
     // Save offline account
     let saved = auth::SavedAccount {
@@ -1806,7 +2321,7 @@ fn set_offline_user(username: String, state: State<'_, AppState>) -> Result<(), 
 
 #[tauri::command]
 fn get_current_user(state: State<'_, AppState>) -> Result<String, String> {
-    Ok(state.username.lock().unwrap().clone())
+    Ok(state.username.lock().map_err(|_| "Auth state corrupted")?.clone())
 }
 
 #[tauri::command]
@@ -2078,7 +2593,7 @@ async fn get_loader_versions(loader: String, game_version: String) -> Result<Vec
     match loader.as_str() {
         "fabric" => {
             // Fetch Fabric loader versions from the Fabric API
-            let client = reqwest::Client::new();
+            let client = minecraft::http_client();
             let url = format!(
                 "https://meta.fabricmc.net/v2/versions/loader/{}",
                 game_version
@@ -2132,7 +2647,7 @@ async fn get_loader_versions(loader: String, game_version: String) -> Result<Vec
         }
         "forge" => {
             // Fetch Forge versions
-            let client = reqwest::Client::new();
+            let client = minecraft::http_client();
             let url = format!(
                 "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
             );
@@ -2141,6 +2656,8 @@ async fn get_loader_versions(loader: String, game_version: String) -> Result<Vec
                 .header("User-Agent", "PaletheaLauncher/0.1.3")
                 .send()
                 .await
+                .map_err(|e| e.to_string())?
+                .error_for_status()
                 .map_err(|e| e.to_string())?;
             
             #[derive(Deserialize)]
@@ -2180,13 +2697,15 @@ async fn get_loader_versions(loader: String, game_version: String) -> Result<Vec
         }
         "neoforge" => {
             // NeoForge versions from their API
-            let client = reqwest::Client::new();
+            let client = minecraft::http_client();
             let url = "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge";
             let response = client
                 .get(url)
                 .header("User-Agent", "PaletheaLauncher/0.1.3")
                 .send()
                 .await
+                .map_err(|e| e.to_string())?
+                .error_for_status()
                 .map_err(|e| e.to_string())?;
             
             #[derive(Deserialize)]
@@ -2343,7 +2862,7 @@ async fn install_modrinth_file(
     let dest_path = dest_dir.join(&filename);
     
     // Download the file with progress
-    let client = reqwest::Client::new();
+    let client = minecraft::http_client();
     let response = client
         .get(&file_url)
         .header("User-Agent", format!("PaletheaLauncher/{}", minecraft::get_launcher_version()))
@@ -2397,10 +2916,7 @@ async fn install_modrinth_file(
             version_name,
             categories,
         };
-        let meta_path = dest_dir.join(format!("{}.meta.json", filename));
-        if let Ok(json) = serde_json::to_string(&meta) {
-            let _ = std::fs::write(meta_path, json);
-        }
+        let _ = files::write_meta_for_entry(&dest_dir, &filename, &meta);
     }
     
     Ok(())
@@ -2415,7 +2931,7 @@ async fn save_remote_file(url: String, path: String) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
-    let client = reqwest::Client::new();
+    let client = minecraft::http_client();
     let response = client
         .get(&url)
         .header("User-Agent", format!("PaletheaLauncher/{}", minecraft::get_launcher_version()))
@@ -2792,31 +3308,25 @@ fn get_instance_details(instance_id: String) -> Result<instances::Instance, Stri
 
 #[tauri::command]
 fn exit_app_fully(app: AppHandle) {
-    let mut processes = RUNNING_PROCESSES.lock().expect("Process state corrupted");
-    for (_instance_id, info) in processes.drain() {
-        #[cfg(target_os = "windows")]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(&["/F", "/PID", &info.pid.to_string()])
-                .spawn();
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = std::process::Command::new("kill")
-                .args(&["-9", &info.pid.to_string()])
-                .spawn();
+    let process_infos = if let Ok(mut processes) = RUNNING_PROCESSES.lock() {
+        processes.drain().map(|(_, info)| info).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    for info in process_infos {
+        if let Err(err) = terminate_pid(info.pid) {
+            log::warn!("Failed to fully terminate PID {}: {}", info.pid, err);
         }
     }
     // Clear session file
-    instances::clear_active_session();
+    instances::clear_all_active_sessions();
     discord::shutdown();
     app.exit(0);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let bootstrap_start = *BOOTSTRAP_START;
-
     // Note: WebView2 args are set in main.rs (must be before any Tauri init)
 
     #[cfg(debug_assertions)]
@@ -2849,13 +3359,17 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
-                    let processes = RUNNING_PROCESSES.lock().unwrap();
-                    if !processes.is_empty() {
+                    if let Ok(processes) = RUNNING_PROCESSES.lock() {
+                        if !processes.is_empty() {
+                            api.prevent_close();
+                            let _ = window.emit("show-exit-confirm", ());
+                        } else {
+                            // Kill the whole process group to avoid "Terminate batch job" lingering
+                            window.app_handle().exit(0);
+                        }
+                    } else {
                         api.prevent_close();
                         let _ = window.emit("show-exit-confirm", ());
-                    } else {
-                        // Kill the whole process group to avoid "Terminate batch job" lingering
-                        window.app_handle().exit(0);
                     }
                 }
             }
@@ -2881,69 +3395,131 @@ pub fn run() {
             }
             let _ = fs::create_dir_all(downloader::get_skins_dir());
 
-            // Recover any orphaned playtime sessions from crashes or re-register running processes
-            if let Some((instance_id, start_time, pid, current_playtime)) = instances::recover_orphaned_session() {
+            {
+                let tray_menu = build_tray_menu(app.handle())?;
+
+                let mut tray_builder = tauri::tray::TrayIconBuilder::with_id("main-tray")
+                    .menu(&tray_menu)
+                    .tooltip("Palethea Launcher")
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| {
+                        let id = event.id().as_ref();
+
+                        if id == TRAY_ID_SHOW {
+                            show_main_window(app);
+                        } else if id == TRAY_ID_EXIT {
+                            if has_running_processes() {
+                                request_exit_confirmation(app);
+                            } else {
+                                app.exit(0);
+                            }
+                        } else if let Some(instance_id) = id.strip_prefix(TRAY_LAUNCH_PREFIX) {
+                            show_main_window(app);
+                            let _ = app.emit("tray-launch-instance", instance_id.to_string());
+                        } else if let Some(instance_id) = id.strip_prefix(TRAY_STOP_PREFIX) {
+                            let _ = stop_running_instance(instance_id, app);
+                        }
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let tauri::tray::TrayIconEvent::Click { button, button_state, .. } = event {
+                            if button_state == tauri::tray::MouseButtonState::Up {
+                                refresh_tray_menu(tray.app_handle());
+                            }
+                            if button == tauri::tray::MouseButton::Left
+                                && button_state == tauri::tray::MouseButtonState::Up
+                            {
+                                show_main_window(tray.app_handle());
+                            }
+                        }
+                    });
+
+                if let Some(icon) = app.default_window_icon().cloned() {
+                    tray_builder = tray_builder.icon(icon);
+                }
+
+                let _ = tray_builder.build(app)?;
+            }
+
+            // Recover orphaned sessions from crashes or re-register still-running processes.
+            let recovered_sessions = instances::recover_orphaned_sessions();
+            if !recovered_sessions.is_empty() {
                 let handle = app.handle().clone();
                 let _ = handle.emit("refresh-instances", ());
 
-                if let Some(pid_val) = pid {
-                    // Re-register in the global map
-                    {
-                        let mut processes = RUNNING_PROCESSES.lock().expect("Process state corrupted");
-                        processes.insert(instance_id.clone(), RunningProcessInfo {
-                            pid: pid_val,
-                            start_time,
+                for (instance_id, start_time_or_credited, pid, current_playtime, launch_username) in recovered_sessions {
+                    if let Some(pid_val) = pid {
+                        // Re-register in the global map
+                        {
+                            if let Ok(mut processes) = RUNNING_PROCESSES.lock() {
+                                processes.insert(instance_id.clone(), RunningProcessInfo {
+                                    pid: pid_val,
+                                    start_time: start_time_or_credited,
+                                    launch_username: launch_username.clone(),
+                                });
+                            } else {
+                                log::warn!("Process state corrupted while recovering PID {}", pid_val);
+                            }
+                        }
+
+                        let handle_clone = handle.clone();
+                        let instance_id_clone = instance_id.clone();
+
+                        std::thread::spawn(move || {
+                            // Wait for process to stop
+                            while instances::is_process_running(pid_val) {
+                                std::thread::sleep(std::time::Duration::from_secs(5));
+                            }
+
+                            // Finalize playtime
+                            let end_time = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            let session_duration = end_time.saturating_sub(start_time_or_credited);
+
+                            if let Ok(mut inst) = instances::get_instance(&instance_id_clone) {
+                                let inst_name = inst.name.clone();
+                                inst.playtime_seconds = current_playtime + session_duration;
+                                let _ = instances::update_instance(inst);
+
+                                // Log session for activity tracking
+                                instances::log_session(&instance_id_clone, &inst_name, end_time, session_duration);
+                            }
+
+                            instances::clear_active_session(&instance_id_clone);
+
+                            if let Ok(mut processes) = RUNNING_PROCESSES.lock() {
+                                processes.remove(&instance_id_clone);
+                                discord::update_presence(processes.len());
+                            }
+                            refresh_tray_menu(&handle_clone);
+
+                            let _ = handle_clone.emit("refresh-instances", ());
                         });
+
+                        log::info!("Re-registered running instance {} with PID {}", instance_id, pid_val);
+                    } else {
+                        let credited_duration = start_time_or_credited;
+                        log::info!(
+                            "Recovered orphaned session for instance {}: {}s credited",
+                            instance_id,
+                            credited_duration
+                        );
                     }
-                    
-                    let handle_clone = handle.clone();
-                    let instance_id_clone = instance_id.clone();
-                    
-                    std::thread::spawn(move || {
-                        // Wait for process to stop
-                        while instances::is_process_running(pid_val) {
-                            std::thread::sleep(std::time::Duration::from_secs(5));
-                        }
-                        
-                        // Finalize playtime
-                        let end_time = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let session_duration = end_time.saturating_sub(start_time);
-                        
-                        if let Ok(mut inst) = instances::get_instance(&instance_id_clone) {
-                            let inst_name = inst.name.clone();
-                            inst.playtime_seconds = current_playtime + session_duration;
-                            let _ = instances::update_instance(inst);
-
-                            // Log session for activity tracking
-                            instances::log_session(&instance_id_clone, &inst_name, end_time, session_duration);
-                        }
-                        
-                        instances::clear_active_session();
-                        
-                        if let Ok(mut processes) = RUNNING_PROCESSES.lock() {
-                            processes.remove(&instance_id_clone);
-                            discord::update_presence(processes.len());
-                        }
-
-                        let _ = handle_clone.emit("refresh-instances", ());
-                    });
-
-                    log::info!("Re-registered running instance {} with PID {}", instance_id, pid_val);
-                } else {
-                    log::info!("Recovered orphaned session for instance {}: {}s credited", instance_id, current_playtime);
                 }
             }
+            refresh_tray_menu(app.handle());
 
             // Initialize Discord Rich Presence
             discord::init();
 
             // Update Discord presence with any recovered running instances
             {
-                let processes = RUNNING_PROCESSES.lock().expect("Process state corrupted");
-                discord::update_presence(processes.len());
+                if let Ok(processes) = RUNNING_PROCESSES.lock() {
+                    discord::update_presence(processes.len());
+                } else {
+                    discord::update_presence(0);
+                }
             }
 
             Ok(())

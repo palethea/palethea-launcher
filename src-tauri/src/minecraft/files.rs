@@ -178,6 +178,144 @@ pub fn get_logs_dir(instance: &Instance) -> PathBuf {
     instance.get_game_directory().join("logs")
 }
 
+pub fn metadata_dir(parent_dir: &Path) -> PathBuf {
+    parent_dir.join("metadata")
+}
+
+pub fn metadata_path(parent_dir: &Path, filename: &str) -> PathBuf {
+    metadata_dir(parent_dir).join(format!("{}.meta.json", filename))
+}
+
+fn legacy_metadata_path(parent_dir: &Path, filename: &str) -> PathBuf {
+    parent_dir.join(format!("{}.meta.json", filename))
+}
+
+pub fn write_meta_for_entry(parent_dir: &Path, filename: &str, meta: &ModMeta) -> Result<(), String> {
+    let meta_path = metadata_path(parent_dir, filename);
+    if let Some(meta_dir) = meta_path.parent() {
+        fs::create_dir_all(meta_dir).map_err(|e| format!("Failed to create metadata directory: {}", e))?;
+    }
+
+    let json = serde_json::to_string(meta)
+        .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
+    fs::write(&meta_path, json).map_err(|e| format!("Failed to write metadata: {}", e))?;
+
+    let legacy_path = legacy_metadata_path(parent_dir, filename);
+    if legacy_path.exists() {
+        let _ = fs::remove_file(legacy_path);
+    }
+
+    Ok(())
+}
+
+pub fn write_meta_for_file(file_path: &Path, meta: &ModMeta) -> Result<(), String> {
+    let parent_dir = file_path.parent()
+        .ok_or_else(|| "Invalid destination path for metadata".to_string())?;
+    let filename = file_path.file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid destination filename for metadata".to_string())?;
+
+    write_meta_for_entry(parent_dir, filename, meta)
+}
+
+fn try_read_meta_file(path: &Path) -> Option<ModMeta> {
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<ModMeta>(&content).ok()
+}
+
+fn migrate_legacy_metadata_if_needed(parent_dir: &Path, filename: &str) {
+    let new_path = metadata_path(parent_dir, filename);
+    if new_path.exists() {
+        return;
+    }
+
+    let legacy_path = legacy_metadata_path(parent_dir, filename);
+    if !legacy_path.exists() {
+        return;
+    }
+
+    if let Some(meta_dir) = new_path.parent() {
+        if fs::create_dir_all(meta_dir).is_err() {
+            return;
+        }
+    }
+
+    if fs::rename(&legacy_path, &new_path).is_err() {
+        if fs::copy(&legacy_path, &new_path).is_ok() {
+            let _ = fs::remove_file(&legacy_path);
+        }
+    }
+}
+
+fn migrate_all_legacy_metadata(parent_dir: &Path) {
+    let entries = match fs::read_dir(parent_dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    let meta_dir = metadata_dir(parent_dir);
+    let mut ensured_meta_dir = false;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let filename = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+
+        if !filename.ends_with(".meta.json") {
+            continue;
+        }
+
+        if !ensured_meta_dir {
+            if fs::create_dir_all(&meta_dir).is_err() {
+                return;
+            }
+            ensured_meta_dir = true;
+        }
+
+        let target = meta_dir.join(filename);
+        if target.exists() {
+            let _ = fs::remove_file(&path);
+            continue;
+        }
+
+        if fs::rename(&path, &target).is_err() {
+            if fs::copy(&path, &target).is_ok() {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+fn read_meta_for_entry(parent_dir: &Path, filename: &str) -> Option<ModMeta> {
+    migrate_legacy_metadata_if_needed(parent_dir, filename);
+
+    let new_path = metadata_path(parent_dir, filename);
+    if let Some(meta) = try_read_meta_file(&new_path) {
+        return Some(meta);
+    }
+
+    let legacy_path = legacy_metadata_path(parent_dir, filename);
+    try_read_meta_file(&legacy_path)
+}
+
+fn delete_meta_for_entry(parent_dir: &Path, filename: &str) {
+    let new_path = metadata_path(parent_dir, filename);
+    if new_path.exists() {
+        let _ = fs::remove_file(new_path);
+    }
+
+    let legacy_path = legacy_metadata_path(parent_dir, filename);
+    if legacy_path.exists() {
+        let _ = fs::remove_file(legacy_path);
+    }
+}
+
 /// List installed mods
 pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
     let mods_dir = get_mods_dir(instance);
@@ -186,6 +324,8 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
     if !mods_dir.exists() {
         return mods;
     }
+
+    migrate_all_legacy_metadata(&mods_dir);
     
     if let Ok(entries) = fs::read_dir(&mods_dir) {
         for entry in entries.flatten() {
@@ -202,7 +342,6 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
                 
                 // Try to read project_id and version_id from metadata file
                 let base_filename = filename.trim_end_matches(".disabled");
-                let meta_path = mods_dir.join(format!("{}.meta.json", base_filename));
                 let mut project_id = None;
                 let mut version_id = None;
                 let mut name = Some(filename.trim_end_matches(".disabled").trim_end_matches(".jar").to_string());
@@ -212,19 +351,15 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
                 let mut provider = "Manual".to_string();
                 let mut categories = None;
                 
-                if meta_path.exists() {
-                    if let Ok(s) = fs::read_to_string(&meta_path) {
-                        if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
-                            project_id = Some(m.project_id);
-                            version_id = m.version_id;
-                            if let Some(n) = m.name { name = Some(n); }
-                            author = m.author;
-                            icon_url = m.icon_url;
-                            version = m.version_name;
-                            categories = m.categories;
-                            provider = "Modrinth".to_string();
-                        }
-                    }
+                if let Some(m) = read_meta_for_entry(&mods_dir, base_filename) {
+                    project_id = Some(m.project_id);
+                    version_id = m.version_id;
+                    if let Some(n) = m.name { name = Some(n); }
+                    author = m.author;
+                    icon_url = m.icon_url;
+                    version = m.version_name;
+                    categories = m.categories;
+                    provider = "Modrinth".to_string();
                 }
                 
                 mods.push(InstalledMod {
@@ -279,10 +414,7 @@ pub fn delete_mod(instance: &Instance, filename: &str) -> Result<(), String> {
 
     // Also delete metadata if it exists
     let base_filename = filename.trim_end_matches(".disabled");
-    let meta_path = mods_dir.join(format!("{}.meta.json", base_filename));
-    if meta_path.exists() {
-        let _ = fs::remove_file(meta_path);
-    }
+    delete_meta_for_entry(&mods_dir, base_filename);
     
     Ok(())
 }
@@ -295,6 +427,8 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
     if !dir.exists() {
         return packs;
     }
+
+    migrate_all_legacy_metadata(&dir);
     
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -303,13 +437,16 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
+
+            if path.is_dir() && filename == "metadata" {
+                continue;
+            }
             
             if filename.ends_with(".zip") || path.is_dir() {
                 let metadata = fs::metadata(&path).ok();
                 let size = metadata.map(|m| m.len()).unwrap_or(0);
 
                 // Try to read metadata
-                let meta_path = dir.join(format!("{}.meta.json", filename));
                 let mut project_id = None;
                 let mut version_id = None;
                 let mut icon_url = None;
@@ -319,19 +456,15 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                 let mut provider = "Manual".to_string();
                 let mut categories: Option<Vec<String>> = None;
                 
-                if meta_path.exists() {
-                    if let Ok(s) = fs::read_to_string(&meta_path) {
-                        if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
-                            project_id = Some(m.project_id);
-                            version_id = m.version_id;
-                            if let Some(n) = m.name { name = Some(n); }
-                            author = m.author;
-                            icon_url = m.icon_url;
-                            version = m.version_name;
-                            categories = m.categories;
-                            provider = "Modrinth".to_string();
-                        }
-                    }
+                if let Some(m) = read_meta_for_entry(&dir, &filename) {
+                    project_id = Some(m.project_id);
+                    version_id = m.version_id;
+                    if let Some(n) = m.name { name = Some(n); }
+                    author = m.author;
+                    icon_url = m.icon_url;
+                    version = m.version_name;
+                    categories = m.categories;
+                    provider = "Modrinth".to_string();
                 }
 
                 packs.push(ResourcePack {
@@ -365,10 +498,7 @@ pub fn delete_resourcepack(instance: &Instance, filename: &str) -> Result<(), St
     }
 
     // Also delete metadata
-    let meta_path = dir.join(format!("{}.meta.json", filename));
-    if meta_path.exists() {
-        let _ = fs::remove_file(meta_path);
-    }
+    delete_meta_for_entry(&dir, filename);
     
     Ok(())
 }
@@ -381,6 +511,8 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
     if !dir.exists() {
         return packs;
     }
+
+    migrate_all_legacy_metadata(&dir);
     
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -389,13 +521,16 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
+
+            if path.is_dir() && filename == "metadata" {
+                continue;
+            }
             
             if filename.ends_with(".zip") || path.is_dir() {
                 let metadata = fs::metadata(&path).ok();
                 let size = metadata.map(|m| m.len()).unwrap_or(0);
 
                 // Try to read metadata
-                let meta_path = dir.join(format!("{}.meta.json", filename));
                 let mut project_id = None;
                 let mut version_id = None;
                 let mut icon_url = None;
@@ -405,19 +540,15 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                 let mut provider = "Manual".to_string();
                 let mut categories: Option<Vec<String>> = None;
                 
-                if meta_path.exists() {
-                    if let Ok(s) = fs::read_to_string(&meta_path) {
-                        if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
-                            project_id = Some(m.project_id);
-                            version_id = m.version_id;
-                            if let Some(n) = m.name { name = Some(n); }
-                            author = m.author;
-                            icon_url = m.icon_url;
-                            version = m.version_name;
-                            categories = m.categories;
-                            provider = "Modrinth".to_string();
-                        }
-                    }
+                if let Some(m) = read_meta_for_entry(&dir, &filename) {
+                    project_id = Some(m.project_id);
+                    version_id = m.version_id;
+                    if let Some(n) = m.name { name = Some(n); }
+                    author = m.author;
+                    icon_url = m.icon_url;
+                    version = m.version_name;
+                    categories = m.categories;
+                    provider = "Modrinth".to_string();
                 }
 
                 packs.push(ShaderPack {
@@ -451,10 +582,7 @@ pub fn delete_shaderpack(instance: &Instance, filename: &str) -> Result<(), Stri
     }
 
     // Also delete metadata
-    let meta_path = dir.join(format!("{}.meta.json", filename));
-    if meta_path.exists() {
-        let _ = fs::remove_file(meta_path);
-    }
+    delete_meta_for_entry(&dir, filename);
     
     Ok(())
 }
@@ -659,6 +787,8 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
     if !datapacks_dir.exists() {
         return datapacks;
     }
+
+    migrate_all_legacy_metadata(&datapacks_dir);
     
     if let Ok(entries) = fs::read_dir(&datapacks_dir) {
         for entry in entries.flatten() {
@@ -667,6 +797,10 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
+
+            if path.is_dir() && filename == "metadata" {
+                continue;
+            }
             
             // Allow .zip, .jar (some hybrid datapacks), and directories
             if filename.ends_with(".zip") || filename.ends_with(".jar") || path.is_dir() {
@@ -674,7 +808,6 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
                 let size = metadata.map(|m| m.len()).unwrap_or(0);
 
                 // Try to read metadata
-                let meta_path = datapacks_dir.join(format!("{}.meta.json", filename));
                 let mut project_id = None;
                 let mut version_id = None;
                 let mut icon_url = None;
@@ -683,18 +816,14 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
                 let mut name = Some(filename.trim_end_matches(".zip").trim_end_matches(".jar").to_string());
                 let mut provider = "Manual".to_string();
                 
-                if meta_path.exists() {
-                    if let Ok(s) = fs::read_to_string(&meta_path) {
-                        if let Ok(m) = serde_json::from_str::<ModMeta>(&s) {
-                            project_id = Some(m.project_id);
-                            version_id = m.version_id;
-                            if let Some(n) = m.name { name = Some(n); }
-                            author = m.author;
-                            icon_url = m.icon_url;
-                            version = m.version_name;
-                            provider = "Modrinth".to_string();
-                        }
-                    }
+                if let Some(m) = read_meta_for_entry(&datapacks_dir, &filename) {
+                    project_id = Some(m.project_id);
+                    version_id = m.version_id;
+                    if let Some(n) = m.name { name = Some(n); }
+                    author = m.author;
+                    icon_url = m.icon_url;
+                    version = m.version_name;
+                    provider = "Modrinth".to_string();
                 }
 
                 datapacks.push(Datapack {
@@ -728,10 +857,7 @@ pub fn delete_datapack(instance: &Instance, world_name: &str, filename: &str) ->
     }
 
     // Also delete metadata
-    let meta_path = datapacks_dir.join(format!("{}.meta.json", filename));
-    if meta_path.exists() {
-        let _ = fs::remove_file(meta_path);
-    }
+    delete_meta_for_entry(&datapacks_dir, filename);
     
     Ok(())
 }

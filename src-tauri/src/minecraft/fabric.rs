@@ -84,7 +84,7 @@ pub async fn get_fabric_loader_info(
     game_version: &str,
     loader_version: &str,
 ) -> Result<FabricLoaderVersion, Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     let url = format!(
         "{}/versions/loader/{}/{}",
         FABRIC_META_API, game_version, loader_version
@@ -164,7 +164,7 @@ async fn download_library_with_sha1(
     }
 
     let url = format!("{}{}", url_base, path);
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     let response = client
         .get(&url)
         .header("User-Agent", format!("PaletheaLauncher/{}", super::get_launcher_version()))

@@ -5,6 +5,8 @@ import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
 import FilterModal from './FilterModal';
+import useModrinthSearch from '../hooks/useModrinthSearch';
+import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
 import './FilterModal.css';
 
 const MOD_CATEGORIES = [
@@ -44,13 +46,10 @@ function InstanceMods({
   const [selectedCategories, setSelectedCategories] = useState([]);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [installedSearchQuery, setInstalledSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
   const [installedMods, setInstalledMods] = useState([]);
-  const [searching, setSearching] = useState(false);
   const [installing, setInstalling] = useState(null);
   const [updatingMods, setUpdatingMods] = useState([]); // Array of IDs (filename/project_id) being updated
   const [loading, setLoading] = useState(true);
-  const [searchError, setSearchError] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState({ show: false, mod: null });
   const [versionModal, setVersionModal] = useState({ show: false, project: null, updateMod: null });
   const [showAddModal, setShowAddModal] = useState(false);
@@ -65,14 +64,27 @@ function InstanceMods({
   const installedSearchRef = useRef(null);
   const findSearchRef = useRef(null);
 
-  // Pagination states
-  const [searchOffset, setSearchOffset] = useState(0);
-  const [hasMoreSearch, setHasMoreSearch] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const loadingMoreRef = useRef(false);
-  const hasMoreSearchRef = useRef(true);
-  const searchEpochRef = useRef(0);
-  const observer = useRef();
+  const modLoaderForSearch =
+    instance.mod_loader?.toLowerCase() !== 'vanilla'
+      ? instance.mod_loader?.toLowerCase()
+      : null;
+
+  const {
+    searchResults,
+    searching,
+    loadingMore,
+    searchError,
+    handleSearch,
+    lastElementRef,
+  } = useModrinthSearch({
+    projectType: 'mod',
+    gameVersion: instance.version_id,
+    loader: modLoaderForSearch,
+    categories: selectedCategories,
+    query: searchQuery,
+    withPopular: false,
+    searchEmptyQuery: true,
+  });
 
   const loadInstalledMods = useCallback(async () => {
     try {
@@ -83,81 +95,6 @@ function InstanceMods({
     }
     setLoading(false);
   }, [instance.id]);
-
-  const handleSearch = useCallback(async (newOffset = 0) => {
-    const isInitial = newOffset === 0;
-    
-    if (isInitial) {
-      searchEpochRef.current += 1;
-      setSearching(true);
-      setSearchOffset(0);
-      setHasMoreSearch(true);
-      hasMoreSearchRef.current = true;
-      setSearchError(null);
-    } else {
-      if (loadingMoreRef.current || !hasMoreSearchRef.current) return;
-      setLoadingMore(true);
-      loadingMoreRef.current = true;
-    }
-
-    const currentEpoch = searchEpochRef.current;
-
-    try {
-      const results = await invoke('search_modrinth', {
-        query: searchQuery,
-        projectType: 'mod',
-        gameVersion: instance.version_id,
-        loader: instance.mod_loader?.toLowerCase() !== 'vanilla' ? instance.mod_loader?.toLowerCase() : null,
-        categories: selectedCategories.length > 0 ? selectedCategories : null,
-        limit: 20,
-        offset: newOffset,
-        index: searchQuery.trim() === '' ? 'downloads' : 'relevance'
-      });
-
-      // Ignore if a newer search has started
-      if (currentEpoch !== searchEpochRef.current) return;
-
-      const hits = results.hits || [];
-      if (isInitial) {
-        setSearchResults(hits);
-      } else {
-        setSearchResults(prev => [...prev, ...hits]);
-      }
-      
-      const nextOffset = newOffset + hits.length;
-      setSearchOffset(nextOffset);
-      const more = hits.length === 20 && nextOffset < results.total_hits;
-      setHasMoreSearch(more);
-      hasMoreSearchRef.current = more;
-    } catch (error) {
-      console.error('Failed to fetch mods:', error);
-      if (currentEpoch === searchEpochRef.current && isInitial) {
-        setSearchError(error.toString());
-      }
-    } finally {
-      if (currentEpoch === searchEpochRef.current) {
-        if (isInitial) {
-          setSearching(false);
-        } else {
-          setLoadingMore(false);
-          loadingMoreRef.current = false;
-        }
-      }
-    }
-  }, [searchQuery, instance.version_id, instance.mod_loader, selectedCategories]);
-
-  const lastElementRef = useCallback(node => {
-    if (searching || loadingMoreRef.current) return;
-    if (observer.current) observer.current.disconnect();
-
-    observer.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasMoreSearchRef.current && !loadingMoreRef.current && !searching) {
-        handleSearch(searchOffset);
-      }
-    });
-
-    if (node) observer.current.observe(node);
-  }, [searching, handleSearch, searchOffset]);
 
   // Effects
   useEffect(() => {
@@ -200,23 +137,7 @@ function InstanceMods({
   // Helpers
   // Check if a mod is installed and return the mod object
   const getInstalledMod = useCallback((project) => {
-    const projectId = project.project_id || project.id || project.slug;
-
-    // First check by project_id
-    const byId = installedMods.find(m => m.project_id === projectId);
-    if (byId) return byId;
-
-    // Fallback to filename matching
-    const normalizedSlug = project.slug.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const normalizedTitle = (project.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-
-    return installedMods.find(modItem => {
-      const normalizedFilename = (modItem.filename || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const normalizedName = (modItem.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      return normalizedFilename.includes(normalizedSlug) ||
-        normalizedName.includes(normalizedSlug) ||
-        (normalizedTitle && (normalizedFilename.includes(normalizedTitle) || normalizedName.includes(normalizedTitle)));
-    });
+    return findInstalledProject(installedMods, project, { normalized: true });
   }, [installedMods]);
 
   const isModInstalled = useCallback((project) => {
@@ -963,9 +884,7 @@ function InstanceMods({
   }
 
   const matchesAllSelectedCategories = useCallback((project) => {
-    if (selectedCategories.length === 0) return true;
-    const categories = project?.categories || project?.display_categories || [];
-    return selectedCategories.every(cat => categories.includes(cat));
+    return matchesSelectedCategories(project, selectedCategories);
   }, [selectedCategories]);
 
   const displayMods = useMemo(

@@ -201,15 +201,11 @@
   z-index: 1;
 }
 
-.instance-card.menu-open {
-  z-index: 90;
-}
-
 .instance-card.is-running {
   background:
-    linear-gradient(135deg, rgba(var(--accent-rgb, 127, 149, 255), 0.14), rgba(var(--accent-rgb, 127, 149, 255), 0.05) 46%, rgba(255, 255, 255, 0.02));
-  border-color: rgba(var(--accent-rgb, 127, 149, 255), 0.32);
-  box-shadow: 0 0 0 1px rgba(var(--accent-rgb, 127, 149, 255), 0.14), 0 10px 24px rgba(0, 0, 0, 0.22);
+    linear-gradient(135deg, rgba(46, 204, 113, 0.065), rgba(46, 204, 113, 0.028) 46%, rgba(255, 255, 255, 0.02));
+  border-color: rgba(46, 204, 113, 0.22);
+  box-shadow: 0 0 0 1px rgba(46, 204, 113, 0.08), 0 10px 24px rgba(0, 0, 0, 0.22);
 }
 
 .instance-card::before {
@@ -265,10 +261,6 @@
   overflow: visible;
 }
 
-.instances-grid.list .instance-card.menu-open {
-  overflow: visible;
-}
-
 .instance-card:hover::before {
   opacity: 1;
   animation: rotate-gradient 3s linear infinite;
@@ -290,11 +282,49 @@
 }
 
 .instance-card.is-running .instance-logo-wrapper::after {
-  display: none;
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2ecc71;
+  border: 2px solid var(--surface);
+  transform: translate(50%, -50%);
+  transform-origin: center center;
+  z-index: 2;
 }
 
 .instance-card.is-running .instance-logo-wrapper::before {
-  display: none;
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(46, 204, 113, 0.55);
+  opacity: 0.75;
+  transform: translate(50%, -50%) scale(0.85);
+  transform-origin: center center;
+  animation: runningDotPulse 1.8s ease-out infinite;
+  z-index: 1;
+}
+
+@keyframes runningDotPulse {
+  0% {
+    opacity: 0.72;
+    transform: translate(50%, -50%) scale(0.85);
+  }
+  65% {
+    opacity: 0;
+    transform: translate(50%, -50%) scale(1.55);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(50%, -50%) scale(1.55);
+  }
 }
 
 .instance-logo {
@@ -306,7 +336,7 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border: 1px solid var(--instance-icon-accent, var(--border));
+  border: 1px solid var(--border);
 }
 
 .instance-loader-badge {
@@ -456,9 +486,9 @@
 }
 
 .version-pill {
-  color: #aebdd1;
-  border-color: rgba(174, 189, 209, 0.38);
-  background: rgba(174, 189, 209, 0.12);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .loader-pill {
@@ -705,10 +735,6 @@
   opacity: 0.5;
 }
 
-.instance-card.stopping > :not(.stopping-overlay) {
-  opacity: 0.55;
-}
-
 .launching-overlay {
   position: absolute;
   top: 0;
@@ -726,17 +752,6 @@
   gap: 8px;
   padding: 16px;
   animation: fadeInOverlay 0.2s ease;
-}
-
-.launching-overlay.launching-overlay-queued {
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-}
-
-.launching-progress-bar.launching-progress-bar-indeterminate {
-  width: 82%;
-  max-width: 280px;
 }
 
 .launching-spinner {
@@ -787,12 +802,6 @@
   transition: width 0.3s ease;
 }
 
-.launching-progress-fill.launching-progress-fill-indeterminate {
-  width: 42%;
-  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.25), rgba(var(--accent-rgb), 0.95), rgba(var(--accent-rgb), 0.25));
-  animation: progressIndeterminate 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
-
 .launching-percentage {
   font-size: 11px;
   font-weight: 600;
@@ -814,512 +823,4 @@
   font-family: 'JetBrains Mono', monospace;
   font-variant-numeric: tabular-nums;
   margin-top: -3px;
-}
-
-@keyframes progressIndeterminate {
-  0% {
-    transform: translateX(-120%);
-  }
-  100% {
-    transform: translateX(250%);
-  }
-}
-
-.stopping-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  background: rgba(12, 10, 12, 0.72);
-  z-index: 52;
-  border-radius: 14px;
-  gap: 10px;
-  padding: 16px;
-  animation: fadeInOverlay 0.16s ease;
-}
-
-.stopping-spinner {
-  width: 24px;
-  height: 24px;
-  border: 3px solid rgba(255, 255, 255, 0.12);
-  border-top-color: #ff7b88;
-  border-radius: 50%;
-  animation: spinOverlay 0.8s linear infinite;
-}
-
-.stopping-status {
-  font-size: 12px;
-  font-weight: 700;
-  color: #ffd6dc;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.75);
-  text-align: center;
-  max-width: 90%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.stopping-progress-bar {
-  width: 82%;
-  max-width: 300px;
-  height: 6px;
-  background: rgba(255, 133, 145, 0.14);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.stopping-progress-fill {
-  width: 42%;
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(255, 143, 156, 0.25), rgba(255, 122, 136, 0.95), rgba(255, 143, 156, 0.25));
-  animation: progressIndeterminate 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
-
-/* --------------------------------------------------
-   List View Redesign (clean, no pill boxes)
--------------------------------------------------- */
-.instances-grid.list {
-  gap: 10px;
-  padding-top: 22px;
-}
-
-.instances-grid.list .instance-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-  overflow: visible;
-}
-
-.instances-grid.list .instance-card::before {
-  display: none !important;
-}
-
-.instances-grid.list .instance-card:hover {
-  transform: none;
-  border-width: 1px !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  overflow: visible;
-}
-
-.instances-grid.list .instance-card.is-running {
-  border-color: rgba(var(--accent-rgb, 127, 149, 255), 0.52);
-  background: linear-gradient(90deg, rgba(var(--accent-rgb, 127, 149, 255), 0.24), rgba(255, 255, 255, 0.06) 34%, rgba(255, 255, 255, 0.05));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 0 0 1px rgba(var(--accent-rgb, 127, 149, 255), 0.14);
-}
-
-.instances-grid.list .instance-logo {
-  width: 54px;
-  height: 54px;
-  border-radius: 11px;
-  background: rgba(0, 0, 0, 0.22);
-}
-
-.instances-grid.list .instance-row-main {
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-}
-
-.instances-grid.list .instance-info-list {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 2px;
-}
-
-.instances-grid.list .instance-row-title {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.instances-grid.list .instance-name {
-  min-width: 0;
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--foreground);
-  letter-spacing: 0.005em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.instances-grid.list .instance-running-blob {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  flex-shrink: 0;
-  margin-left: 2px;
-  background: radial-gradient(
-    circle at 32% 28%,
-    color-mix(in srgb, var(--accent) 28%, #ffffff 72%) 0%,
-    color-mix(in srgb, var(--accent) 85%, #ffffff 15%) 36%,
-    color-mix(in srgb, var(--accent) 64%, #000000 36%) 100%
-  );
-  box-shadow: 0 0 12px rgba(var(--accent-rgb, 127, 149, 255), 0.52), 0 0 0 3px rgba(var(--accent-rgb, 127, 149, 255), 0.18);
-  animation: runningBlobBlink 1.2s ease-in-out infinite;
-}
-
-@keyframes runningBlobBlink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.36;
-  }
-}
-
-.instances-grid.list .instance-list-meta-line {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.instances-grid.list .instance-meta-text {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 13px;
-  line-height: 1.2;
-  color: var(--muted);
-  white-space: nowrap;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.instances-grid.list .instance-meta-text + .instance-meta-text {
-  padding-left: 13px;
-}
-
-.instances-grid.list .instance-meta-text + .instance-meta-text::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.22);
-}
-
-.instances-grid.list .instance-meta-text.version {
-  color: #aebdd1;
-  font-weight: 600;
-}
-
-.instances-grid.list .instance-meta-text.playtime {
-  color: #f0cf7d;
-}
-
-.instances-grid.list .instance-meta-text.account {
-  color: #90caf7;
-}
-
-.instances-grid.list .instance-meta-text .meta-icon {
-  flex-shrink: 0;
-  opacity: 0.75;
-  stroke-width: 2px;
-  width: 14px;
-  height: 14px;
-}
-
-.instances-grid.list .instance-actions {
-  gap: 10px;
-  flex-shrink: 0;
-  width: auto;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding-top: 0;
-  border-top: none;
-}
-
-.instances-grid.list .instance-list-play-btn {
-  height: 38px;
-  min-width: 102px;
-  border: none;
-  border-radius: 12px;
-  background: #3a4351;
-  color: #e8edf6;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 0 14px;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  cursor: pointer;
-  transition: background-color 0.16s ease, transform 0.16s ease, color 0.16s ease, opacity 0.16s ease;
-}
-
-.instances-grid.list .instance-list-play-btn:hover:not(:disabled) {
-  background: #475365;
-  transform: translateY(-1px);
-}
-
-.instances-grid.list .instance-list-play-btn.is-running {
-  background: color-mix(in srgb, var(--accent) 56%, #172131 44%);
-  color: #e7ffef;
-}
-
-.instances-grid.list .instance-list-play-btn.is-launching {
-  background: #475365;
-  color: #d5dde9;
-}
-
-.instances-grid.list .instance-list-play-btn.is-stopping {
-  background: #923848;
-  color: #ffe8ed;
-}
-
-.instances-grid.list .instance-list-play-btn.is-running:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 64%, #172131 36%);
-}
-
-.instances-grid.list .instance-list-play-btn.is-stopping:hover:not(:disabled) {
-  background: #a64152;
-}
-
-.instances-grid.list .instance-list-play-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.instances-grid.list .instance-row-menu-anchor {
-  position: relative;
-}
-
-.instances-grid.list .instance-kebab-btn {
-  width: 38px;
-  height: 38px;
-  border: none;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
-  color: #c7d0dc;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
-}
-
-.instances-grid.list .instance-kebab-btn:hover {
-  background: rgba(255, 255, 255, 0.11);
-  color: #e5ebf5;
-  transform: translateY(-1px);
-}
-
-.instances-grid.list .instance-kebab-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.instances-grid.list .instance-kebab-menu {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  min-width: 136px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: #1a1f27;
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
-  padding: 6px;
-  z-index: 120;
-}
-
-.instances-grid.list .instance-kebab-item {
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: #d4dbe7;
-  font-size: 13px;
-  font-weight: 600;
-  border-radius: 8px;
-  padding: 8px 9px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color 0.14s ease, color 0.14s ease, opacity 0.14s ease;
-}
-
-.instances-grid.list .instance-kebab-item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.instances-grid.list .instance-kebab-item.danger {
-  color: #ff8f99;
-}
-
-.instances-grid.list .instance-kebab-item.danger:hover:not(:disabled) {
-  background: rgba(255, 115, 128, 0.18);
-}
-
-.instances-grid.list .instance-kebab-item:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-@media (max-width: 1180px) {
-  .instances-grid.list .instance-card {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .instances-grid.list .instance-info-list {
-    min-width: 0;
-  }
-
-  .instances-grid.list .instance-meta-text {
-    max-width: 150px;
-  }
-}
-
-/* List view launch overlay */
-.instances-grid.list .instance-card.launching {
-  overflow: hidden;
-}
-
-.instances-grid.list .instance-card.launching > :not(.launching-overlay) {
-  filter: blur(3px) grayscale(0.35);
-  opacity: 0.45;
-}
-
-.instances-grid.list .instance-card.stopping > :not(.stopping-overlay) {
-  opacity: 0.5;
-}
-
-.instances-grid.list .launching-overlay.launching-overlay-list {
-  border-radius: 12px;
-  background: rgba(8, 11, 16, 0.82);
-  backdrop-filter: none;
-  align-items: stretch;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px 14px;
-}
-
-.instances-grid.list .launching-list-top {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-}
-
-.instances-grid.list .launching-list-top .launching-spinner {
-  width: 16px;
-  height: 16px;
-  border-width: 2px;
-  margin: 0;
-  flex-shrink: 0;
-}
-
-.instances-grid.list .launching-list-top .launching-status {
-  flex: 1;
-  min-width: 0;
-  max-width: none;
-  margin: 0;
-  text-align: left;
-}
-
-.instances-grid.list .launching-list-top .launching-percentage {
-  margin: 0 0 0 auto;
-  text-align: right;
-  flex-shrink: 0;
-}
-
-.instances-grid.list .launching-overlay.launching-overlay-list .launching-progress-bar {
-  width: 100%;
-  max-width: none;
-  margin: 0;
-}
-
-.instances-grid.list .launching-overlay.launching-overlay-list .launching-item {
-  max-width: 100%;
-  margin: 0;
-  text-align: left;
-}
-
-.instances-grid.list .launching-list-meta {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.instances-grid.list .launching-list-meta .launching-bytes,
-.instances-grid.list .launching-list-meta .launching-file-count,
-.instances-grid.list .launching-list-meta .launching-transfer-meta {
-  margin: 0;
-}
-
-.instances-grid.list .instance-card.stopping {
-  overflow: hidden;
-}
-
-.instances-grid.list .stopping-overlay.stopping-overlay-list {
-  border-radius: 12px;
-  background: rgba(12, 10, 12, 0.84);
-  align-items: stretch;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px 14px;
-}
-
-.instances-grid.list .stopping-list-top {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-}
-
-.instances-grid.list .stopping-list-top .stopping-spinner {
-  width: 16px;
-  height: 16px;
-  border-width: 2px;
-  margin: 0;
-  flex-shrink: 0;
-}
-
-.instances-grid.list .stopping-list-top .stopping-status {
-  flex: 1;
-  min-width: 0;
-  max-width: none;
-  margin: 0;
-  text-align: left;
-}
-
-.instances-grid.list .stopping-overlay.stopping-overlay-list .stopping-progress-bar {
-  width: 100%;
-  max-width: none;
-  margin: 0;
 }

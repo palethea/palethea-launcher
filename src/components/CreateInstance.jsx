@@ -5,6 +5,7 @@ import { Loader2, ChevronDown, Check, ListFilterPlus, Settings2 } from 'lucide-r
 import './CreateInstance.css';
 import VersionSelector from './VersionSelector';
 import FilterModal from './FilterModal';
+import { clampProgress, formatBytes, formatSpeed } from '../utils/downloadTelemetry';
 
 const MODPACK_CATEGORIES = [
   { id: 'all', label: 'All Categories' },
@@ -20,7 +21,17 @@ const MODPACK_CATEGORIES = [
   { id: 'technology', label: 'Technology' },
 ];
 
-function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
+function CreateInstance({
+  onClose,
+  onCreate,
+  isLoading,
+  loadingStatus = '',
+  loadingProgress = 0,
+  loadingBytes = { current: 0, total: 0 },
+  loadingCount = { current: 0, total: 0 },
+  loadingTelemetry = { stageLabel: '', currentItem: '', speedBps: 0, etaSeconds: null },
+  mode = 'page'
+}) {
   // 1. State Hooks
   const [creationMode, setCreationMode] = useState('version'); // 'version', 'modpack', 'import', or 'share-code'
   const [name, setName] = useState('');
@@ -965,6 +976,37 @@ function CreateInstance({ onClose, onCreate, isLoading, mode = 'page' }) {
       </div>
 
       <div className={isPage ? 'create-footer' : 'modal-footer'}>
+        {isLoading && (
+          <div className="create-progress-panel" role="status" aria-live="polite">
+            <div className="create-progress-main">
+              <span className="create-progress-stage">{loadingTelemetry.stageLabel || loadingStatus || 'Working...'}</span>
+              <span className="create-progress-percent">{clampProgress(loadingProgress).toFixed(1)}%</span>
+            </div>
+            {loadingTelemetry.currentItem && (
+              <div className="create-progress-item">{loadingTelemetry.currentItem}</div>
+            )}
+            <div className="create-progress-bar">
+              <div className="create-progress-fill" style={{ width: `${clampProgress(loadingProgress)}%` }} />
+            </div>
+            {(loadingBytes?.total > 0 || loadingCount?.total > 0 || loadingTelemetry.speedBps > 0) && (
+              <div className="create-progress-meta">
+                {loadingBytes?.total > 0 && (
+                  <span>
+                    {formatBytes(loadingBytes.current)} / {formatBytes(loadingBytes.total)}
+                  </span>
+                )}
+                {loadingCount?.total > 0 && (
+                  <span>
+                    {loadingCount.current} / {loadingCount.total} files
+                  </span>
+                )}
+                {loadingTelemetry.speedBps > 0 && (
+                  <span>{formatSpeed(loadingTelemetry.speedBps)}</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <button className="btn btn-secondary" onClick={onClose} disabled={isLoading}>
           Cancel
         </button>

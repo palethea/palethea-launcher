@@ -7,10 +7,7 @@ use crate::minecraft::downloader::get_minecraft_dir;
 // Microsoft's public Xbox Live client ID (used by many third-party launchers)
 const MICROSOFT_CLIENT_ID: &str = "000000004C12AE6F";
 fn create_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent(format!("PaletheaLauncher/{}", super::get_launcher_version()))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+    super::http_client()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -255,7 +252,7 @@ pub async fn complete_authentication(ms_token: &str, refresh_token: Option<Strin
 
 /// Refresh the access token using Xbox Live flow
 pub async fn refresh_token(refresh_tok: &str) -> Result<TokenResponse, Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = create_client();
     
     let response = client
         .post("https://login.live.com/oauth20_token.srf")
@@ -391,7 +388,7 @@ pub struct CapeInfo {
 
 /// Get full Minecraft profile including skins and capes
 pub async fn get_full_profile(mc_token: &str) -> Result<FullProfile, Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = create_client();
     
     let response = client
         .get("https://api.minecraftservices.com/minecraft/profile")
@@ -411,7 +408,7 @@ pub async fn get_full_profile(mc_token: &str) -> Result<FullProfile, Box<dyn Err
 
 /// Upload a skin to Minecraft
 pub async fn upload_mc_skin(mc_token: &str, file_path: &str, variant: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = create_client();
     let file_bytes = fs::read(file_path)?;
     
     let part = reqwest::multipart::Part::bytes(file_bytes)
@@ -439,7 +436,7 @@ pub async fn upload_mc_skin(mc_token: &str, file_path: &str, variant: &str) -> R
 
 /// Reset skin to default Steve
 pub async fn reset_mc_skin(mc_token: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let client = create_client();
     
     // Upload the default Steve skin via URL
     // This is the official Mojang Steve texture URL
@@ -465,7 +462,7 @@ pub async fn reset_mc_skin(mc_token: &str) -> Result<(), Box<dyn Error + Send + 
 
 /// Validate a Microsoft account by checking if the token still works
 pub async fn validate_token(access_token: &str) -> bool {
-    let client = reqwest::Client::new();
+    let client = create_client();
     
     let response = client
         .get("https://api.minecraftservices.com/minecraft/profile")

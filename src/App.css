@@ -1,6 +1,7 @@
 * {
   box-sizing: border-box;
   scroll-behavior: smooth;
+  scrollbar-color: var(--border) transparent;
 }
 
 html,
@@ -50,6 +51,20 @@ body,
   background: radial-gradient(1200px 800px at 10% 0%, rgba(var(--accent-rgb), 0.08), transparent 60%),
     radial-gradient(900px 700px at 90% 10%, rgba(120, 160, 255, 0.08), transparent 55%),
     var(--background);
+}
+
+.app.bg-gray {
+  --nice-gray-panel-bg: linear-gradient(180deg, #15181e 0%, #12151b 60%, #101318 100%);
+  background: linear-gradient(180deg, #1d2026 0%, #181b21 50%, #14171d 100%);
+}
+
+.app.bg-gray .instance-list.list-mode {
+  background: var(--nice-gray-panel-bg);
+}
+
+.app.bg-gray .sidebar {
+  background: var(--nice-gray-panel-bg);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .app.bg-dynamic::before,
@@ -582,7 +597,7 @@ body,
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--background);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {

@@ -77,6 +77,13 @@ function ContextMenu({ x, y, instance, onAction }) {
               />
             ))}
           </div>
+          <button
+            className="context-menu-item subtle"
+            onClick={() => onAction('clearColor')}
+            disabled={!instance.color_accent}
+          >
+            Remove Color
+          </button>
           <div className="context-menu-divider" />
           <button className="context-menu-item danger" onClick={() => onAction('delete')}>
             Delete Instance

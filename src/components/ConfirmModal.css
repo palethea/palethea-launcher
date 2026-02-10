@@ -1,5 +1,5 @@
 .confirm-overlay {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   right: 0;
@@ -10,6 +10,7 @@
   justify-content: center;
   z-index: 1000;
   animation: fadeIn 0.15s ease;
+  border-radius: inherit;
 }
 
 @keyframes fadeIn {
@@ -133,8 +134,20 @@
 
 .confirm-footer {
   display: flex;
-  gap: 12px;
   padding: 0 28px 28px;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+}
+
+.confirm-footer-left,
+.confirm-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.confirm-footer-right {
   justify-content: flex-end;
 }
 
@@ -161,7 +174,6 @@
   background: var(--background);
   color: var(--text);
   border: 1px solid var(--border);
-  margin-right: auto;
 }
 
 .confirm-btn.cancel:hover {
@@ -199,12 +211,5 @@
 .confirm-btn.primary:hover {
   filter: brightness(1.1);
   box-shadow: 0 6px 16px rgba(var(--accent-rgb), 0.3);
-}
-
-  background: var(--accent);
-  color: var(--background);
-}
-
-.confirm-btn.primary:hover {
   opacity: 0.9;
 }

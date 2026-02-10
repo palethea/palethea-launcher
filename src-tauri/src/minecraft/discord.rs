@@ -44,25 +44,21 @@ fn discord_thread(rx: mpsc::Receiver<DiscordCommand>) {
     }
 
     loop {
-        match rx.recv_timeout(Duration::from_secs(15)) {
+        match rx.recv_timeout(Duration::from_secs(20)) {
             Ok(DiscordCommand::UpdatePresence { running_count }) => {
                 last_running_count = running_count;
-                println!("[Discord] UpdatePresence received: running_count={}", running_count);
-                if let Some(ref mut c) = client {
-                    match apply_presence(c, running_count, start_time) {
-                        Ok(_) => println!("[Discord] Presence applied successfully"),
-                        Err(e) => {
-                            println!("[Discord] apply_presence failed: {}", e);
-                            let _ = c.close();
-                            client = None;
-                        }
-                    }
-                } else {
-                    println!("[Discord] Client not connected, trying to connect now");
+                if client.is_none() {
                     client = try_connect();
-                    if let Some(ref mut c) = client {
-                        let _ = apply_presence(c, running_count, start_time);
-                        println!("[Discord] Reconnected and applied presence");
+                    if client.is_some() {
+                        log::info!("Discord Rich Presence connected");
+                    }
+                }
+
+                if let Some(ref mut c) = client {
+                    if let Err(e) = apply_presence(c, running_count, start_time) {
+                        log::warn!("Discord apply_presence failed: {}", e);
+                        let _ = c.close();
+                        client = None;
                     }
                 }
             }
@@ -73,19 +69,15 @@ fn discord_thread(rx: mpsc::Receiver<DiscordCommand>) {
                 break;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if let Some(ref mut c) = client {
-                    // Probe the connection by re-setting presence; detects Discord restarts
-                    if apply_presence(c, last_running_count, start_time).is_err() {
-                        let _ = c.close();
-                        client = None;
-                        log::info!("Discord connection lost, will retry");
-                    }
-                }
                 if client.is_none() {
                     client = try_connect();
                     if let Some(ref mut c) = client {
-                        let _ = apply_presence(c, last_running_count, start_time);
-                        log::info!("Discord Rich Presence reconnected");
+                        if apply_presence(c, last_running_count, start_time).is_ok() {
+                            log::info!("Discord Rich Presence reconnected");
+                        } else {
+                            let _ = c.close();
+                            client = None;
+                        }
                     }
                 }
             }

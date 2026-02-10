@@ -48,10 +48,10 @@ const Stats = () => {
                 const s = await sep();
                 const logosDir = `${baseDir}${s}instance_logos`;
 
-                const entries = stats.top_instances.map((inst) => {
+                const entries = stats.top_instances.map((inst, index) => {
                     const filename = inst.logo_filename || 'minecraft_logo.png';
                     const logoPath = `${logosDir}${s}${filename}`;
-                    return [inst.name, convertFileSrc(logoPath)];
+                    return [`${inst.name}::${index}`, convertFileSrc(logoPath)];
                 });
 
                 if (!cancelled) {
@@ -226,11 +226,11 @@ const Stats = () => {
                         </h3>
                         <div className="top-played-list">
                             {stats.top_instances.map((inst, index) => (
-                                <div key={index} className="top-played-item">
+                                <div key={`${inst.name}-${inst.version_id}-${index}`} className="top-played-item">
                                     <span className="top-played-rank">#{index + 1}</span>
                                     <div className="top-played-logo">
                                         <img
-                                            src={logoMap[inst.name]}
+                                            src={logoMap[`${inst.name}::${index}`] || '/minecraft_logo.png'}
                                             alt=""
                                             onError={(e) => {
                                                 if (!e.target.src.endsWith('/minecraft_logo.png')) {

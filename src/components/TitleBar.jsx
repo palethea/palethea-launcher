@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { sep } from '@tauri-apps/api/path';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { X, Minus, Maximize, Minimize2, Terminal, ChevronDown, Square, List, Shirt, BarChart3, RefreshCcw, Wallpaper, Settings, Download, Trash2, Play } from 'lucide-react';
+import { clampProgress, formatBytes, formatSpeed } from '../utils/downloadTelemetry';
 import './TitleBar.css';
 
 function TitleBar({ 
@@ -278,6 +279,9 @@ function TitleBar({
                           <div className="running-item-info">
                             <div className="running-item-name">{instance.name}</div>
                             <div className="running-item-time">{formatRuntime(info?.start_time || 0)}</div>
+                            <div className="running-item-account">
+                              {info?.launch_username ? `Account: ${info.launch_username}` : 'Account: Unknown'}
+                            </div>
                           </div>
                         </div>
                         <button 
@@ -331,7 +335,7 @@ function TitleBar({
                   <>
                     {/* Active Downloads */}
                     {downloadQueue.map((item, index) => (
-                      <div key={`active-${item.id || index}`} className="running-item">
+                      <div key={`active-${item.id || index}`} className="running-item download-item">
                         <div className="running-item-left">
                           <div className="running-item-logo">
                             {item.icon ? (
@@ -342,7 +346,20 @@ function TitleBar({
                           </div>
                           <div className="running-item-info">
                             <div className="running-item-name">{item.name}</div>
-                            <div className="running-item-time">{item.status || 'Pending...'}</div>
+                            <div className="running-item-time">{item.stageLabel || item.status || 'Pending...'}</div>
+                            {item.currentItem && <div className="download-item-current">{item.currentItem}</div>}
+                            {typeof item.progress === 'number' && (
+                              <div className="download-item-progress">
+                                <div className="download-item-progress-fill" style={{ width: `${clampProgress(item.progress)}%` }} />
+                              </div>
+                            )}
+                            {(item.totalBytes > 0 || item.totalCount > 0 || item.speedBps > 0) && (
+                              <div className="download-item-metrics">
+                                {item.totalCount > 0 && <span>{item.currentCount || 0}/{item.totalCount} files</span>}
+                                {item.totalBytes > 0 && <span>{formatBytes(item.downloadedBytes || 0)}/{formatBytes(item.totalBytes)}</span>}
+                                {item.speedBps > 0 && <span>{formatSpeed(item.speedBps)}</span>}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>

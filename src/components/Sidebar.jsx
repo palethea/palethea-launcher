@@ -9,7 +9,9 @@ import {
   BarChart3, 
   RefreshCcw, 
   Settings,
-  Wallpaper
+  Wallpaper,
+  ChevronDown,
+  ExternalLink
 } from 'lucide-react';
 import './Sidebar.css';
 
@@ -68,6 +70,7 @@ function Sidebar({
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [failedImages, setFailedImages] = useState({});
   const accountMenuRef = useRef(null);
+  const isAdvancedAccountPreview = launcherSettings?.account_preview_mode === 'advanced';
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -83,6 +86,12 @@ function Sidebar({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [showAccountMenu]);
+
+  useEffect(() => {
+    if (isAdvancedAccountPreview && showAccountMenu) {
+      setShowAccountMenu(false);
+    }
+  }, [isAdvancedAccountPreview, showAccountMenu]);
 
   const getSkinUrl = useCallback((uuid, isLoggedIn) => {
     if (!isLoggedIn || !uuid) {
@@ -140,7 +149,8 @@ function Sidebar({
         <div
           className={`account-viewer ${showAccountMenu ? 'expanded' : ''}`}
           onClick={() => {
-            if (launcherSettings?.account_preview_mode === 'advanced') {
+            if (isAdvancedAccountPreview) {
+              setShowAccountMenu(false);
               onOpenAccountManager();
             } else {
               setShowAccountMenu(!showAccountMenu);
@@ -170,7 +180,9 @@ function Sidebar({
             <span className="user-name">{activeAccount?.username || 'Player'}</span>
             <span className="user-status">{activeAccount?.isLoggedIn ? 'Microsoft' : 'Offline'}</span>
           </div>
-          <span className="account-expand">▾</span>
+          <span className={`account-expand ${isAdvancedAccountPreview ? 'advanced-icon' : 'simple-icon'} ${showAccountMenu ? 'expanded' : ''}`}>
+            {isAdvancedAccountPreview ? <ExternalLink size={16} /> : <ChevronDown size={16} />}
+          </span>
         </div>
 
         {showAccountMenu && (

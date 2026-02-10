@@ -58,6 +58,19 @@
   background: var(--background);
 }
 
+.context-menu-item.subtle {
+  color: var(--text-secondary);
+}
+
+.context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.context-menu-item:disabled:hover {
+  background: transparent;
+}
+
 .context-menu-item.danger {
   color: #ff6b6b;
 }

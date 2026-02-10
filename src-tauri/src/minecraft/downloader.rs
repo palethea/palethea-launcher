@@ -26,6 +26,24 @@ pub struct DownloadProgress {
     pub downloaded_bytes: Option<u64>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InstanceLaunchProgress {
+    pub instance_id: String,
+    #[serde(flatten)]
+    pub progress: DownloadProgress,
+}
+
+pub fn emit_download_progress(handle: &AppHandle, progress: DownloadProgress, instance_id: Option<&str>) {
+    let _ = handle.emit("download-progress", progress.clone());
+    if let Some(id) = instance_id {
+        let payload = InstanceLaunchProgress {
+            instance_id: id.to_string(),
+            progress,
+        };
+        let _ = handle.emit("launch-progress", payload);
+    }
+}
+
 /// Get the Minecraft data directory
 pub fn get_minecraft_dir() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -174,11 +192,16 @@ pub async fn download_file(
     }
     
     // Download the file
-    let client = reqwest::Client::builder()
-        .user_agent(format!("PaletheaLauncher/{}", super::get_launcher_version()))
-        .build()?;
+    let client = super::http_client();
         
-    let response = client.get(url).send().await?;
+    let response = client
+        .get(url)
+        .header("User-Agent", format!("PaletheaLauncher/{}", super::get_launcher_version()))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!("Download failed ({}): {}", response.status(), url).into());
+    }
     let bytes = response.bytes().await?;
     
     let mut file = File::create(path)?;
@@ -215,7 +238,11 @@ pub async fn download_client(version_details: &VersionDetails) -> Result<PathBuf
 }
 
 /// Download all libraries for a version
-pub async fn download_libraries(version_details: &VersionDetails, app_handle: Option<&AppHandle>) -> Result<Vec<PathBuf>, Box<dyn Error + Send + Sync>> {
+pub async fn download_libraries(
+    version_details: &VersionDetails,
+    app_handle: Option<&AppHandle>,
+    launch_instance_id: Option<&str>,
+) -> Result<Vec<PathBuf>, Box<dyn Error + Send + Sync>> {
     let libraries_dir = get_libraries_dir();
     
     // Collect all download tasks
@@ -302,14 +329,14 @@ pub async fn download_libraries(version_details: &VersionDetails, app_handle: Op
     
     // Emit initial progress
     if let Some(handle) = app_handle {
-        let _ = handle.emit("download-progress", DownloadProgress {
+        emit_download_progress(handle, DownloadProgress {
             stage: format!("Downloading libraries (0/{})", total),
             current: 0,
             total,
             percentage: 10.0,
             total_bytes: Some(total_bytes),
             downloaded_bytes: Some(0),
-        });
+        }, launch_instance_id);
     }
     
     // Download concurrently
@@ -330,14 +357,14 @@ pub async fn download_libraries(version_details: &VersionDetails, app_handle: Op
                 if done % 5 == 0 || done == total {
                     if let Some(handle) = &app_handle {
                         let percentage = 10.0 + ((done as f32 * 25.0) / total as f32);
-                        let _ = handle.emit("download-progress", DownloadProgress {
+                        emit_download_progress(handle, DownloadProgress {
                             stage: format!("Downloading libraries ({}/{})", done, total),
                             current: done,
                             total,
                             percentage,
                             total_bytes: Some(total_bytes_val),
                             downloaded_bytes: Some(current_bytes),
-                        });
+                        }, launch_instance_id);
                     }
                 }
                 
@@ -358,7 +385,11 @@ pub async fn download_libraries(version_details: &VersionDetails, app_handle: Op
 }
 
 /// Download assets for a version
-pub async fn download_assets(version_details: &VersionDetails, app_handle: Option<&AppHandle>) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn download_assets(
+    version_details: &VersionDetails,
+    app_handle: Option<&AppHandle>,
+    launch_instance_id: Option<&str>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let asset_index = match &version_details.asset_index {
         Some(index) => index,
         None => return Ok(()),
@@ -414,14 +445,14 @@ pub async fn download_assets(version_details: &VersionDetails, app_handle: Optio
     
     // Emit initial progress
     if let Some(handle) = app_handle {
-        let _ = handle.emit("download-progress", DownloadProgress {
+        emit_download_progress(handle, DownloadProgress {
             stage: format!("Downloading assets (0/{})", total),
             current: 0,
             total,
             percentage: 35.0,
             total_bytes: Some(total_bytes),
             downloaded_bytes: Some(0),
-        });
+        }, launch_instance_id);
     }
     
     // Download concurrently
@@ -442,14 +473,14 @@ pub async fn download_assets(version_details: &VersionDetails, app_handle: Optio
                 if done % 100 == 0 || done == total {
                     if let Some(handle) = &app_handle {
                         let percentage = 35.0 + ((done as f32 * 65.0) / total as f32);
-                        let _ = handle.emit("download-progress", DownloadProgress {
+                        emit_download_progress(handle, DownloadProgress {
                             stage: format!("Downloading assets ({}/{})", done, total),
                             current: done,
                             total,
                             percentage,
                             total_bytes: Some(total_bytes_val),
                             downloaded_bytes: Some(current_bytes),
-                        });
+                        }, launch_instance_id);
                     }
                 }
                 
@@ -469,18 +500,22 @@ pub async fn download_assets(version_details: &VersionDetails, app_handle: Optio
 }
 
 /// Download everything needed for a version
-pub async fn download_version(version_id: &str, app_handle: Option<&AppHandle>) -> Result<VersionDetails, Box<dyn Error + Send + Sync>> {
+pub async fn download_version(
+    version_id: &str,
+    app_handle: Option<&AppHandle>,
+    launch_instance_id: Option<&str>,
+) -> Result<VersionDetails, Box<dyn Error + Send + Sync>> {
     // Emit initial progress
     if let Some(handle) = app_handle {
         log_info!(handle, "Starting download for version: {}", version_id);
-        let _ = handle.emit("download-progress", DownloadProgress {
+        emit_download_progress(handle, DownloadProgress {
             stage: "Fetching version info...".to_string(),
             current: 0,
             total: 100,
             percentage: 0.0,
             total_bytes: None,
             downloaded_bytes: None,
-        });
+        }, launch_instance_id);
     }
     
     // Get version manifest
@@ -499,56 +534,56 @@ pub async fn download_version(version_id: &str, app_handle: Option<&AppHandle>) 
     if let Some(handle) = app_handle {
         log_info!(handle, "Downloading client JAR...");
         let size = version_details.downloads.as_ref().map(|d| d.client.size).unwrap_or(0) as u64;
-        let _ = handle.emit("download-progress", DownloadProgress {
+        emit_download_progress(handle, DownloadProgress {
             stage: "Downloading client JAR...".to_string(),
             current: 5,
             total: 100,
             percentage: 5.0,
             total_bytes: Some(size),
             downloaded_bytes: Some(0),
-        });
+        }, launch_instance_id);
     }
     download_client(&version_details).await?;
     
     // Download libraries (5-35%)
     if let Some(handle) = app_handle {
         log_info!(handle, "Downloading libraries...");
-        let _ = handle.emit("download-progress", DownloadProgress {
+        emit_download_progress(handle, DownloadProgress {
             stage: "Downloading libraries...".to_string(),
             current: 10,
             total: 100,
             percentage: 10.0,
             total_bytes: None,
             downloaded_bytes: None,
-        });
+        }, launch_instance_id);
     }
-    download_libraries(&version_details, app_handle).await?;
+    download_libraries(&version_details, app_handle, launch_instance_id).await?;
     
     // Download assets (35-100%)
     if let Some(handle) = app_handle {
         log_info!(handle, "Downloading assets...");
-        let _ = handle.emit("download-progress", DownloadProgress {
+        emit_download_progress(handle, DownloadProgress {
             stage: "Downloading assets...".to_string(),
             current: 35,
             total: 100,
             percentage: 35.0,
             total_bytes: None,
             downloaded_bytes: None,
-        });
+        }, launch_instance_id);
     }
-    download_assets(&version_details, app_handle).await?;
+    download_assets(&version_details, app_handle, launch_instance_id).await?;
     
     // Complete
     if let Some(handle) = app_handle {
         log_info!(handle, "Download complete for version: {}", version_id);
-        let _ = handle.emit("download-progress", DownloadProgress {
+        emit_download_progress(handle, DownloadProgress {
             stage: "Complete!".to_string(),
             current: 100,
             total: 100,
             percentage: 100.0,
             total_bytes: None,
             downloaded_bytes: None,
-        });
+        }, launch_instance_id);
     }
     
     Ok(version_details)

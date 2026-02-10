@@ -204,7 +204,7 @@
 
 .download-dropdown {
   right: 0;
-  width: 280px;
+  width: 360px;
 }
 
 .download-separator {
@@ -443,6 +443,69 @@
   color: #2ecc71;
   font-family: 'JetBrains Mono', monospace;
   font-weight: 500;
+}
+
+.running-item-account {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', monospace;
+  max-width: 190px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.download-item .running-item-left {
+  align-items: flex-start;
+  width: 100%;
+  min-width: 0;
+}
+
+.download-item .running-item-info {
+  min-width: 0;
+  width: 100%;
+}
+
+.download-item .running-item-time {
+  color: var(--muted);
+}
+
+.download-item-current {
+  font-size: 10px;
+  color: var(--foreground);
+  opacity: 0.85;
+  font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 230px;
+}
+
+.download-item-progress {
+  width: 100%;
+  max-width: 230px;
+  height: 5px;
+  margin-top: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.download-item-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), rgba(var(--accent-rgb), 0.65));
+  border-radius: 999px;
+  transition: width 160ms ease;
+}
+
+.download-item-metrics {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', monospace;
 }
 
 .stop-instance-btn {

@@ -13,19 +13,23 @@ function ConfirmModal({ isOpen = true, title, message, confirmText = 'Delete', c
           {typeof message === 'string' ? <p>{message}</p> : message}
         </div>
         <div className="confirm-footer">
-          {onCancel && cancelText !== null && (
-            <button className="confirm-btn cancel" onClick={onCancel}>
-              {cancelText}
+          <div className="confirm-footer-left">
+            {onCancel && cancelText !== null && (
+              <button className="confirm-btn cancel" onClick={onCancel}>
+                {cancelText}
+              </button>
+            )}
+          </div>
+          <div className="confirm-footer-right">
+            {extraConfirmText && (
+              <button className="confirm-btn secondary" onClick={onExtraConfirm}>
+                {extraConfirmText}
+              </button>
+            )}
+            <button className={`confirm-btn ${variant}`} onClick={onConfirm}>
+              {confirmText}
             </button>
-          )}
-          {extraConfirmText && (
-            <button className="confirm-btn secondary" onClick={onExtraConfirm}>
-              {extraConfirmText}
-            </button>
-          )}
-          <button className={`confirm-btn ${variant}`} onClick={onConfirm}>
-            {confirmText}
-          </button>
+          </div>
         </div>
       </div>
     </div>

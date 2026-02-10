@@ -2,12 +2,51 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { join } from '@tauri-apps/api/path';
-import { Box, ChevronDown, ChevronUp, Cpu, Save, Trash2, Image, Check, Minus, Plus } from 'lucide-react';
+import { Box, ChevronDown, ChevronUp, Cpu, Save, Trash2, Check, Minus, Plus, User, X } from 'lucide-react';
 import VersionSelector from './VersionSelector';
 import IconPicker from './IconPicker';
 import OptionsEditorModal from './OptionsEditorModal';
 
-function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, onDelete, onShowNotification, isScrolled }) {
+const STEVE_HEAD_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAARklEQVQI12NgoAbghLD+I4kwBqOjo+O/f/8YGBj+MzD8Z2D4z8Dwnwmq7P9/BoYL5y8g0/8hHP7/x0b/Y2D4D5b5/58ZAME2EVcxlvGVAAAAAElFTkSuQmCC';
+
+function SkinHead2D({ src, size = 28 }) {
+  return (
+    <div className="instance-head-2d" style={{ width: `${size}px`, height: `${size}px` }}>
+      <div
+        className="head-base"
+        style={{
+          backgroundImage: `url("${src}")`,
+          width: `${size}px`,
+          height: `${size}px`,
+          backgroundSize: `${size * 8}px auto`,
+          backgroundPosition: `-${size}px -${size}px`
+        }}
+      />
+      <div
+        className="head-overlay"
+        style={{
+          backgroundImage: `url("${src}")`,
+          width: `${size}px`,
+          height: `${size}px`,
+          backgroundSize: `${size * 8}px auto`,
+          backgroundPosition: `-${size * 5}px -${size}px`
+        }}
+      />
+    </div>
+  );
+}
+
+function InstanceSettings({
+  instance,
+  onSave,
+  onInstanceUpdated,
+  onShowConfirm,
+  onDelete,
+  onShowNotification,
+  isScrolled,
+  skinCache = {},
+  skinRefreshKey = 0
+}) {
   const getRecommendedJava = useCallback((mcVersion) => {
     if (!mcVersion) return 21;
     try {
@@ -46,6 +85,11 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
   const [javaDownloadError, setJavaDownloadError] = useState('');
   const [memory, setMemory] = useState(instance.memory_max || 4096);
   const [jvmArgs, setJvmArgs] = useState(instance.jvm_args || '');
+  const [preferredAccount, setPreferredAccount] = useState(instance.preferred_account || '');
+  const [savedAccounts, setSavedAccounts] = useState([]);
+  const [activeAccountUsername, setActiveAccountUsername] = useState('');
+  const [showAccountModal, setShowAccountModal] = useState(false);
+  const [failedImages, setFailedImages] = useState({});
   const [versions, setVersions] = useState([]);
   const [loaderVersions, setLoaderVersions] = useState([]);
   const [loadingLoaders, setLoadingLoaders] = useState(false);
@@ -71,6 +115,39 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
   useEffect(() => {
     loadVersions();
   }, [loadVersions]);
+
+  const loadAccounts = useCallback(async () => {
+    try {
+      const data = await invoke('get_saved_accounts');
+      setSavedAccounts(data?.accounts || []);
+      setActiveAccountUsername(data?.active_account || '');
+    } catch (error) {
+      console.error('Failed to load accounts for instance settings:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAccounts();
+  }, [loadAccounts, instance.id, instance.preferred_account]);
+
+  useEffect(() => {
+    if (!showAccountModal) return undefined;
+
+    const handleEsc = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setShowAccountModal(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleEsc, true);
+    return () => window.removeEventListener('keydown', handleEsc, true);
+  }, [showAccountModal]);
+
+  useEffect(() => {
+    setPreferredAccount(instance.preferred_account || '');
+  }, [instance.id, instance.preferred_account]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -125,9 +202,10 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
       modLoaderVersion !== (instance.mod_loader_version || '') ||
       javaPath !== (instance.java_path || '') ||
       memory !== (instance.memory_max || 4096) ||
-      jvmArgs !== (instance.jvm_args || '');
+      jvmArgs !== (instance.jvm_args || '') ||
+      preferredAccount !== (instance.preferred_account || '');
     setHasChanges(changed);
-  }, [name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, instance]);
+  }, [name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, instance]);
 
   useEffect(() => {
     checkChanges();
@@ -169,6 +247,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
         java_path: javaPath || null,
         memory_max: memory,
         jvm_args: jvmArgs || null,
+        preferred_account: preferredAccount || null,
       };
       const success = await onSave(updatedInstance);
       if (success) {
@@ -178,7 +257,7 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
       console.error('Failed to save:', error);
     }
     setSaving(false);
-  }, [instance, name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, onSave]);
+  }, [instance, name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, onSave]);
 
   const handleDownloadJava = useCallback(async () => {
     setJavaDownloading(true);
@@ -309,6 +388,32 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
     setInstallingLoader(false);
   }, [modLoader, modLoaderVersion, instance, onSave, onShowConfirm]);
 
+  const selectedPreferredAccount = useMemo(
+    () => savedAccounts.find((account) => account.username === preferredAccount) || null,
+    [savedAccounts, preferredAccount]
+  );
+
+  const launchAccountSummary = preferredAccount
+    ? `${preferredAccount} (${selectedPreferredAccount?.is_microsoft ? 'Microsoft' : 'Offline'})`
+    : (activeAccountUsername ? `Use Active Account (${activeAccountUsername})` : 'Use Active Account');
+
+  const activeAccountForDefault = useMemo(
+    () => savedAccounts.find((account) => account.username === activeAccountUsername) || null,
+    [savedAccounts, activeAccountUsername]
+  );
+
+  const getSkinUrl = useCallback((uuid, isLoggedIn) => {
+    if (!isLoggedIn || !uuid) return STEVE_HEAD_DATA;
+    if (failedImages[uuid]) return STEVE_HEAD_DATA;
+    const cleanUuid = uuid.replace(/-/g, '');
+    return `https://minotar.net/helm/${cleanUuid}/64.png?t=${skinRefreshKey}`;
+  }, [failedImages, skinRefreshKey]);
+
+  const handleOpenAccountModal = useCallback(async () => {
+    await loadAccounts();
+    setShowAccountModal(true);
+  }, [loadAccounts]);
+
   const loaders = ['Vanilla', 'Fabric', 'Forge', 'NeoForge'];
 
   return (
@@ -333,6 +438,28 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
             >
               Edit options.txt
             </button>
+          </div>
+          <div className="setting-row">
+            <label>Launch Account</label>
+            <div className="launch-account-control">
+              <button
+                className="launch-account-picker-btn"
+                onClick={handleOpenAccountModal}
+              >
+                <div className="launch-account-picker-main">
+                  <span className="launch-account-picker-value">{launchAccountSummary}</span>
+                  <span className="launch-account-picker-sub">
+                    {preferredAccount
+                      ? 'This instance is pinned to a specific account'
+                      : 'This instance follows your current active account'}
+                  </span>
+                </div>
+                <ChevronDown size={16} />
+              </button>
+              <span className="setting-hint launch-account-hint">
+                If selected, this instance launches with that account without changing your global active account.
+              </span>
+            </div>
           </div>
           <div className="setting-row-vertical">
             <label>Game Version</label>
@@ -610,6 +737,102 @@ function InstanceSettings({ instance, onSave, onInstanceUpdated, onShowConfirm, 
           onClose={() => setShowOptionsEditor(false)}
           onShowNotification={onShowNotification}
         />
+      )}
+      {showAccountModal && (
+        <div className="instance-account-modal-overlay" onClick={() => setShowAccountModal(false)}>
+          <div className="instance-account-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="instance-account-modal-header">
+              <div>
+                <h3>Choose Launch Account</h3>
+                <p>Pick an account just for this instance, or keep using the active account.</p>
+              </div>
+              <button
+                className="instance-account-modal-close"
+                onClick={() => setShowAccountModal(false)}
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="instance-account-modal-list">
+              <button
+                className={`instance-account-option ${preferredAccount === '' ? 'selected' : ''}`}
+                onClick={() => {
+                  setPreferredAccount('');
+                  setShowAccountModal(false);
+                }}
+              >
+                <div className="instance-account-option-avatar">
+                  {activeAccountForDefault?.uuid && skinCache[activeAccountForDefault.uuid] ? (
+                    <SkinHead2D src={skinCache[activeAccountForDefault.uuid]} size={28} />
+                  ) : activeAccountForDefault?.is_microsoft ? (
+                    <img
+                      src={getSkinUrl(activeAccountForDefault.uuid, activeAccountForDefault.is_microsoft)}
+                      alt=""
+                      className="instance-account-avatar-img"
+                      onError={(e) => {
+                        e.target.src = STEVE_HEAD_DATA;
+                        setFailedImages((prev) => ({ ...prev, [activeAccountForDefault.uuid]: true }));
+                      }}
+                    />
+                  ) : (
+                    <User size={18} />
+                  )}
+                </div>
+                <div className="instance-account-option-body">
+                  <div className="instance-account-option-title">
+                    Use Active Account
+                    {activeAccountUsername && <span className="instance-account-option-meta">({activeAccountUsername})</span>}
+                  </div>
+                  <div className="instance-account-option-sub">Follows whatever account is currently active in the launcher.</div>
+                </div>
+                {preferredAccount === '' && <Check size={16} className="instance-account-option-check" />}
+              </button>
+
+              {savedAccounts.map((account) => (
+                <button
+                  key={account.uuid}
+                  className={`instance-account-option ${preferredAccount === account.username ? 'selected' : ''}`}
+                  onClick={() => {
+                    setPreferredAccount(account.username);
+                    setShowAccountModal(false);
+                  }}
+                >
+                  <div className="instance-account-option-avatar">
+                    {skinCache[account.uuid] ? (
+                      <SkinHead2D src={skinCache[account.uuid]} size={28} />
+                    ) : account.is_microsoft ? (
+                      <img
+                        src={getSkinUrl(account.uuid, account.is_microsoft)}
+                        alt=""
+                        className="instance-account-avatar-img"
+                        onError={(e) => {
+                          e.target.src = STEVE_HEAD_DATA;
+                          setFailedImages((prev) => ({ ...prev, [account.uuid]: true }));
+                        }}
+                      />
+                    ) : (
+                      <User size={18} />
+                    )}
+                  </div>
+                  <div className="instance-account-option-body">
+                    <div className="instance-account-option-title">
+                      {account.username}
+                      {activeAccountUsername === account.username && (
+                        <span className="instance-account-pill">Active</span>
+                      )}
+                    </div>
+                    <div className="instance-account-option-sub">{account.is_microsoft ? 'Microsoft account' : 'Offline account'}</div>
+                  </div>
+                  {preferredAccount === account.username && (
+                    <Check size={16} className="instance-account-option-check" />
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

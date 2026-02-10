@@ -35,7 +35,7 @@ pub async fn download_java(version: u32) -> Result<PathBuf, Box<dyn Error + Send
         version, os, arch
     );
 
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     let response = client
         .get(&url)
         .header("User-Agent", format!("PaletheaLauncher/{}", super::get_launcher_version()))

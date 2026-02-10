@@ -25,6 +25,7 @@ import LoginPrompt from './components/LoginPrompt';
 import ConfirmModal from './components/ConfirmModal';
 import AccountManagerModal from './components/AccountManagerModal';
 import EditChoiceModal from './components/EditChoiceModal';
+import { EMPTY_DOWNLOAD_TELEMETRY, clampProgress, splitDownloadStage } from './utils/downloadTelemetry';
 import './App.css';
 
 // Detect platform early for CSS perf overrides (WebKitGTK blur is slow on Linux)
@@ -92,10 +93,14 @@ function App() {
   const [activeAccount, setActiveAccount] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [launchingInstanceId, setLaunchingInstanceId] = useState(null);
+  const [launchingInstanceIds, setLaunchingInstanceIds] = useState([]);
+  const [launchProgressByInstance, setLaunchProgressByInstance] = useState({});
+  const [stoppingInstanceIds, setStoppingInstanceIds] = useState([]);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingBytes, setLoadingBytes] = useState({ current: 0, total: 0 });
   const [loadingCount, setLoadingCount] = useState({ current: 0, total: 0 });
+  const [loadingTelemetry, setLoadingTelemetry] = useState(EMPTY_DOWNLOAD_TELEMETRY);
   const [notification, setNotification] = useState(null);
   const [editingInstanceId, setEditingInstanceId] = useState(null);
   const [deletingInstanceId, setDeletingInstanceId] = useState(null);
@@ -116,12 +121,22 @@ function App() {
   const [showEditChoiceModal, setShowEditChoiceModal] = useState(null); // { instanceId } or null
   const [downloadQueue, setDownloadQueue] = useState([]); // Array of { id, name, icon, status, progress }
   const [downloadHistory, setDownloadHistory] = useState([]); // Array of last 10 finished downloads
+  const activeQueueDownloadIdRef = useRef(null);
+  const transferStatsRef = useRef({ lastBytes: null, lastTs: 0, speedBps: 0 });
+  const instanceTransferStatsRef = useRef({});
+  const launchingInstanceIdsRef = useRef([]);
+  const activeLaunchingInstanceIdRef = useRef(null);
+  const stoppingInstanceIdsRef = useRef([]);
 
   const handleQueueDownload = useCallback((item) => {
     setDownloadQueue(prev => {
       // Avoid duplicates in active queue
       if (prev.find(i => i.id === item.id)) return prev;
-      const newQueue = [...prev, item];
+      const newQueue = [...prev, {
+        progress: 0,
+        status: 'Queued',
+        ...item
+      }];
       emit('sync-download-queue', newQueue).catch(console.error);
       return newQueue;
     });
@@ -131,6 +146,9 @@ function App() {
     setDownloadQueue(prev => {
       const item = prev.find(i => i.id === id);
       const newQueue = prev.filter(i => i.id !== id);
+      if (activeQueueDownloadIdRef.current === id) {
+        activeQueueDownloadIdRef.current = null;
+      }
 
       if (item && addToHistory) {
         // Add to history
@@ -149,9 +167,44 @@ function App() {
     });
   }, []);
 
-  const handleUpdateDownloadStatus = useCallback((id, status) => {
+  const handleUpdateDownloadStatus = useCallback((id, statusUpdate) => {
+    const update = (typeof statusUpdate === 'string')
+      ? { status: statusUpdate }
+      : (statusUpdate && typeof statusUpdate === 'object' ? statusUpdate : {});
+    const normalizedStatus = typeof update.status === 'string' && update.status.trim()
+      ? update.status.trim()
+      : 'Pending...';
+    const lowerStatus = normalizedStatus.toLowerCase();
+
+    if (lowerStatus.includes('downloading')) {
+      activeQueueDownloadIdRef.current = id;
+    }
+    if (
+      activeQueueDownloadIdRef.current === id &&
+      (lowerStatus.includes('complete') || lowerStatus.includes('installed') || lowerStatus.includes('failed') || lowerStatus.includes('error'))
+    ) {
+      activeQueueDownloadIdRef.current = null;
+    }
+
     setDownloadQueue(prev => {
-      const newQueue = prev.map(i => i.id === id ? { ...i, status } : i);
+      const newQueue = prev.map(i => {
+        if (i.id !== id) return i;
+        const merged = {
+          ...i,
+          ...update,
+          status: normalizedStatus
+        };
+        if (lowerStatus.includes('downloading')) {
+          merged.trackBackendProgress = true;
+        }
+        if (lowerStatus.includes('installed') || lowerStatus.includes('complete') || lowerStatus.includes('failed') || lowerStatus.includes('error')) {
+          merged.trackBackendProgress = false;
+        }
+        if (typeof update.progress === 'number') {
+          merged.progress = clampProgress(update.progress);
+        }
+        return merged;
+      });
       emit('sync-download-queue', newQueue).catch(console.error);
       return newQueue;
     });
@@ -161,6 +214,14 @@ function App() {
     setDownloadHistory([]);
     emit('sync-download-history', []).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    launchingInstanceIdsRef.current = launchingInstanceIds;
+  }, [launchingInstanceIds]);
+
+  useEffect(() => {
+    stoppingInstanceIdsRef.current = stoppingInstanceIds;
+  }, [stoppingInstanceIds]);
 
   const showNotification = useCallback((message, type = 'info') => {
     setNotification({ message, type });
@@ -467,29 +528,156 @@ function App() {
       const stage = payload.stage || 'Launching...';
       const percentage = typeof payload.percentage === 'number' ? payload.percentage :
         (typeof payload.progress === 'number' ? payload.progress : 0);
+      const clampedProgress = clampProgress(percentage);
+      const { stageLabel, currentItem } = splitDownloadStage(stage);
 
       // Update logs for visible history
       setLogs(prev => [...prev.slice(-199), {
         id: Date.now() + Math.random(),
         level: 'info',
-        message: `[Launch] ${stage} (${percentage.toFixed(1)}%)`,
+        message: `[Launch] ${stage} (${clampedProgress.toFixed(1)}%)`,
         timestamp: new Date().toISOString()
       }]);
 
       setLoadingStatus(stage);
-      setLoadingProgress(percentage);
+      setLoadingProgress(clampedProgress);
 
       const total_bytes = payload.total_bytes;
       const downloaded_bytes = payload.downloaded_bytes;
+      let speedBps = 0;
       if (typeof total_bytes === 'number' && typeof downloaded_bytes === 'number') {
         setLoadingBytes({ current: downloaded_bytes, total: total_bytes });
+        const now = performance.now();
+        const stats = transferStatsRef.current;
+        if (stats.lastBytes !== null && downloaded_bytes >= stats.lastBytes && now > stats.lastTs) {
+          const elapsedSeconds = (now - stats.lastTs) / 1000;
+          const deltaBytes = downloaded_bytes - stats.lastBytes;
+          if (elapsedSeconds > 0.12 && deltaBytes >= 0) {
+            const instantaneous = deltaBytes / elapsedSeconds;
+            stats.speedBps = stats.speedBps > 0
+              ? ((stats.speedBps * 0.7) + (instantaneous * 0.3))
+              : instantaneous;
+          }
+        }
+        stats.lastBytes = downloaded_bytes;
+        stats.lastTs = now;
+        if (Number.isFinite(stats.speedBps) && stats.speedBps > 0) {
+          speedBps = stats.speedBps;
+        }
+      } else {
+        setLoadingBytes({ current: 0, total: 0 });
+        transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
       }
 
       const current = payload.current;
       const total = payload.total;
       if (typeof current === 'number' && typeof total === 'number' && total > 0) {
         setLoadingCount({ current, total });
+      } else {
+        setLoadingCount({ current: 0, total: 0 });
       }
+
+      setLoadingTelemetry({
+        stageLabel: stageLabel || stage,
+        currentItem,
+        speedBps
+      });
+
+      const activeId = activeQueueDownloadIdRef.current;
+      if (activeId) {
+        setDownloadQueue(prev => {
+          const index = prev.findIndex(item => item.id === activeId);
+          if (index === -1) {
+            activeQueueDownloadIdRef.current = null;
+            return prev;
+          }
+          const target = prev[index];
+          if (!target.trackBackendProgress) {
+            return prev;
+          }
+          const next = [...prev];
+          next[index] = {
+            ...target,
+            status: stageLabel || stage,
+            stage,
+            stageLabel: stageLabel || stage,
+            currentItem,
+            progress: clampedProgress,
+            downloadedBytes: (typeof downloaded_bytes === 'number') ? downloaded_bytes : null,
+            totalBytes: (typeof total_bytes === 'number') ? total_bytes : null,
+            currentCount: (typeof current === 'number') ? current : null,
+            totalCount: (typeof total === 'number') ? total : null,
+            speedBps
+          };
+          return next;
+        });
+      }
+    });
+
+    const unlistenLaunchProgress = listen('launch-progress', (event) => {
+      const payload = event.payload;
+      if (!payload || !payload.instance_id) {
+        return;
+      }
+
+      const instanceId = payload.instance_id;
+      const stage = payload.stage || 'Launching...';
+      const percentage = typeof payload.percentage === 'number' ? payload.percentage :
+        (typeof payload.progress === 'number' ? payload.progress : 0);
+      const clampedProgress = clampProgress(percentage);
+      const { stageLabel, currentItem } = splitDownloadStage(stage);
+
+      const total_bytes = payload.total_bytes;
+      const downloaded_bytes = payload.downloaded_bytes;
+
+      let speedBps = 0;
+      let bytes = { current: 0, total: 0 };
+      if (typeof total_bytes === 'number' && typeof downloaded_bytes === 'number') {
+        bytes = { current: downloaded_bytes, total: total_bytes };
+        const now = performance.now();
+        const statsMap = instanceTransferStatsRef.current;
+        const stats = statsMap[instanceId] || { lastBytes: null, lastTs: 0, speedBps: 0 };
+        if (stats.lastBytes !== null && downloaded_bytes >= stats.lastBytes && now > stats.lastTs) {
+          const elapsedSeconds = (now - stats.lastTs) / 1000;
+          const deltaBytes = downloaded_bytes - stats.lastBytes;
+          if (elapsedSeconds > 0.12 && deltaBytes >= 0) {
+            const instantaneous = deltaBytes / elapsedSeconds;
+            stats.speedBps = stats.speedBps > 0
+              ? ((stats.speedBps * 0.7) + (instantaneous * 0.3))
+              : instantaneous;
+          }
+        }
+        stats.lastBytes = downloaded_bytes;
+        stats.lastTs = now;
+        statsMap[instanceId] = stats;
+        if (Number.isFinite(stats.speedBps) && stats.speedBps > 0) {
+          speedBps = stats.speedBps;
+        }
+      } else {
+        const statsMap = instanceTransferStatsRef.current;
+        delete statsMap[instanceId];
+      }
+
+      const current = payload.current;
+      const total = payload.total;
+      const count = (typeof current === 'number' && typeof total === 'number' && total > 0)
+        ? { current, total }
+        : { current: 0, total: 0 };
+
+      setLaunchProgressByInstance((prev) => ({
+        ...prev,
+        [instanceId]: {
+          status: stage,
+          progress: clampedProgress,
+          bytes,
+          count,
+          telemetry: {
+            stageLabel: stageLabel || stage,
+            currentItem,
+            speedBps
+          }
+        }
+      }));
     });
 
     // Listen for instance refresh events from backend
@@ -500,7 +688,10 @@ function App() {
 
     // Listen for cross-window download sync
     const unlistenQueueSync = listen('sync-download-queue', (event) => {
-      setDownloadQueue(event.payload);
+      const incomingQueue = Array.isArray(event.payload) ? event.payload : [];
+      setDownloadQueue(incomingQueue);
+      const activeItem = incomingQueue.find(item => item?.trackBackendProgress);
+      activeQueueDownloadIdRef.current = activeItem ? activeItem.id : null;
     });
 
     const unlistenHistorySync = listen('sync-download-history', (event) => {
@@ -514,25 +705,56 @@ function App() {
         message: 'A game instance is still running. Closing the launcher will also stop the game. Are you sure you want to exit?',
         confirmText: 'Exit Everything',
         cancelText: 'Keep Playing',
+        extraConfirmText: 'Minimize to Tray',
         variant: 'danger',
         onConfirm: async () => {
           await invoke('exit_app_fully');
         },
+        onExtraConfirm: async () => {
+          try {
+            await getCurrentWindow().hide();
+          } catch (error) {
+            devError('Failed to hide window to tray from exit modal:', error);
+          }
+        },
         onCancel: () => setConfirmModal(null)
       });
+    });
+
+    // Tray quick-launch event from backend menu
+    const unlistenTrayLaunch = listen('tray-launch-instance', async (event) => {
+      const instanceId = typeof event.payload === 'string' ? event.payload : null;
+      if (!instanceId) return;
+      try {
+        setActiveTab('instances');
+        const result = await invoke('launch_instance', { instanceId });
+        showNotification(result, 'success');
+        loadRunningInstances();
+      } catch (error) {
+        showNotification(`Failed to launch: ${error}`, 'error');
+      }
     });
 
     return () => {
       clearInterval(runningPoll);
       unlistenLog.then(fn => fn());
       unlistenProgress.then(fn => fn());
+      unlistenLaunchProgress.then(fn => fn());
       unlistenRefresh.then(fn => fn());
       unlistenQueueSync.then(fn => fn());
       unlistenHistorySync.then(fn => fn());
       unlistenExit.then(fn => fn());
+      unlistenTrayLaunch.then(fn => fn());
       document.removeEventListener('contextmenu', handleContextMenu);
     };
-  }, [loadInstances, loadRunningInstances, isLoading]);
+  }, [loadInstances, loadRunningInstances, isLoading, showNotification]);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
+      transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
+    }
+  }, [isLoading]);
 
   // Navigation Guard: Redirect from specialized pages if state changes (eg. logout)
   useEffect(() => {
@@ -574,6 +796,8 @@ function App() {
     const newName = `${instance.name} (Copy)`;
     setIsLoading(true);
     setLoadingStatus('Cloning instance...');
+    setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
+    transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
     try {
       await invoke('clone_instance', { instanceId: instance.id, newName });
       await loadInstances();
@@ -586,6 +810,7 @@ function App() {
       setLoadingProgress(0);
       setLoadingCount({ current: 0, total: 0 });
       setLoadingBytes({ current: 0, total: 0 });
+      setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
     }
   }, [loadInstances, showNotification]);
 
@@ -594,6 +819,8 @@ function App() {
     setLoadingProgress(0);
     setLoadingCount({ current: 0, total: 0 });
     setLoadingBytes({ current: 0, total: 0 });
+    setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
+    transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
     try {
       // Helper to set Java version for the new instance
       const setupJava = async (instanceId, version) => {
@@ -918,6 +1145,7 @@ function App() {
       setLoadingProgress(0);
       setLoadingCount({ current: 0, total: 0 });
       setLoadingBytes({ current: 0, total: 0 });
+      setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
     }
   }, [loadInstances, showNotification]);
 
@@ -955,10 +1183,36 @@ function App() {
       showNotification("Instance is already running", "info");
       return;
     }
-    setIsLoading(true);
-    setLaunchingInstanceId(instanceId);
-    setLoadingStatus('Starting launch sequence...');
-    setLoadingProgress(5);
+    if (launchingInstanceIdsRef.current.includes(instanceId)) {
+      showNotification("Instance is already launching", "info");
+      return;
+    }
+    if (stoppingInstanceIdsRef.current.includes(instanceId)) {
+      showNotification("Instance is still stopping", "info");
+      return;
+    }
+
+    setLaunchingInstanceIds((prev) => (prev.includes(instanceId) ? prev : [...prev, instanceId]));
+    setLaunchProgressByInstance((prev) => ({
+      ...prev,
+      [instanceId]: {
+        status: 'Starting launch sequence...',
+        progress: 5,
+        bytes: { current: 0, total: 0 },
+        count: { current: 0, total: 0 },
+        telemetry: EMPTY_DOWNLOAD_TELEMETRY
+      }
+    }));
+    if (!activeLaunchingInstanceIdRef.current) {
+      activeLaunchingInstanceIdRef.current = instanceId;
+      setLaunchingInstanceId(instanceId);
+      setLoadingStatus('Starting launch sequence...');
+      setLoadingProgress(5);
+      setLoadingCount({ current: 0, total: 0 });
+      setLoadingBytes({ current: 0, total: 0 });
+      setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
+      transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
+    }
 
     // Give React a frame to render the overlay before the backend starts heavy preparation
     await new Promise(resolve => setTimeout(resolve, 50));
@@ -980,23 +1234,71 @@ function App() {
     } catch (error) {
       showNotification(`Failed to launch: ${error}`, 'error');
     } finally {
-      setIsLoading(false);
-      setLaunchingInstanceId(null);
-      setLoadingStatus('');
-      setLoadingProgress(0);
-      setLoadingCount({ current: 0, total: 0 });
-      setLoadingBytes({ current: 0, total: 0 });
+      setLaunchProgressByInstance((prev) => {
+        if (!prev[instanceId]) return prev;
+        const next = { ...prev };
+        delete next[instanceId];
+        return next;
+      });
+      delete instanceTransferStatsRef.current[instanceId];
+
+      setLaunchingInstanceIds((prev) => {
+        const next = prev.filter((id) => id !== instanceId);
+        launchingInstanceIdsRef.current = next;
+
+        if (next.length === 0) {
+          activeLaunchingInstanceIdRef.current = null;
+          setLaunchingInstanceId(null);
+          setLoadingStatus('');
+          setLoadingProgress(0);
+          setLoadingCount({ current: 0, total: 0 });
+          setLoadingBytes({ current: 0, total: 0 });
+          setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
+          transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
+        } else if (activeLaunchingInstanceIdRef.current === instanceId) {
+          // Keep remaining concurrent launches in generic queued mode.
+          // Backend progress events are global, so re-targeting would show incorrect per-instance telemetry.
+          activeLaunchingInstanceIdRef.current = null;
+          setLaunchingInstanceId(null);
+          setLoadingStatus('');
+          setLoadingProgress(0);
+          setLoadingCount({ current: 0, total: 0 });
+          setLoadingBytes({ current: 0, total: 0 });
+          setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
+          transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
+        }
+
+        return next;
+      });
     }
   }, [runningInstances, showNotification, loadRunningInstances]);
 
   const handleStopInstance = useCallback(async (instanceId) => {
+    if (stoppingInstanceIdsRef.current.includes(instanceId)) {
+      showNotification("Instance is already stopping", "info");
+      return;
+    }
+
+    setStoppingInstanceIds((prev) => (prev.includes(instanceId) ? prev : [...prev, instanceId]));
+
+    // Let React paint the stopping state before backend stop begins.
+    await new Promise(resolve => setTimeout(resolve, 16));
+
     try {
       const result = await invoke('kill_game', { instanceId });
       showNotification(result, 'success');
-      loadRunningInstances(); // Update running instances immediately
-      loadInstances(); // Reload to get updated playtime
+      void loadRunningInstances();
+      window.setTimeout(() => {
+        void loadInstances();
+      }, 100);
     } catch (error) {
       showNotification(`Failed to stop: ${error}`, 'error');
+    } finally {
+      setStoppingInstanceIds((prev) => {
+        const next = prev.filter((id) => id !== instanceId);
+        stoppingInstanceIdsRef.current = next;
+        return next;
+      });
     }
   }, [showNotification, loadRunningInstances, loadInstances]);
 
@@ -1230,6 +1532,17 @@ function App() {
           }
         }
         break;
+      case 'clearColor':
+        if (instance) {
+          try {
+            const updated = { ...instance, color_accent: null };
+            await invoke('update_instance', { instance: updated });
+            await loadInstances();
+          } catch (error) {
+            console.error('Failed to clear color:', error);
+          }
+        }
+        break;
       // ----------
       // Share (Export) action
       // Description: Exports the instance as a .zip file for sharing with others
@@ -1249,6 +1562,8 @@ function App() {
             if (savePath) {
               setIsLoading(true);
               setLoadingStatus(`Exporting ${instance.name}...`);
+              setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
+              transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
               await invoke('export_instance_zip', {
                 instanceId: instance.id,
                 destinationPath: savePath
@@ -1262,6 +1577,8 @@ function App() {
             setLoadingStatus('');
             setLoadingProgress(0);
             setLoadingCount({ current: 0, total: 0 });
+            setLoadingBytes({ current: 0, total: 0 });
+            setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
           }
         }
         break;
@@ -1307,6 +1624,8 @@ function App() {
             onQueueDownload={handleQueueDownload}
             onDequeueDownload={handleDequeueDownload}
             onUpdateDownloadStatus={handleUpdateDownloadStatus}
+            skinCache={skinCache}
+            skinRefreshKey={skinRefreshKey}
             onDelete={(id) => {
               performDeleteInstance(id);
               setEditingInstanceId(null);
@@ -1328,12 +1647,16 @@ function App() {
             onCreate={() => setActiveTab('create')}
             onContextMenu={handleInstanceContextMenu}
             isLoading={isLoading}
+            launchingInstanceIds={launchingInstanceIds}
             launchingInstanceId={launchingInstanceId}
             loadingStatus={loadingStatus}
             loadingProgress={loadingProgress}
             loadingBytes={loadingBytes}
             loadingCount={loadingCount}
+            loadingTelemetry={loadingTelemetry}
+            launchProgressByInstance={launchProgressByInstance}
             runningInstances={runningInstances}
+            stoppingInstanceIds={stoppingInstanceIds}
             deletingInstanceId={deletingInstanceId}
             openEditors={openEditors}
             launcherSettings={launcherSettings}
@@ -1346,6 +1669,11 @@ function App() {
               onClose={() => setActiveTab('instances')}
               onCreate={handleCreateInstance}
               isLoading={isLoading}
+              loadingStatus={loadingStatus}
+              loadingProgress={loadingProgress}
+              loadingBytes={loadingBytes}
+              loadingCount={loadingCount}
+              loadingTelemetry={loadingTelemetry}
               mode="page"
             />
           </Suspense>
@@ -1446,7 +1774,6 @@ function App() {
                 onClose={async () => {
                   devLog('Closing pop-out window...');
                   try {
-                    const { getCurrentWindow } = await import('@tauri-apps/api/window');
                     await getCurrentWindow().close();
                   } catch (e) {
                     devError('Failed to close window:', e);
@@ -1461,9 +1788,10 @@ function App() {
                 onQueueDownload={handleQueueDownload}
                 onDequeueDownload={handleDequeueDownload}
                 onUpdateDownloadStatus={handleUpdateDownloadStatus}
+                skinCache={skinCache}
+                skinRefreshKey={skinRefreshKey}
                 onDelete={async (id) => {
                   await performDeleteInstance(id);
-                  const { getCurrentWindow } = await import('@tauri-apps/api/window');
                   getCurrentWindow().close();
                 }}
               />

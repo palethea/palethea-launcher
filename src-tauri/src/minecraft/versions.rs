@@ -134,20 +134,26 @@ pub struct JavaVersion {
 
 /// Fetches the version manifest from Mojang's API
 pub async fn fetch_version_manifest() -> Result<VersionManifest, Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::builder()
-        .user_agent(format!("PaletheaLauncher/{}", super::get_launcher_version()))
-        .build()?;
-    let response = client.get(VERSION_MANIFEST_URL).send().await?;
+    let client = super::http_client();
+    let response = client
+        .get(VERSION_MANIFEST_URL)
+        .header("User-Agent", format!("PaletheaLauncher/{}", super::get_launcher_version()))
+        .send()
+        .await?
+        .error_for_status()?;
     let manifest: VersionManifest = response.json().await?;
     Ok(manifest)
 }
 
 /// Fetches detailed version information for a specific version
 pub async fn fetch_version_details(version_url: &str) -> Result<VersionDetails, Box<dyn Error + Send + Sync>> {
-    let client = reqwest::Client::builder()
-        .user_agent(format!("PaletheaLauncher/{}", super::get_launcher_version()))
-        .build()?;
-    let response = client.get(version_url).send().await?;
+    let client = super::http_client();
+    let response = client
+        .get(version_url)
+        .header("User-Agent", format!("PaletheaLauncher/{}", super::get_launcher_version()))
+        .send()
+        .await?
+        .error_for_status()?;
     let details: VersionDetails = response.json().await?;
     Ok(details)
 }

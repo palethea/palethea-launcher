@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { ArrowLeft, Play, Box, Cpu, FolderOpen, Square, X, ExternalLink } from 'lucide-react';
 import './InstanceEditor.css';
 import InstanceSettings from './InstanceSettings';
@@ -23,7 +24,9 @@ function InstanceEditor({
   onPopout,
   onQueueDownload,
   onDequeueDownload,
-  onUpdateDownloadStatus
+  onUpdateDownloadStatus,
+  skinCache = {},
+  skinRefreshKey = 0
 }) {
   const [instance, setInstance] = useState(null);
   const [activeTab, setActiveTab] = useState('settings');
@@ -55,6 +58,16 @@ function InstanceEditor({
 
   useEffect(() => {
     loadInstance();
+  }, [loadInstance]);
+
+  useEffect(() => {
+    const unlisten = listen('refresh-instances', () => {
+      loadInstance();
+    });
+
+    return () => {
+      unlisten.then(fn => fn());
+    };
   }, [loadInstance]);
 
   useEffect(() => {
@@ -153,6 +166,8 @@ function InstanceEditor({
             onDelete={onDelete}
             onShowNotification={onShowNotification}
             isScrolled={scrolled}
+            skinCache={skinCache}
+            skinRefreshKey={skinRefreshKey}
           />
         );
       case 'console':
@@ -168,9 +183,24 @@ function InstanceEditor({
           onUpdateDownloadStatus={onUpdateDownloadStatus}
         />;
       case 'resources':
-        return <InstanceResources instance={instance} onShowConfirm={handleShowConfirm} onShowNotification={onShowNotification} isScrolled={scrolled} />;
+        return <InstanceResources
+          instance={instance}
+          onShowConfirm={handleShowConfirm}
+          onShowNotification={onShowNotification}
+          isScrolled={scrolled}
+          onQueueDownload={onQueueDownload}
+          onDequeueDownload={onDequeueDownload}
+          onUpdateDownloadStatus={onUpdateDownloadStatus}
+        />;
       case 'worlds':
-        return <InstanceWorlds instance={instance} onShowNotification={onShowNotification} isScrolled={scrolled} />;
+        return <InstanceWorlds
+          instance={instance}
+          onShowNotification={onShowNotification}
+          isScrolled={scrolled}
+          onQueueDownload={onQueueDownload}
+          onDequeueDownload={onDequeueDownload}
+          onUpdateDownloadStatus={onUpdateDownloadStatus}
+        />;
       case 'servers':
         return <InstanceServers instance={instance} onShowNotification={onShowNotification} isScrolled={scrolled} />;
       case 'screenshots':

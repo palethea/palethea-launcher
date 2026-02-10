@@ -186,8 +186,37 @@
 }
 
 .account-expand {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--muted);
-  font-size: 10px;
+  flex-shrink: 0;
+  transition: color 0.2s ease;
+}
+
+.account-viewer:hover .account-expand {
+  color: var(--foreground);
+}
+
+.account-expand.simple-icon svg {
+  transition: transform 0.2s ease;
+  transform-origin: center;
+}
+
+.account-expand.simple-icon.expanded svg {
+  transform: rotate(180deg);
+}
+
+.account-expand.advanced-icon svg {
+  opacity: 0.85;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.account-viewer:hover .account-expand.advanced-icon svg {
+  transform: translateX(1px) translateY(-1px);
+  opacity: 1;
 }
 
 /* Account Menu */

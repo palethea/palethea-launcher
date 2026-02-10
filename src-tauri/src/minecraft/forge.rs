@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::minecraft::instances::Instance;
 use crate::minecraft::launcher;
@@ -31,6 +32,38 @@ pub struct ForgeLibrary {
     pub url: Option<String>,
 }
 
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<ExitStatus, String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to start installer process: {}", e))?;
+    let start = Instant::now();
+
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("Failed waiting for installer process: {}", e))?
+        {
+            return Ok(status);
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Installer timed out after {} seconds",
+                timeout.as_secs()
+            ));
+        }
+
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// Download Forge installer and run it
 pub async fn install_forge(
     instance: &Instance,
@@ -55,10 +88,7 @@ pub async fn install_forge(
     let installer_path = temp_dir.join(format!("forge-{}-{}-installer.jar", mc_version, forge_version));
     
     // Download installer
-    let client = reqwest::Client::builder()
-        .user_agent(format!("PaletheaLauncher/{}", super::get_launcher_version()))
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+    let client = super::http_client();
 
     let mut response = None;
     let mut last_error = "No URLs tried".to_string();
@@ -113,10 +143,12 @@ pub async fn install_forge(
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
     
-    let output = command.output()
-        .map_err(|e| format!("Failed to run Forge installer: {}", e))?;
+    let installer_timeout = Duration::from_secs(600);
+    let output_status = tokio::task::spawn_blocking(move || run_command_with_timeout(command, installer_timeout))
+        .await
+        .map_err(|e| format!("Failed to join Forge installer task: {}", e))??;
     
-    if !output.status.success() {
+    if !output_status.success() {
         // Fallback for older installers (like 1.8.9) that don't support --installClient
         log::info!("Standard Forge installer failed, attempting manual extraction for legacy version...");
         let version_id = handle_legacy_forge_installer(&installer_path, mc_version, forge_version)?;
@@ -238,7 +270,7 @@ pub async fn install_neoforge(
     
     // Download installer
     log::info!("Downloading NeoForge installer from {}", installer_url);
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     let response = client
         .get(&installer_url)
         .header("User-Agent", format!("PaletheaLauncher/{}", super::get_launcher_version()))
@@ -280,14 +312,13 @@ pub async fn install_neoforge(
     #[cfg(target_os = "windows")]
     neoforge_cmd.creation_flags(CREATE_NO_WINDOW);
     
-    let output = neoforge_cmd.output()
-        .map_err(|e| format!("Failed to run NeoForge installer: {}", e))?;
+    let installer_timeout = Duration::from_secs(600);
+    let output_status = tokio::task::spawn_blocking(move || run_command_with_timeout(neoforge_cmd, installer_timeout))
+        .await
+        .map_err(|e| format!("Failed to join NeoForge installer task: {}", e))??;
     
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        log::error!("NeoForge installer failed. Stderr: {}. Stdout: {}", stderr, stdout);
-        return Err(format!("NeoForge installer failed. See logs for details.").into());
+    if !output_status.success() {
+        return Err("NeoForge installer failed. See logs for details.".to_string().into());
     }
     
     // Clean up installer

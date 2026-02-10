@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -68,6 +69,8 @@ pub struct Instance {
     pub total_launches: u64,
     #[serde(default)]
     pub color_accent: Option<String>,
+    #[serde(default)]
+    pub preferred_account: Option<String>,
 }
 
 impl Instance {
@@ -92,6 +95,7 @@ impl Instance {
             playtime_seconds: 0,
             total_launches: 0,
             color_accent: None,
+            preferred_account: None,
         }
     }
     
@@ -235,6 +239,7 @@ pub fn get_instance(instance_id: &str) -> Result<Instance, String> {
 }
 
 /// Clone an instance with all its files
+#[allow(dead_code)]
 pub fn clone_instance(instance_id: &str, new_name: String) -> Result<Instance, String> {
     let source = get_instance(instance_id)?;
     let mut instances = load_instances()?;
@@ -260,6 +265,7 @@ pub fn clone_instance(instance_id: &str, new_name: String) -> Result<Instance, S
         playtime_seconds: 0, // Reset playtime for clone
         total_launches: 0,
         color_accent: source.color_accent.clone(),
+        preferred_account: source.preferred_account.clone(),
     };
     
     // Create new instance directory
@@ -285,7 +291,27 @@ pub fn clone_instance(instance_id: &str, new_name: String) -> Result<Instance, S
     Ok(cloned)
 }
 
+/// Clear per-instance preferred account bindings that match a removed account username
+pub fn clear_preferred_account(username: &str) -> Result<u32, String> {
+    let mut instances = load_instances()?;
+    let mut cleared = 0u32;
+
+    for instance in &mut instances {
+        if instance.preferred_account.as_deref() == Some(username) {
+            instance.preferred_account = None;
+            cleared += 1;
+        }
+    }
+
+    if cleared > 0 {
+        save_instances(&instances)?;
+    }
+
+    Ok(cleared)
+}
+
 /// Recursively copy a directory, handling symlinks
+#[allow(dead_code)]
 fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     
@@ -323,34 +349,96 @@ fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
 
 // ============== SESSION TRACKING ==============
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GameSession {
     pub instance_id: String,
     pub start_time: u64,
     pub pid: Option<u32>,
+    #[serde(default)]
+    pub launch_username: Option<String>,
 }
 
 fn get_session_file_path() -> PathBuf {
+    get_minecraft_dir().join("active_sessions.json")
+}
+
+fn get_legacy_session_file_path() -> PathBuf {
     get_minecraft_dir().join("active_session.json")
 }
 
-/// Write an active session to disk (called when game launches)
-pub fn write_active_session(instance_id: &str, start_time: u64, pid: Option<u32>) -> Result<(), String> {
-    let session = GameSession {
-        instance_id: instance_id.to_string(),
-        start_time,
-        pid,
-    };
-    let content = serde_json::to_string(&session)
-        .map_err(|e| format!("Failed to serialize session: {}", e))?;
+fn load_active_sessions() -> HashMap<String, GameSession> {
+    let path = get_session_file_path();
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(mut sessions) = serde_json::from_str::<HashMap<String, GameSession>>(&content) {
+                sessions.retain(|_, s| !s.instance_id.is_empty());
+                return sessions;
+            }
+        }
+    }
+
+    let legacy_path = get_legacy_session_file_path();
+    if legacy_path.exists() {
+        if let Ok(content) = fs::read_to_string(&legacy_path) {
+            if let Ok(session) = serde_json::from_str::<GameSession>(&content) {
+                let mut sessions = HashMap::new();
+                if !session.instance_id.is_empty() {
+                    sessions.insert(session.instance_id.clone(), session);
+                }
+                return sessions;
+            }
+        }
+    }
+
+    HashMap::new()
+}
+
+fn save_active_sessions(sessions: &HashMap<String, GameSession>) -> Result<(), String> {
+    if sessions.is_empty() {
+        let _ = fs::remove_file(get_session_file_path());
+        let _ = fs::remove_file(get_legacy_session_file_path());
+        return Ok(());
+    }
+
+    let content = serde_json::to_string(sessions)
+        .map_err(|e| format!("Failed to serialize sessions: {}", e))?;
     fs::write(get_session_file_path(), content)
-        .map_err(|e| format!("Failed to write session file: {}", e))?;
+        .map_err(|e| format!("Failed to write sessions file: {}", e))?;
+    let _ = fs::remove_file(get_legacy_session_file_path());
     Ok(())
 }
 
-/// Clear the active session file (called when game exits normally)
-pub fn clear_active_session() {
+/// Write an active session to disk (called when game launches)
+pub fn write_active_session(
+    instance_id: &str,
+    start_time: u64,
+    pid: Option<u32>,
+    launch_username: Option<String>,
+) -> Result<(), String> {
+    let mut sessions = load_active_sessions();
+    sessions.insert(
+        instance_id.to_string(),
+        GameSession {
+            instance_id: instance_id.to_string(),
+            start_time,
+            pid,
+            launch_username,
+        },
+    );
+    save_active_sessions(&sessions)
+}
+
+/// Clear one active session entry (called when a specific game exits normally)
+pub fn clear_active_session(instance_id: &str) {
+    let mut sessions = load_active_sessions();
+    sessions.remove(instance_id);
+    let _ = save_active_sessions(&sessions);
+}
+
+/// Clear all active session entries (called when fully exiting launcher)
+pub fn clear_all_active_sessions() {
     let _ = fs::remove_file(get_session_file_path());
+    let _ = fs::remove_file(get_legacy_session_file_path());
 }
 
 pub fn is_process_running(pid: u32) -> bool {
@@ -376,59 +464,67 @@ pub fn is_process_running(pid: u32) -> bool {
     }
 }
 
-/// Check for orphaned session on startup and credit playtime or recover process
-pub fn recover_orphaned_session() -> Option<(String, u64, Option<u32>, u64)> {
-    let session_path = get_session_file_path();
-    if !session_path.exists() {
-        return None;
-    }
-    
-    let content = fs::read_to_string(&session_path).ok()?;
-    let session: GameSession = serde_json::from_str(&content).ok()?;
-    
-    // Read current instance data for original playtime
-    let original_playtime = if let Ok(inst) = get_instance(&session.instance_id) {
-        inst.playtime_seconds
-    } else {
-        0
-    };
-
-    // Check if the process is still running
-    if let Some(pid) = session.pid {
-        if is_process_running(pid) {
-            // Game is still running! Return info to re-track it
-            return Some((session.instance_id, session.start_time, Some(pid), original_playtime));
-        }
+/// Check for orphaned sessions on startup and credit playtime or recover processes.
+/// Returns a list of recovered sessions:
+/// (instance_id, start_time_or_credited_duration, pid, original_playtime, launch_username)
+pub fn recover_orphaned_sessions() -> Vec<(String, u64, Option<u32>, u64, Option<String>)> {
+    let sessions = load_active_sessions();
+    if sessions.is_empty() {
+        return Vec::new();
     }
 
-    // Process is not running, calculate time since session started (assume game ran until now)
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    
-    // Only credit if the session is less than 24 hours old (sanity check)
-    let duration = now.saturating_sub(session.start_time);
-    if duration > 86400 {
-        // Session is stale, just clear it
-        clear_active_session();
-        return None;
+
+    let mut recovered = Vec::new();
+    let mut still_running = HashMap::new();
+
+    for (_key, session) in sessions {
+        let instance_id = session.instance_id.clone();
+        let original_playtime = if let Ok(inst) = get_instance(&instance_id) {
+            inst.playtime_seconds
+        } else {
+            0
+        };
+
+        if let Some(pid) = session.pid {
+            if is_process_running(pid) {
+                let launch_username = session.launch_username.clone();
+                let session_start_time = session.start_time;
+                still_running.insert(instance_id.clone(), session);
+                recovered.push((
+                    instance_id,
+                    session_start_time,
+                    Some(pid),
+                    original_playtime,
+                    launch_username,
+                ));
+                continue;
+            }
+        }
+
+        let duration = now.saturating_sub(session.start_time);
+        if duration <= 86400 {
+            if let Ok(mut instance) = get_instance(&instance_id) {
+                instance.playtime_seconds += duration;
+                let _ = update_instance(instance.clone());
+                log_session(&instance_id, &instance.name, now, duration);
+            }
+
+            recovered.push((
+                instance_id,
+                duration,
+                None,
+                original_playtime,
+                session.launch_username.clone(),
+            ));
+        }
     }
-    
-    // Credit the playtime
-    if let Ok(mut instance) = get_instance(&session.instance_id) {
-        instance.playtime_seconds += duration;
-        let _ = update_instance(instance.clone());
 
-        // Log session for activity tracking
-        log_session(&session.instance_id, &instance.name, now, duration);
-    }
-
-    // Clear the session file
-    clear_active_session();
-
-    // Return with None PID to indicate it's already accounted for
-    Some((session.instance_id, duration, None, original_playtime))
+    let _ = save_active_sessions(&still_running);
+    recovered
 }
 
 // --- Session History ---
@@ -488,7 +584,8 @@ pub fn get_daily_activity(days: u32) -> Vec<DailyActivity> {
     let today = Local::now().date_naive();
     let cutoff_date = today - Duration::days(days as i64 - 1);
     let cutoff_ts = cutoff_date.and_hms_opt(0, 0, 0)
-        .map(|dt| dt.and_local_timezone(Local).unwrap().timestamp() as u64)
+        .and_then(|dt| dt.and_local_timezone(Local).single())
+        .map(|dt| dt.timestamp() as u64)
         .unwrap_or(0);
 
     let records = load_session_history();

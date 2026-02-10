@@ -8,10 +8,18 @@ function InstanceConsole({ instance, onInstanceUpdated, onShowNotification, clea
   const [autoScroll, setAutoScroll] = useState(true);
   const [autoUpdate, setAutoUpdate] = useState(instance.console_auto_update || false);
   const consoleRef = useRef(null);
+  const lastRawLogRef = useRef('');
+  const logsRef = useRef([]);
+  const shouldStickToBottomRef = useRef(true);
+  const userPinnedToBottomRef = useRef(true);
 
   useEffect(() => {
     setAutoUpdate(instance.console_auto_update || false);
   }, [instance.console_auto_update]);
+
+  useEffect(() => {
+    logsRef.current = logs;
+  }, [logs]);
 
   // ----------
   // Clear logs on mount if requested
@@ -20,6 +28,9 @@ function InstanceConsole({ instance, onInstanceUpdated, onShowNotification, clea
   useEffect(() => {
     if (clearOnMount) {
       setLogs([]);
+      logsRef.current = [];
+      lastRawLogRef.current = '';
+      userPinnedToBottomRef.current = true;
     }
     loadLogs(true);
   }, [instance.id, clearOnMount]);
@@ -33,28 +44,56 @@ function InstanceConsole({ instance, onInstanceUpdated, onShowNotification, clea
   }, [autoUpdate, instance.id]);
 
   useEffect(() => {
-    if (autoScroll && consoleRef.current) {
-      consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
-    }
+    if (!autoScroll || !consoleRef.current || !shouldStickToBottomRef.current || !userPinnedToBottomRef.current) return;
+    consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+    shouldStickToBottomRef.current = false;
   }, [logs, autoScroll]);
+
+  const isNearBottom = (element) => {
+    if (!element) return true;
+    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+    return distanceFromBottom <= 24;
+  };
+
+  const handleConsoleScroll = () => {
+    userPinnedToBottomRef.current = isNearBottom(consoleRef.current);
+  };
 
   const loadLogs = async (showLoading = false) => {
     if (showLoading) setLoading(true);
     try {
       const logContent = await invoke('get_instance_log', { instanceId: instance.id });
       if (typeof logContent === 'string') {
-        if (logContent.trim().length === 0) {
+        const normalizedLog = logContent.replace(/\r\n/g, '\n');
+        if (normalizedLog === lastRawLogRef.current) {
+          if (showLoading) setLoading(false);
+          return;
+        }
+
+        lastRawLogRef.current = normalizedLog;
+
+        if (normalizedLog.trim().length === 0) {
           setLogs([]);
+          logsRef.current = [];
+          shouldStickToBottomRef.current = false;
+          userPinnedToBottomRef.current = true;
         } else {
-          const lines = logContent.split('\n').map((line, index) => ({
+          const lines = normalizedLog.split('\n').map((line, index) => ({
             id: index,
             text: line,
             type: getLineType(line)
           }));
+          const previousCount = logsRef.current.length;
+          const hasNewOutput = lines.length > previousCount;
+          shouldStickToBottomRef.current = hasNewOutput && userPinnedToBottomRef.current;
           setLogs(lines);
         }
       } else {
         setLogs([]);
+        logsRef.current = [];
+        lastRawLogRef.current = '';
+        shouldStickToBottomRef.current = false;
+        userPinnedToBottomRef.current = true;
       }
     } catch (error) {
       console.error('Failed to load logs:', error);
@@ -114,6 +153,10 @@ function InstanceConsole({ instance, onInstanceUpdated, onShowNotification, clea
 
   const handleClear = () => {
     setLogs([]);
+    logsRef.current = [];
+    lastRawLogRef.current = '';
+    shouldStickToBottomRef.current = false;
+    userPinnedToBottomRef.current = true;
   };
 
   return (
@@ -152,7 +195,7 @@ function InstanceConsole({ instance, onInstanceUpdated, onShowNotification, clea
       </div>
 
       <div className={`console-output-wrap ${loading ? 'is-refreshing' : ''}`}>
-        <div className="console-output" ref={consoleRef}>
+        <div className="console-output" ref={consoleRef} onScroll={handleConsoleScroll}>
           <div className="console-content">
             {loading && logs.length === 0 ? (
               <div className="console-loading-inner">
