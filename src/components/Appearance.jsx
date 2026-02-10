@@ -10,13 +10,32 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
   
   const [showBgDropdown, setShowBgDropdown] = useState(false);
   const bgDropdownRef = useRef(null);
+  const [showAccountPreviewDropdown, setShowAccountPreviewDropdown] = useState(false);
+  const accountPreviewDropdownRef = useRef(null);
+  const [showEditorModeDropdown, setShowEditorModeDropdown] = useState(false);
+  const editorModeDropdownRef = useRef(null);
+
   const backgroundOptions = [
     { id: 'gradient', label: 'Static Gradient' },
     { id: 'dynamic', label: 'Animated Aura' },
     { id: 'gray', label: 'Nice Gray' }
   ];
+  const accountPreviewOptions = [
+    { id: 'simple', label: 'Simple (Dropdown)' },
+    { id: 'advanced', label: 'Advanced (Modal)' }
+  ];
+  const editorModeOptions = [
+    { id: 'ask', label: 'Always Ask' },
+    { id: 'in-place', label: 'Same Window' },
+    { id: 'pop-out', label: 'Pop-out Window' }
+  ];
+
   const activeBackgroundStyle = launcherSettings?.background_style || 'gradient';
   const activeBackgroundLabel = backgroundOptions.find((opt) => opt.id === activeBackgroundStyle)?.label || 'Static Gradient';
+  const activeAccountPreview = launcherSettings?.account_preview_mode || 'simple';
+  const activeAccountPreviewLabel = accountPreviewOptions.find((opt) => opt.id === activeAccountPreview)?.label || 'Simple (Dropdown)';
+  const activeEditorMode = launcherSettings?.edit_mode_preference || 'ask';
+  const activeEditorModeLabel = editorModeOptions.find((opt) => opt.id === activeEditorMode)?.label || 'Always Ask';
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -25,6 +44,12 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
       }
       if (bgDropdownRef.current && !bgDropdownRef.current.contains(event.target)) {
         setShowBgDropdown(false);
+      }
+      if (accountPreviewDropdownRef.current && !accountPreviewDropdownRef.current.contains(event.target)) {
+        setShowAccountPreviewDropdown(false);
+      }
+      if (editorModeDropdownRef.current && !editorModeDropdownRef.current.contains(event.target)) {
+        setShowEditorModeDropdown(false);
       }
     };
 
@@ -221,21 +246,39 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
           <div className="setting-item">
             <div className="checkbox-row">
               <label>Account Preview Mode</label>
-              <select
-                value={launcherSettings?.account_preview_mode || 'simple'}
-                onChange={async (e) => {
-                  const updated = {
-                    ...launcherSettings,
-                    account_preview_mode: e.target.value
-                  };
-                  await invoke('save_settings', { newSettings: updated });
-                  onSettingsUpdated();
-                }}
-                className="setting-select"
-              >
-                <option value="simple">Simple (Dropdown)</option>
-                <option value="advanced">Advanced (Modal)</option>
-              </select>
+              <div className="p-dropdown" ref={accountPreviewDropdownRef}>
+                <button
+                  className={`p-dropdown-trigger ${showAccountPreviewDropdown ? 'active' : ''}`}
+                  onClick={() => setShowAccountPreviewDropdown(!showAccountPreviewDropdown)}
+                  style={{ minWidth: '180px' }}
+                >
+                  <span>{activeAccountPreviewLabel}</span>
+                  <ChevronDown size={14} className={`trigger-icon ${showAccountPreviewDropdown ? 'flip' : ''}`} />
+                </button>
+
+                {showAccountPreviewDropdown && (
+                  <div className="p-dropdown-menu">
+                    {accountPreviewOptions.map((opt) => (
+                      <div
+                        key={opt.id}
+                        className={`p-dropdown-item ${activeAccountPreview === opt.id ? 'selected' : ''}`}
+                        onClick={async () => {
+                          const updated = {
+                            ...launcherSettings,
+                            account_preview_mode: opt.id
+                          };
+                          await invoke('save_settings', { newSettings: updated });
+                          onSettingsUpdated();
+                          setShowAccountPreviewDropdown(false);
+                        }}
+                      >
+                        <span>{opt.label}</span>
+                        {activeAccountPreview === opt.id && <Check size={14} className="selected-icon" />}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <p className="setting-hint">
               "Simple" uses a sidebar dropdown. "Advanced" uses a dedicated account management modal.
@@ -245,22 +288,39 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
           <div className="setting-item">
             <div className="checkbox-row">
               <label>Instance Editor Mode</label>
-              <select
-                value={launcherSettings?.edit_mode_preference || 'ask'}
-                onChange={async (e) => {
-                  const updated = {
-                    ...launcherSettings,
-                    edit_mode_preference: e.target.value
-                  };
-                  await invoke('save_settings', { newSettings: updated });
-                  onSettingsUpdated();
-                }}
-                className="setting-select"
-              >
-                <option value="ask">Always Ask</option>
-                <option value="in-place">Same Window</option>
-                <option value="pop-out">Pop-out Window</option>
-              </select>
+              <div className="p-dropdown" ref={editorModeDropdownRef}>
+                <button
+                  className={`p-dropdown-trigger ${showEditorModeDropdown ? 'active' : ''}`}
+                  onClick={() => setShowEditorModeDropdown(!showEditorModeDropdown)}
+                  style={{ minWidth: '180px' }}
+                >
+                  <span>{activeEditorModeLabel}</span>
+                  <ChevronDown size={14} className={`trigger-icon ${showEditorModeDropdown ? 'flip' : ''}`} />
+                </button>
+
+                {showEditorModeDropdown && (
+                  <div className="p-dropdown-menu">
+                    {editorModeOptions.map((opt) => (
+                      <div
+                        key={opt.id}
+                        className={`p-dropdown-item ${activeEditorMode === opt.id ? 'selected' : ''}`}
+                        onClick={async () => {
+                          const updated = {
+                            ...launcherSettings,
+                            edit_mode_preference: opt.id
+                          };
+                          await invoke('save_settings', { newSettings: updated });
+                          onSettingsUpdated();
+                          setShowEditorModeDropdown(false);
+                        }}
+                      >
+                        <span>{opt.label}</span>
+                        {activeEditorMode === opt.id && <Check size={14} className="selected-icon" />}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <p className="setting-hint">
               Choose how the instance editor should open.

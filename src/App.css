@@ -1003,6 +1003,170 @@ body,
   line-height: 1;
 }
 
+.launch-update-check-message {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.launch-update-confirm-modal {
+  max-width: 700px;
+}
+
+.launch-update-check-intro {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.launch-update-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015));
+  max-height: 220px;
+  overflow: auto;
+}
+
+.launch-update-check-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.launch-update-check-name {
+  color: var(--text);
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launch-update-version-flow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.launch-update-version-pill {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.launch-update-version-pill.old {
+  color: color-mix(in srgb, var(--text-secondary) 88%, #ffffff 12%);
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.09);
+}
+
+.launch-update-version-pill.new {
+  color: color-mix(in srgb, var(--accent) 65%, #ffffff 35%);
+  background: rgba(var(--accent-rgb), 0.13);
+  border-color: rgba(var(--accent-rgb), 0.42);
+}
+
+.launch-update-version-arrow {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.85;
+}
+
+.launch-update-check-more {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.launch-update-check-toggle-btn {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 10px;
+  color: var(--foreground);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.launch-update-check-toggle-btn:hover {
+  border-color: rgba(var(--accent-rgb), 0.45);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.launch-update-check-toggle-btn.enabled {
+  border-color: rgba(var(--accent-rgb), 0.6);
+  background: linear-gradient(150deg, rgba(var(--accent-rgb), 0.18), rgba(255, 255, 255, 0.03));
+}
+
+.launch-update-check-switch {
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  position: relative;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.launch-update-check-switch::after {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  transition: transform 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+.launch-update-check-switch.enabled {
+  background: var(--accent);
+}
+
+.launch-update-check-switch.enabled::after {
+  transform: translateX(14px);
+}
+
+.launch-update-check-toggle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.launch-update-check-toggle-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.launch-update-check-toggle-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ============================================================
    Linux Performance Overrides
    WebKitGTK has poor GPU acceleration for backdrop-filter and

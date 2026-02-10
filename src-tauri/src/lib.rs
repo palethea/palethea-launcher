@@ -2,7 +2,7 @@ mod minecraft;
 
 use minecraft::{versions, downloader, instances, launcher, settings, auth, modrinth, files, fabric, forge, java, logger, discord};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::{Mutex, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -568,6 +568,7 @@ async fn clone_instance(instance_id: String, new_name: String, app_handle: AppHa
     cloned.logo_filename = source.logo_filename.clone();
     cloned.color_accent = source.color_accent.clone();
     cloned.preferred_account = source.preferred_account.clone();
+    cloned.check_mod_updates_on_launch = source.check_mod_updates_on_launch;
     
     // Update the saved metadata
     instances::update_instance(cloned.clone())?;
@@ -2952,6 +2953,418 @@ async fn save_remote_file(url: String, path: String) -> Result<(), String> {
 
 // ============== FILE MANAGEMENT COMMANDS ==============
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct InstanceModUpdate {
+    pub project_id: String,
+    pub installed_filename: String,
+    #[serde(default)]
+    pub installed_version_id: Option<String>,
+    #[serde(default)]
+    pub installed_version_name: Option<String>,
+    #[serde(default)]
+    pub installed_name: Option<String>,
+    #[serde(default)]
+    pub installed_author: Option<String>,
+    #[serde(default)]
+    pub installed_icon_url: Option<String>,
+    #[serde(default)]
+    pub installed_categories: Option<Vec<String>>,
+    pub latest_version: modrinth::ModrinthVersion,
+}
+
+#[tauri::command]
+async fn get_instance_mod_updates(instance_id: String) -> Result<Vec<InstanceModUpdate>, String> {
+    use futures::stream::{self, StreamExt};
+
+    let instance = instances::get_instance(&instance_id)?;
+    let installed_mods = files::list_mods(&instance);
+
+    #[derive(Debug, Clone)]
+    struct InstalledModRow {
+        project_id: String,
+        filename: String,
+        version_id: Option<String>,
+        version_name: Option<String>,
+        name: Option<String>,
+        author: Option<String>,
+        icon_url: Option<String>,
+        categories: Option<Vec<String>>,
+    }
+
+    let mut rows_by_project: HashMap<String, InstalledModRow> = HashMap::new();
+    for m in installed_mods.into_iter().filter(|m| m.enabled) {
+        let Some(project_id) = m.project_id.clone() else {
+            continue;
+        };
+        let row = InstalledModRow {
+            project_id: project_id.clone(),
+            filename: m.filename,
+            version_id: m.version_id,
+            version_name: m.version,
+            name: m.name,
+            author: m.author,
+            icon_url: m.icon_url,
+            categories: m.categories,
+        };
+
+        match rows_by_project.get(&project_id) {
+            Some(existing) => {
+                if existing.version_id.is_none() && row.version_id.is_some() {
+                    rows_by_project.insert(project_id, row);
+                }
+            }
+            None => {
+                rows_by_project.insert(project_id, row);
+            }
+        }
+    }
+
+    let rows: Vec<InstalledModRow> = rows_by_project.into_values().collect();
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let game_version = instance.version_id.clone();
+    let loader_key = normalize_loader_key(&instance.mod_loader).map(str::to_string);
+
+    let mut updates: Vec<InstanceModUpdate> = stream::iter(rows.into_iter().map(|row| {
+        let game_version = game_version.clone();
+        let loader_key = loader_key.clone();
+        async move {
+            let mut versions = match modrinth::get_project_versions(
+                &row.project_id,
+                Some(&game_version),
+                loader_key.as_deref(),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "get_instance_mod_updates: failed to fetch versions for {}: {}",
+                        row.project_id, e
+                    );
+                    return None;
+                }
+            };
+
+            if versions.is_empty() {
+                return None;
+            }
+
+            versions.sort_by(|a, b| b.date_published.cmp(&a.date_published));
+            let latest_version = versions.remove(0);
+
+            if row.version_id.as_deref() == Some(latest_version.id.as_str()) {
+                return None;
+            }
+
+            Some(InstanceModUpdate {
+                project_id: row.project_id,
+                installed_filename: row.filename,
+                installed_version_id: row.version_id,
+                installed_version_name: row.version_name,
+                installed_name: row.name,
+                installed_author: row.author,
+                installed_icon_url: row.icon_url,
+                installed_categories: row.categories,
+                latest_version,
+            })
+        }
+    }))
+    .buffer_unordered(12)
+    .filter_map(async |item| item)
+    .collect()
+    .await;
+
+    updates.sort_by(|a, b| {
+        let left = a
+            .installed_name
+            .as_deref()
+            .unwrap_or(a.project_id.as_str())
+            .to_lowercase();
+        let right = b
+            .installed_name
+            .as_deref()
+            .unwrap_or(b.project_id.as_str())
+            .to_lowercase();
+        left.cmp(&right)
+    });
+
+    Ok(updates)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ModConflictIssue {
+    pub id: String,
+    pub issue_type: String,
+    pub severity: String, // "error" | "warning"
+    pub title: String,
+    pub description: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub source_project_id: Option<String>,
+    #[serde(default)]
+    pub missing_project_id: Option<String>,
+    #[serde(default)]
+    pub affected_files: Vec<String>,
+    #[serde(default)]
+    pub fix_action: Option<String>,
+}
+
+fn normalize_loader_key(loader: &instances::ModLoader) -> Option<&'static str> {
+    match loader {
+        instances::ModLoader::Vanilla => None,
+        instances::ModLoader::Fabric => Some("fabric"),
+        instances::ModLoader::Forge => Some("forge"),
+        instances::ModLoader::NeoForge => Some("neoforge"),
+    }
+}
+
+fn summarize_sources(sources: &[String]) -> String {
+    if sources.is_empty() {
+        return "another installed mod".to_string();
+    }
+    if sources.len() == 1 {
+        return sources[0].clone();
+    }
+    if sources.len() == 2 {
+        return format!("{} and {}", sources[0], sources[1]);
+    }
+    format!("{}, {} and {} more", sources[0], sources[1], sources.len() - 2)
+}
+
+#[tauri::command]
+async fn scan_mod_conflicts(instance_id: String) -> Result<Vec<ModConflictIssue>, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let installed_mods = files::list_mods(&instance);
+
+    #[derive(Clone)]
+    struct EnabledModRow {
+        filename: String,
+        display_name: String,
+        project_id: String,
+        version_id: Option<String>,
+    }
+
+    let enabled_mods: Vec<EnabledModRow> = installed_mods
+        .into_iter()
+        .filter(|m| m.enabled)
+        .filter_map(|m| {
+            let pid = m.project_id?;
+            let display_name = m.name.clone().unwrap_or_else(|| {
+                m.filename
+                    .trim_end_matches(".disabled")
+                    .trim_end_matches(".jar")
+                    .to_string()
+            });
+            Some(EnabledModRow {
+                filename: m.filename,
+                display_name,
+                project_id: pid,
+                version_id: m.version_id,
+            })
+        })
+        .collect();
+
+    let mut issues: Vec<ModConflictIssue> = Vec::new();
+    if enabled_mods.is_empty() {
+        return Ok(issues);
+    }
+
+    let mut mods_by_project: HashMap<String, Vec<EnabledModRow>> = HashMap::new();
+    for row in &enabled_mods {
+        mods_by_project
+            .entry(row.project_id.clone())
+            .or_default()
+            .push(row.clone());
+    }
+
+    for (project_id, rows) in &mods_by_project {
+        if rows.len() > 1 {
+            let names: Vec<String> = rows.iter().map(|r| r.filename.clone()).collect();
+            issues.push(ModConflictIssue {
+                id: format!("duplicate:{}", project_id),
+                issue_type: "duplicate_project".to_string(),
+                severity: "error".to_string(),
+                title: "Duplicate mod detected".to_string(),
+                description: format!(
+                    "Multiple enabled files belong to the same project ({}) which can cause crashes or undefined behavior.",
+                    project_id
+                ),
+                project_id: Some(project_id.clone()),
+                source_project_id: None,
+                missing_project_id: None,
+                affected_files: names,
+                fix_action: Some("disable_duplicates".to_string()),
+            });
+        }
+    }
+
+    let mut unique_version_ids = Vec::new();
+    let mut seen_versions = HashSet::new();
+    for row in &enabled_mods {
+        if let Some(vid) = &row.version_id {
+            if seen_versions.insert(vid.clone()) {
+                unique_version_ids.push(vid.clone());
+            }
+        }
+    }
+
+    let version_details = if unique_version_ids.is_empty() {
+        Vec::new()
+    } else {
+        match modrinth::get_versions_bulk(unique_version_ids).await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("scan_mod_conflicts: failed to fetch version metadata: {}", e);
+                Vec::new()
+            }
+        }
+    };
+
+    let versions_by_id: HashMap<String, modrinth::ModrinthVersion> = version_details
+        .into_iter()
+        .map(|v| (v.id.clone(), v))
+        .collect();
+
+    let installed_project_ids: HashSet<String> = enabled_mods
+        .iter()
+        .map(|m| m.project_id.clone())
+        .collect();
+
+    let expected_loader = normalize_loader_key(&instance.mod_loader).map(str::to_string);
+    let mut missing_dep_sources: HashMap<String, Vec<String>> = HashMap::new();
+    let mut missing_dep_source_project: HashMap<String, String> = HashMap::new();
+
+    for row in &enabled_mods {
+        let Some(version_id) = &row.version_id else {
+            continue;
+        };
+        let Some(version) = versions_by_id.get(version_id) else {
+            continue;
+        };
+
+        if let Some(loader_key) = &expected_loader {
+            if !version.loaders.is_empty()
+                && !version
+                    .loaders
+                    .iter()
+                    .any(|l| l.eq_ignore_ascii_case(loader_key))
+            {
+                issues.push(ModConflictIssue {
+                    id: format!("loader:{}:{}", row.project_id, version.id),
+                    issue_type: "loader_mismatch".to_string(),
+                    severity: "error".to_string(),
+                    title: "Incompatible mod loader".to_string(),
+                    description: format!(
+                        "{} targets [{}], but this instance is {}.",
+                        row.display_name,
+                        version.loaders.join(", "),
+                        loader_key
+                    ),
+                    project_id: Some(row.project_id.clone()),
+                    source_project_id: Some(row.project_id.clone()),
+                    missing_project_id: None,
+                    affected_files: vec![row.filename.clone()],
+                    fix_action: None,
+                });
+            }
+        }
+
+        if !version.game_versions.is_empty()
+            && !version
+                .game_versions
+                .iter()
+                .any(|gv| gv.eq_ignore_ascii_case(&instance.version_id))
+        {
+            issues.push(ModConflictIssue {
+                id: format!("mc:{}:{}", row.project_id, version.id),
+                issue_type: "game_version_mismatch".to_string(),
+                severity: "warning".to_string(),
+                title: "Minecraft version mismatch".to_string(),
+                description: format!(
+                    "{} supports [{}], but this instance runs {}.",
+                    row.display_name,
+                    version.game_versions.join(", "),
+                    instance.version_id
+                ),
+                project_id: Some(row.project_id.clone()),
+                source_project_id: Some(row.project_id.clone()),
+                missing_project_id: None,
+                affected_files: vec![row.filename.clone()],
+                fix_action: None,
+            });
+        }
+
+        for dep in &version.dependencies {
+            if !dep.dependency_type.eq_ignore_ascii_case("required") {
+                continue;
+            }
+            let Some(dep_project_id) = dep.project_id.clone() else {
+                continue;
+            };
+            if installed_project_ids.contains(&dep_project_id) {
+                continue;
+            }
+            missing_dep_sources
+                .entry(dep_project_id.clone())
+                .or_default()
+                .push(row.display_name.clone());
+            missing_dep_source_project
+                .entry(dep_project_id.clone())
+                .or_insert_with(|| row.project_id.clone());
+        }
+    }
+
+    if !missing_dep_sources.is_empty() {
+        let dep_ids: Vec<String> = missing_dep_sources.keys().cloned().collect();
+        let dep_titles: HashMap<String, String> = match modrinth::get_projects(dep_ids.clone()).await {
+            Ok(projects) => projects
+                .into_iter()
+                .map(|p| (p.project_id, p.title))
+                .collect(),
+            Err(e) => {
+                eprintln!("scan_mod_conflicts: failed to fetch dependency projects: {}", e);
+                HashMap::new()
+            }
+        };
+
+        for dep_id in dep_ids {
+            let sources = missing_dep_sources.get(&dep_id).cloned().unwrap_or_default();
+            let dep_name = dep_titles.get(&dep_id).cloned().unwrap_or_else(|| dep_id.clone());
+            issues.push(ModConflictIssue {
+                id: format!("missing-dependency:{}", dep_id),
+                issue_type: "missing_dependency".to_string(),
+                severity: "error".to_string(),
+                title: "Missing required dependency".to_string(),
+                description: format!(
+                    "Dependency {} is required by {}.",
+                    dep_name,
+                    summarize_sources(&sources)
+                ),
+                project_id: None,
+                source_project_id: missing_dep_source_project.get(&dep_id).cloned(),
+                missing_project_id: Some(dep_id.clone()),
+                affected_files: Vec::new(),
+                fix_action: Some("install_missing_dependency".to_string()),
+            });
+        }
+    }
+
+    issues.sort_by(|a, b| {
+        let a_rank = if a.severity == "error" { 0 } else { 1 };
+        let b_rank = if b.severity == "error" { 0 } else { 1 };
+        a_rank
+            .cmp(&b_rank)
+            .then_with(|| a.issue_type.cmp(&b.issue_type))
+            .then_with(|| a.title.cmp(&b.title))
+    });
+
+    Ok(issues)
+}
+
 #[tauri::command]
 fn get_instance_mods(instance_id: String) -> Result<Vec<files::InstalledMod>, String> {
     let instance = instances::get_instance(&instance_id)?;
@@ -3609,6 +4022,8 @@ pub fn run() {
             save_remote_file,
             // File management commands
             get_instance_mods,
+            get_instance_mod_updates,
+            scan_mod_conflicts,
             toggle_instance_mod,
             delete_instance_mod,
             get_instance_resourcepacks,

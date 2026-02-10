@@ -41,6 +41,10 @@ impl Default for ModLoader {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Instance {
     pub id: String,
@@ -71,6 +75,8 @@ pub struct Instance {
     pub color_accent: Option<String>,
     #[serde(default)]
     pub preferred_account: Option<String>,
+    #[serde(default = "default_true")]
+    pub check_mod_updates_on_launch: bool,
 }
 
 impl Instance {
@@ -96,6 +102,7 @@ impl Instance {
             total_launches: 0,
             color_accent: None,
             preferred_account: None,
+            check_mod_updates_on_launch: true,
         }
     }
     
@@ -266,6 +273,7 @@ pub fn clone_instance(instance_id: &str, new_name: String) -> Result<Instance, S
         total_launches: 0,
         color_accent: source.color_accent.clone(),
         preferred_account: source.preferred_account.clone(),
+        check_mod_updates_on_launch: source.check_mod_updates_on_launch,
     };
     
     // Create new instance directory

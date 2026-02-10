@@ -86,6 +86,7 @@ function InstanceSettings({
   const [memory, setMemory] = useState(instance.memory_max || 4096);
   const [jvmArgs, setJvmArgs] = useState(instance.jvm_args || '');
   const [preferredAccount, setPreferredAccount] = useState(instance.preferred_account || '');
+  const [checkModUpdatesOnLaunch, setCheckModUpdatesOnLaunch] = useState(instance.check_mod_updates_on_launch !== false);
   const [savedAccounts, setSavedAccounts] = useState([]);
   const [activeAccountUsername, setActiveAccountUsername] = useState('');
   const [showAccountModal, setShowAccountModal] = useState(false);
@@ -150,6 +151,10 @@ function InstanceSettings({
   }, [instance.id, instance.preferred_account]);
 
   useEffect(() => {
+    setCheckModUpdatesOnLaunch(instance.check_mod_updates_on_launch !== false);
+  }, [instance.id, instance.check_mod_updates_on_launch]);
+
+  useEffect(() => {
     const handleClickOutside = (event) => {
       if (javaDropdownRef.current && !javaDropdownRef.current.contains(event.target)) {
         setShowJavaDropdown(false);
@@ -203,9 +208,10 @@ function InstanceSettings({
       javaPath !== (instance.java_path || '') ||
       memory !== (instance.memory_max || 4096) ||
       jvmArgs !== (instance.jvm_args || '') ||
-      preferredAccount !== (instance.preferred_account || '');
+      preferredAccount !== (instance.preferred_account || '') ||
+      checkModUpdatesOnLaunch !== (instance.check_mod_updates_on_launch !== false);
     setHasChanges(changed);
-  }, [name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, instance]);
+  }, [name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, checkModUpdatesOnLaunch, instance]);
 
   useEffect(() => {
     checkChanges();
@@ -248,6 +254,7 @@ function InstanceSettings({
         memory_max: memory,
         jvm_args: jvmArgs || null,
         preferred_account: preferredAccount || null,
+        check_mod_updates_on_launch: checkModUpdatesOnLaunch,
       };
       const success = await onSave(updatedInstance);
       if (success) {
@@ -257,7 +264,7 @@ function InstanceSettings({
       console.error('Failed to save:', error);
     }
     setSaving(false);
-  }, [instance, name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, onSave]);
+  }, [instance, name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, checkModUpdatesOnLaunch, onSave]);
 
   const handleDownloadJava = useCallback(async () => {
     setJavaDownloading(true);
@@ -458,6 +465,31 @@ function InstanceSettings({
               </button>
               <span className="setting-hint launch-account-hint">
                 If selected, this instance launches with that account without changing your global active account.
+              </span>
+            </div>
+          </div>
+          <div className="setting-row">
+            <label>Update Check</label>
+            <div className="launch-account-control">
+              <button
+                type="button"
+                className={`instance-setting-toggle-btn ${checkModUpdatesOnLaunch ? 'enabled' : ''}`}
+                onClick={() => setCheckModUpdatesOnLaunch((prev) => !prev)}
+              >
+                <span className={`instance-setting-toggle ${checkModUpdatesOnLaunch ? 'enabled' : ''}`} />
+                <div className="instance-setting-toggle-copy">
+                  <span className="instance-setting-toggle-title">
+                    Check mod updates before launch
+                  </span>
+                  <span className="instance-setting-toggle-sub">
+                    {checkModUpdatesOnLaunch
+                      ? 'Show launch prompt when updates are available'
+                      : 'Skip pre-launch update check for this instance'}
+                  </span>
+                </div>
+              </button>
+              <span className="setting-hint launch-account-hint">
+                You can still run manual checks in the Mods tab at any time.
               </span>
             </div>
           </div>

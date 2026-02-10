@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Trash2, RefreshCcw, Plus, Upload, Copy, Code, Loader2, ChevronDown, Check, ListFilterPlus, Play, Square, X } from 'lucide-react';
+import { Trash2, RefreshCcw, Plus, Upload, Copy, Code, Loader2, ChevronDown, Check, ListFilterPlus, Play, Square, X, TriangleAlert, ShieldCheck } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
@@ -60,6 +60,11 @@ function InstanceMods({
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updatesFound, setUpdatesFound] = useState({}); // { project_id: version_obj }
   const [selectedMods, setSelectedMods] = useState([]); // Array of filenames
+  const [conflictScan, setConflictScan] = useState({ scanned: false, issues: [] });
+  const [scanningConflicts, setScanningConflicts] = useState(false);
+  const [fixingConflictId, setFixingConflictId] = useState(null);
+  const [showConflictModal, setShowConflictModal] = useState(false);
+  const [isFixingAllConflicts, setIsFixingAllConflicts] = useState(false);
 
   const installedSearchRef = useRef(null);
   const findSearchRef = useRef(null);
@@ -106,6 +111,10 @@ function InstanceMods({
   useEffect(() => {
     loadInstalledMods();
   }, [loadInstalledMods]);
+
+  useEffect(() => {
+    setConflictScan({ scanned: false, issues: [] });
+  }, [installedMods]);
 
   useEffect(() => {
     // Debounce search when typing, but trigger immediately for initial load
@@ -447,6 +456,152 @@ function InstanceMods({
     }
   }, [instance.id, loadInstalledMods]);
 
+  const scanConflicts = useCallback(async ({ silent = false } = {}) => {
+    setScanningConflicts(true);
+    try {
+      const issues = await invoke('scan_mod_conflicts', { instanceId: instance.id });
+      const normalizedIssues = Array.isArray(issues) ? issues : [];
+      setConflictScan({
+        scanned: true,
+        issues: normalizedIssues
+      });
+      if (!silent && onShowNotification) {
+        if (normalizedIssues.length > 0) {
+          onShowNotification(`Found ${normalizedIssues.length} potential conflict${normalizedIssues.length > 1 ? 's' : ''}`, 'info');
+        } else {
+          onShowNotification('No mod conflicts detected.', 'success');
+        }
+      }
+      return normalizedIssues;
+    } catch (error) {
+      console.error('Failed to scan mod conflicts:', error);
+      if (!silent && onShowNotification) {
+        onShowNotification(`Failed to scan conflicts: ${error}`, 'error');
+      }
+      return null;
+    } finally {
+      setScanningConflicts(false);
+    }
+  }, [instance.id, onShowNotification]);
+
+  const openConflictScanner = useCallback(() => {
+    setShowConflictModal(true);
+    if (!conflictScan.scanned && !scanningConflicts) {
+      scanConflicts({ silent: true });
+    }
+  }, [conflictScan.scanned, scanningConflicts, scanConflicts]);
+
+  const applyConflictFix = useCallback(async (issue, { notify = true } = {}) => {
+    if (!issue || !issue.fix_action) return false;
+
+    if (issue.fix_action === 'disable_duplicates' && issue.project_id) {
+      const duplicateMods = installedMods.filter((m) => m.enabled && m.project_id === issue.project_id);
+      for (const mod of duplicateMods.slice(1)) {
+        await invoke('toggle_instance_mod', {
+          instanceId: instance.id,
+          filename: mod.filename
+        });
+      }
+      if (notify) {
+        onShowNotification?.('Disabled duplicate files for that project.', 'success');
+      }
+      return true;
+    }
+
+    if (issue.fix_action === 'install_missing_dependency' && issue.missing_project_id) {
+      const depProject = await invoke('get_modrinth_project', { projectId: issue.missing_project_id });
+      const depVersions = await invoke('get_modrinth_versions', {
+        projectId: depProject.slug || depProject.project_id || issue.missing_project_id,
+        gameVersion: instance.version_id,
+        loader: instance.mod_loader?.toLowerCase() || null
+      });
+
+      if (!Array.isArray(depVersions) || depVersions.length === 0) {
+        throw new Error('No compatible dependency version found');
+      }
+
+      const depVersion = depVersions[0];
+      const depFile = depVersion.files?.find(f => f.primary) || depVersion.files?.[0];
+      if (!depFile) {
+        throw new Error('Dependency version has no downloadable file');
+      }
+
+      await handleInstall(depProject, depVersion, true);
+      if (notify) {
+        onShowNotification?.(`Installed dependency: ${depProject.title}`, 'success');
+      }
+      return true;
+    }
+
+    return false;
+  }, [installedMods, instance.id, instance.version_id, instance.mod_loader, handleInstall, onShowNotification]);
+
+  const handleFixConflict = useCallback(async (issue) => {
+    if (!issue || !issue.fix_action) return;
+
+    setFixingConflictId(issue.id);
+    try {
+      await applyConflictFix(issue, { notify: true });
+
+      await loadInstalledMods();
+      await scanConflicts({ silent: true });
+    } catch (error) {
+      console.error('Failed to auto-fix mod conflict:', error);
+      onShowNotification?.(`Failed to apply fix: ${error}`, 'error');
+    } finally {
+      setFixingConflictId(null);
+    }
+  }, [loadInstalledMods, onShowNotification, scanConflicts, applyConflictFix]);
+
+  const handleFixAllConflicts = useCallback(async () => {
+    const actionableIssues = conflictScan.issues.filter((issue) => !!issue.fix_action);
+    if (actionableIssues.length === 0) return;
+
+    setIsFixingAllConflicts(true);
+    let appliedCount = 0;
+    let failedCount = 0;
+    const processedKeys = new Set();
+
+    try {
+      for (const issue of actionableIssues) {
+        const dedupeKey = issue.fix_action === 'install_missing_dependency'
+          ? `dep:${issue.missing_project_id || issue.id}`
+          : issue.fix_action === 'disable_duplicates'
+            ? `dupe:${issue.project_id || issue.id}`
+            : `${issue.fix_action}:${issue.id}`;
+
+        if (processedKeys.has(dedupeKey)) {
+          continue;
+        }
+        processedKeys.add(dedupeKey);
+        setFixingConflictId(issue.id);
+
+        try {
+          const applied = await applyConflictFix(issue, { notify: false });
+          if (applied) {
+            appliedCount += 1;
+          }
+        } catch (e) {
+          failedCount += 1;
+          console.error(`Failed to apply conflict fix for issue ${issue.id}:`, e);
+        }
+      }
+
+      await loadInstalledMods();
+      await scanConflicts({ silent: true });
+
+      if (appliedCount > 0) {
+        onShowNotification?.(`Applied ${appliedCount} conflict fix${appliedCount > 1 ? 'es' : ''}.`, 'success');
+      }
+      if (failedCount > 0) {
+        onShowNotification?.(`${failedCount} fix${failedCount > 1 ? 'es' : ''} failed. Check issue list for details.`, 'error');
+      }
+    } finally {
+      setFixingConflictId(null);
+      setIsFixingAllConflicts(false);
+    }
+  }, [conflictScan.issues, applyConflictFix, loadInstalledMods, scanConflicts, onShowNotification]);
+
   const handleRequestInstall = useCallback(async (project, updateMod = null) => {
     setVersionModal({ show: true, project, updateMod: updateMod });
   }, []);
@@ -503,33 +658,19 @@ function InstanceMods({
   }, []);
 
   const handleBulkCheckUpdates = useCallback(async () => {
-    const modrinthMods = installedMods.filter(m => m.provider === 'Modrinth' && m.project_id);
+    const modrinthMods = installedMods.filter(m => m.enabled && m.provider === 'Modrinth' && m.project_id);
     if (modrinthMods.length === 0) return;
 
     setIsCheckingUpdates(true);
-    const updates = {};
-
     try {
-      // Modrinth API allows fetching multiple projects/versions but for simplicity and compatibility with our existing hooks:
-      for (const mod of modrinthMods) {
-        try {
-          const versions = await invoke('get_modrinth_versions', {
-            projectId: mod.project_id,
-            gameVersion: instance.version_id,
-            loader: instance.mod_loader?.toLowerCase() || null
-          });
-
-          if (versions.length > 0) {
-            const latest = versions[0];
-            // Simple version check: if the latest version id is different from our installed version_id
-            if (latest.id !== mod.version_id) {
-              updates[mod.project_id] = latest;
-            }
-          }
-        } catch (e) {
-          console.warn(`Failed to check update for ${mod.name}:`, e);
+      const rows = await invoke('get_instance_mod_updates', { instanceId: instance.id });
+      const updates = {};
+      for (const row of Array.isArray(rows) ? rows : []) {
+        if (row?.project_id && row?.latest_version) {
+          updates[row.project_id] = row.latest_version;
         }
       }
+
       setUpdatesFound(updates);
       if (onShowNotification) {
         const count = Object.keys(updates).length;
@@ -544,7 +685,7 @@ function InstanceMods({
     } finally {
       setIsCheckingUpdates(false);
     }
-  }, [installedMods, instance.version_id, instance.mod_loader, onShowNotification]);
+  }, [installedMods, instance.id, onShowNotification]);
 
   const handleUpdateAll = useCallback(async () => {
     const modsToUpdate = installedMods.filter(m => updatesFound[m.project_id]);
@@ -1221,6 +1362,21 @@ function InstanceMods({
               </div>
             </div>
           )}
+
+          {installedMods.length > 0 && (
+            <button
+              className={`conflict-fab ${conflictScan.scanned && conflictScan.issues.length > 0 ? 'has-issues' : ''}`}
+              onClick={openConflictScanner}
+              disabled={loading}
+              title="Open Mod Conflict Scanner"
+              aria-label="Open Mod Conflict Scanner"
+            >
+              {scanningConflicts ? <Loader2 size={18} className="spin" /> : <TriangleAlert size={18} />}
+              {conflictScan.scanned && conflictScan.issues.length > 0 && (
+                <span className="conflict-fab-count">{conflictScan.issues.length}</span>
+              )}
+            </button>
+          )}
         </div>
       ) : (
         <div className="find-mods-section">
@@ -1452,6 +1608,130 @@ function InstanceMods({
                     </p>
                   </div>
                 </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showConflictModal && (
+        <div
+          className="conflict-modal-overlay"
+          onClick={() => {
+            if (!fixingConflictId && !isFixingAllConflicts) {
+              setShowConflictModal(false);
+            }
+          }}
+        >
+          <div className="conflict-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="conflict-modal-header">
+              <div className="conflict-modal-title">
+                <TriangleAlert size={18} />
+                <div>
+                  <h3>Mod Conflict Scanner</h3>
+                  <p>Detect duplicates, missing dependencies, and compatibility issues.</p>
+                </div>
+              </div>
+              <div className="conflict-modal-actions">
+                {conflictScan.scanned && conflictScan.issues.some((issue) => !!issue.fix_action) && (
+                  <button
+                    className="mod-conflict-fix-all-btn"
+                    onClick={handleFixAllConflicts}
+                    disabled={scanningConflicts || !!fixingConflictId || isFixingAllConflicts}
+                  >
+                    {isFixingAllConflicts ? <Loader2 size={14} className="spin" /> : <Check size={14} />}
+                    <span>
+                      {isFixingAllConflicts
+                        ? 'Applying...'
+                        : `Fix All (${conflictScan.issues.filter((issue) => !!issue.fix_action).length})`}
+                    </span>
+                  </button>
+                )}
+                <button
+                  className={`scan-conflicts-btn ${conflictScan.scanned && conflictScan.issues.length > 0 ? 'has-issues' : ''}`}
+                  onClick={() => scanConflicts()}
+                  disabled={scanningConflicts || !!fixingConflictId || isFixingAllConflicts}
+                >
+                  {scanningConflicts ? <Loader2 size={14} className="spin" /> : <RefreshCcw size={14} />}
+                  <span>{scanningConflicts ? 'Scanning...' : conflictScan.scanned ? 'Rescan' : 'Scan Now'}</span>
+                </button>
+                <button
+                  className="close-btn-simple"
+                  onClick={() => setShowConflictModal(false)}
+                  disabled={!!fixingConflictId || isFixingAllConflicts}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="conflict-modal-body">
+              {!conflictScan.scanned && !scanningConflicts && (
+                <div className="mod-conflicts-empty-state">
+                  <TriangleAlert size={22} />
+                  <strong>Run your first conflict scan</strong>
+                  <p>This checks installed mods for duplicates and dependency or version mismatches.</p>
+                </div>
+              )}
+
+              {scanningConflicts && (
+                <div className="mod-conflicts-empty-state scanning">
+                  <Loader2 size={22} className="spin" />
+                  <strong>Scanning installed mods...</strong>
+                </div>
+              )}
+
+              {conflictScan.scanned && !scanningConflicts && (
+                <div className={`mod-conflicts-panel ${conflictScan.issues.length > 0 ? 'has-issues' : 'clean'}`}>
+                  <div className="mod-conflicts-header">
+                    {conflictScan.issues.length > 0 ? (
+                      <>
+                        <TriangleAlert size={16} />
+                        <strong>{conflictScan.issues.length} conflict{conflictScan.issues.length > 1 ? 's' : ''} found</strong>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck size={16} />
+                        <strong>No conflicts detected</strong>
+                      </>
+                    )}
+                  </div>
+
+                  {conflictScan.issues.length > 0 && (
+                    <div className="mod-conflicts-list">
+                      {conflictScan.issues.map((issue) => (
+                        <div key={issue.id} className={`mod-conflict-item severity-${issue.severity || 'warning'}`}>
+                          <div className="mod-conflict-main">
+                            <div className="mod-conflict-title-row">
+                              <span className="mod-conflict-title">{issue.title}</span>
+                              <span className="mod-conflict-badge">{issue.severity || 'warning'}</span>
+                            </div>
+                            <p className="mod-conflict-description">{issue.description}</p>
+                            {Array.isArray(issue.affected_files) && issue.affected_files.length > 0 && (
+                              <div className="mod-conflict-files">
+                                {issue.affected_files.map((name) => (
+                                  <span key={`${issue.id}-${name}`} className="mod-conflict-file-tag">{name}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          {issue.fix_action && (
+                            <button
+                              className="mod-conflict-fix-btn"
+                              disabled={!!fixingConflictId || isFixingAllConflicts}
+                              onClick={() => handleFixConflict(issue)}
+                            >
+                              {fixingConflictId === issue.id ? <Loader2 size={13} className="spin" /> : null}
+                              <span>
+                                {issue.fix_action === 'disable_duplicates' ? 'Disable Duplicates' : 'Install Dependency'}
+                              </span>
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
