@@ -2,6 +2,7 @@ mod minecraft;
 
 use minecraft::{versions, downloader, instances, launcher, settings, auth, modrinth, files, fabric, forge, java, logger, discord};
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::{Mutex, LazyLock};
@@ -596,7 +597,8 @@ async fn clone_instance(instance_id: String, new_name: String, app_handle: AppHa
             &new_game_dir,
             &app_handle,
             total_files,
-            &mut current_count
+            &mut current_count,
+            "Cloning"
         )?;
     }
 
@@ -826,6 +828,7 @@ fn copy_dir_with_progress(
     app_handle: &AppHandle,
     total_files: u32,
     current_count: &mut u32,
+    stage_prefix: &str,
 ) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| e.to_string())?;
 
@@ -836,7 +839,7 @@ fn copy_dir_with_progress(
         let dst_path = dst.join(entry.file_name());
 
         if file_type.is_dir() {
-            copy_dir_with_progress(&src_path, &dst_path, app_handle, total_files, current_count)?;
+            copy_dir_with_progress(&src_path, &dst_path, app_handle, total_files, current_count, stage_prefix)?;
         } else {
             *current_count += 1;
             let file_name = entry.file_name().to_string_lossy().to_string();
@@ -844,7 +847,7 @@ fn copy_dir_with_progress(
 
             if *current_count % 50 == 0 || *current_count == total_files {
                 let _ = app_handle.emit("download-progress", downloader::DownloadProgress {
-                    stage: format!("Cloning: {} ({}/{})", file_name, current_count, total_files),
+                    stage: format!("{}: {} ({}/{})", stage_prefix, file_name, current_count, total_files),
                     current: *current_count,
                     total: total_files,
                     percentage,
@@ -874,6 +877,733 @@ fn copy_dir_with_progress(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct PrismPackComponent {
+    uid: String,
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrismPackManifest {
+    components: Vec<PrismPackComponent>,
+}
+
+#[derive(Debug, Default)]
+struct PrismIndexMeta {
+    filename: Option<String>,
+    name: Option<String>,
+    project_id: Option<String>,
+    version_id: Option<String>,
+}
+
+fn clean_import_name(custom_name: Option<String>) -> Option<String> {
+    custom_name.and_then(|n| {
+        let trimmed = n.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn is_prism_instance_folder(path: &std::path::Path) -> bool {
+    path.is_dir()
+        && path.join("instance.cfg").is_file()
+        && path.join("mmc-pack.json").is_file()
+        && path.join("minecraft").is_dir()
+}
+
+fn parse_prism_value(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2 {
+        let first = trimmed.chars().next().unwrap_or_default();
+        let last = trimmed.chars().last().unwrap_or_default();
+        if (first == '\'' && last == '\'') || (first == '"' && last == '"') {
+            return trimmed[1..trimmed.len() - 1].to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn read_prism_instance_name_from_content(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once('=') {
+            if key.trim() == "name" {
+                let parsed = parse_prism_value(value);
+                if !parsed.is_empty() {
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn read_prism_instance_name(instance_cfg_path: &std::path::Path) -> Option<String> {
+    let content = fs::read_to_string(instance_cfg_path).ok()?;
+    read_prism_instance_name_from_content(&content)
+}
+
+fn parse_prism_pack_info_from_content(
+    content: &str,
+) -> Result<(String, instances::ModLoader, Option<String>), String> {
+    let manifest: PrismPackManifest = serde_json::from_str(content)
+        .map_err(|e| format!("Failed to parse mmc-pack.json: {}", e))?;
+
+    let mut mc_version: Option<String> = None;
+    let mut mod_loader = instances::ModLoader::Vanilla;
+    let mut mod_loader_version: Option<String> = None;
+
+    for component in &manifest.components {
+        let uid = component.uid.to_lowercase();
+        if uid == "net.minecraft" {
+            mc_version = Some(component.version.clone());
+            continue;
+        }
+
+        if uid.contains("fabric-loader") {
+            mod_loader = instances::ModLoader::Fabric;
+            mod_loader_version = Some(component.version.clone());
+            continue;
+        }
+
+        if uid.contains("neoforge") || uid.contains("neoforged") {
+            mod_loader = instances::ModLoader::NeoForge;
+            mod_loader_version = Some(component.version.clone());
+            continue;
+        }
+
+        if uid == "net.minecraftforge" || uid.ends_with(".forge") || uid.contains("forge") {
+            if !uid.contains("neoforge") && !uid.contains("neoforged") {
+                mod_loader = instances::ModLoader::Forge;
+                mod_loader_version = Some(component.version.clone());
+            }
+        }
+    }
+
+    let version_id = mc_version.ok_or_else(|| {
+        "Prism instance metadata is missing a Minecraft version component (net.minecraft)".to_string()
+    })?;
+
+    Ok((version_id, mod_loader, mod_loader_version))
+}
+
+fn parse_prism_pack_info(
+    mmc_pack_path: &std::path::Path,
+) -> Result<(String, instances::ModLoader, Option<String>), String> {
+    let content = fs::read_to_string(mmc_pack_path)
+        .map_err(|e| format!("Failed to read mmc-pack.json: {}", e))?;
+    parse_prism_pack_info_from_content(&content)
+}
+
+fn parse_prism_mod_index_entry(path: &std::path::Path) -> Option<PrismIndexMeta> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut current_section = String::new();
+    let mut meta = PrismIndexMeta::default();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            current_section = trimmed.trim_matches(['[', ']']).trim().to_string();
+            continue;
+        }
+
+        let Some((key, value_raw)) = trimmed.split_once('=') else {
+            continue;
+        };
+
+        let key = key.trim();
+        let value = parse_prism_value(value_raw);
+
+        if current_section == "update.modrinth" {
+            if key == "mod-id" {
+                meta.project_id = Some(value);
+            } else if key == "version" {
+                meta.version_id = Some(value);
+            }
+            continue;
+        }
+
+        if key == "filename" {
+            meta.filename = Some(value);
+        } else if key == "name" {
+            meta.name = Some(value);
+        }
+    }
+
+    meta.filename.as_ref()?;
+    Some(meta)
+}
+
+async fn import_prism_mod_metadata(
+    source_minecraft_dir: &std::path::Path,
+    instance: &instances::Instance,
+    app_handle: &AppHandle,
+) -> Result<u32, String> {
+    let index_dir = source_minecraft_dir.join("mods").join(".index");
+    if !index_dir.exists() {
+        return Ok(0);
+    }
+
+    let dest_mods_dir = files::get_mods_dir(instance);
+    if !dest_mods_dir.exists() {
+        fs::create_dir_all(&dest_mods_dir).map_err(|e| format!("Failed to create mods directory: {}", e))?;
+    }
+
+    #[derive(Clone)]
+    struct PrismModMetaEntry {
+        filename: String,
+        project_id: String,
+        version_id: Option<String>,
+        name: Option<String>,
+    }
+
+    let mut parsed_entries: Vec<PrismModMetaEntry> = Vec::new();
+    let entries = fs::read_dir(&index_dir).map_err(|e| format!("Failed to read Prism .index directory: {}", e))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()).map(|n| n.ends_with(".pw.toml")) != Some(true) {
+            continue;
+        }
+
+        let Some(parsed) = parse_prism_mod_index_entry(&path) else {
+            continue;
+        };
+        let Some(filename) = parsed.filename else {
+            continue;
+        };
+        let Some(project_id) = parsed.project_id else {
+            continue;
+        };
+
+        parsed_entries.push(PrismModMetaEntry {
+            filename,
+            project_id,
+            version_id: parsed.version_id,
+            name: parsed.name,
+        });
+    }
+
+    if parsed_entries.is_empty() {
+        return Ok(0);
+    }
+
+    let mut unique_project_ids: Vec<String> = parsed_entries
+        .iter()
+        .map(|e| e.project_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    unique_project_ids.sort();
+
+    let mut unique_version_ids: Vec<String> = parsed_entries
+        .iter()
+        .filter_map(|e| e.version_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    unique_version_ids.sort();
+
+    let mut projects_by_id: HashMap<String, modrinth::ModrinthProject> = HashMap::new();
+    if !unique_project_ids.is_empty() {
+        match modrinth::get_projects(unique_project_ids).await {
+            Ok(projects) => {
+                for project in projects {
+                    projects_by_id.insert(project.project_id.clone(), project);
+                }
+            }
+            Err(error) => {
+                logger::emit_log(
+                    app_handle,
+                    "warn",
+                    &format!("Prism import: failed to fetch Modrinth project metadata: {}", error),
+                );
+            }
+        }
+    }
+
+    let mut versions_by_id: HashMap<String, modrinth::ModrinthVersion> = HashMap::new();
+    if !unique_version_ids.is_empty() {
+        match modrinth::get_versions_bulk(unique_version_ids).await {
+            Ok(versions) => {
+                for version in versions {
+                    versions_by_id.insert(version.id.clone(), version);
+                }
+            }
+            Err(error) => {
+                logger::emit_log(
+                    app_handle,
+                    "warn",
+                    &format!("Prism import: failed to fetch Modrinth version metadata: {}", error),
+                );
+            }
+        }
+    }
+
+    let mut imported = 0u32;
+    for entry in parsed_entries {
+        let project = projects_by_id.get(&entry.project_id);
+        let version = entry
+            .version_id
+            .as_ref()
+            .and_then(|version_id| versions_by_id.get(version_id));
+
+        let author = project
+            .and_then(|p| {
+                let author = p.author.trim();
+                if author.is_empty() {
+                    None
+                } else {
+                    Some(author.to_string())
+                }
+            });
+        let categories = project.and_then(|p| {
+            if p.categories.is_empty() {
+                None
+            } else {
+                Some(p.categories.clone())
+            }
+        });
+        let version_name = version.and_then(|v| {
+            if !v.version_number.trim().is_empty() {
+                Some(v.version_number.clone())
+            } else if !v.name.trim().is_empty() {
+                Some(v.name.clone())
+            } else {
+                None
+            }
+        });
+
+        let meta = files::ModMeta {
+            project_id: entry.project_id,
+            version_id: entry.version_id,
+            name: entry.name.or_else(|| project.map(|p| p.title.clone())),
+            author,
+            icon_url: project.and_then(|p| p.icon_url.clone()),
+            version_name,
+            categories,
+        };
+
+        if files::write_meta_for_entry(&dest_mods_dir, &entry.filename, &meta).is_ok() {
+            imported += 1;
+        }
+    }
+
+    Ok(imported)
+}
+
+async fn enrich_non_mod_modrinth_metadata(
+    instance: &instances::Instance,
+    app_handle: &AppHandle,
+) -> Result<u32, String> {
+    #[derive(Clone)]
+    struct MetaTarget {
+        parent_dir: std::path::PathBuf,
+        filename: String,
+        project_id: String,
+        version_id: Option<String>,
+        name: Option<String>,
+        author: Option<String>,
+        icon_url: Option<String>,
+        version_name: Option<String>,
+        categories: Option<Vec<String>>,
+    }
+
+    let mut targets: Vec<MetaTarget> = Vec::new();
+
+    let resourcepacks_dir = files::get_resourcepacks_dir(instance);
+    for pack in files::list_resourcepacks(instance) {
+        let Some(project_id) = pack.project_id.clone() else {
+            continue;
+        };
+        targets.push(MetaTarget {
+            parent_dir: resourcepacks_dir.clone(),
+            filename: pack.filename.clone(),
+            project_id,
+            version_id: pack.version_id.clone(),
+            name: pack.name.clone(),
+            author: pack.author.clone(),
+            icon_url: pack.icon_url.clone(),
+            version_name: pack.version.clone(),
+            categories: pack.categories.clone(),
+        });
+    }
+
+    let shaderpacks_dir = files::get_shaderpacks_dir(instance);
+    for pack in files::list_shaderpacks(instance) {
+        let Some(project_id) = pack.project_id.clone() else {
+            continue;
+        };
+        targets.push(MetaTarget {
+            parent_dir: shaderpacks_dir.clone(),
+            filename: pack.filename.clone(),
+            project_id,
+            version_id: pack.version_id.clone(),
+            name: pack.name.clone(),
+            author: pack.author.clone(),
+            icon_url: pack.icon_url.clone(),
+            version_name: pack.version.clone(),
+            categories: pack.categories.clone(),
+        });
+    }
+
+    let saves_dir = files::get_saves_dir(instance);
+    if let Ok(world_entries) = fs::read_dir(&saves_dir) {
+        for world_entry in world_entries.flatten() {
+            let world_path = world_entry.path();
+            if !world_path.is_dir() {
+                continue;
+            }
+            let Some(world_name) = world_path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+
+            let datapacks_dir = world_path.join("datapacks");
+            if !datapacks_dir.exists() {
+                continue;
+            }
+
+            for datapack in files::list_datapacks(instance, world_name) {
+                let Some(project_id) = datapack.project_id.clone() else {
+                    continue;
+                };
+                targets.push(MetaTarget {
+                    parent_dir: datapacks_dir.clone(),
+                    filename: datapack.filename.clone(),
+                    project_id,
+                    version_id: datapack.version_id.clone(),
+                    name: datapack.name.clone(),
+                    author: datapack.author.clone(),
+                    icon_url: datapack.icon_url.clone(),
+                    version_name: datapack.version.clone(),
+                    categories: None,
+                });
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        return Ok(0);
+    }
+
+    let mut unique_project_ids: Vec<String> = targets
+        .iter()
+        .map(|entry| entry.project_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    unique_project_ids.sort();
+
+    let mut unique_version_ids: Vec<String> = targets
+        .iter()
+        .filter_map(|entry| entry.version_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    unique_version_ids.sort();
+
+    let mut projects_by_id: HashMap<String, modrinth::ModrinthProject> = HashMap::new();
+    if !unique_project_ids.is_empty() {
+        match modrinth::get_projects(unique_project_ids).await {
+            Ok(projects) => {
+                for project in projects {
+                    projects_by_id.insert(project.project_id.clone(), project);
+                }
+            }
+            Err(error) => {
+                logger::emit_log(
+                    app_handle,
+                    "warn",
+                    &format!("Prism import: failed to enrich non-mod project metadata: {}", error),
+                );
+            }
+        }
+    }
+
+    let mut versions_by_id: HashMap<String, modrinth::ModrinthVersion> = HashMap::new();
+    if !unique_version_ids.is_empty() {
+        match modrinth::get_versions_bulk(unique_version_ids).await {
+            Ok(versions) => {
+                for version in versions {
+                    versions_by_id.insert(version.id.clone(), version);
+                }
+            }
+            Err(error) => {
+                logger::emit_log(
+                    app_handle,
+                    "warn",
+                    &format!("Prism import: failed to enrich non-mod version metadata: {}", error),
+                );
+            }
+        }
+    }
+
+    let mut updated = 0u32;
+    let mut seen_paths: HashSet<String> = HashSet::new();
+    for entry in targets {
+        let dedupe_key = format!("{}::{}", entry.parent_dir.display(), entry.filename);
+        if !seen_paths.insert(dedupe_key) {
+            continue;
+        }
+
+        let project = projects_by_id.get(&entry.project_id);
+        let version = entry
+            .version_id
+            .as_ref()
+            .and_then(|version_id| versions_by_id.get(version_id));
+
+        let author = entry.author.clone().or_else(|| {
+            project.and_then(|p| {
+                let trimmed = p.author.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+        });
+        let categories = entry.categories.clone().or_else(|| {
+            project.and_then(|p| {
+                if p.categories.is_empty() {
+                    None
+                } else {
+                    Some(p.categories.clone())
+                }
+            })
+        });
+        let version_name = entry.version_name.clone().or_else(|| {
+            version.and_then(|v| {
+                if !v.version_number.trim().is_empty() {
+                    Some(v.version_number.clone())
+                } else if !v.name.trim().is_empty() {
+                    Some(v.name.clone())
+                } else {
+                    None
+                }
+            })
+        });
+
+        let meta = files::ModMeta {
+            project_id: entry.project_id.clone(),
+            version_id: entry.version_id.clone(),
+            name: entry.name.clone().or_else(|| project.map(|p| p.title.clone())),
+            author,
+            icon_url: entry.icon_url.clone().or_else(|| project.and_then(|p| p.icon_url.clone())),
+            version_name,
+            categories,
+        };
+
+        if files::write_meta_for_entry(&entry.parent_dir, &entry.filename, &meta).is_ok() {
+            updated += 1;
+        }
+    }
+
+    Ok(updated)
+}
+
+fn set_instance_logo_from_local_file(
+    instance: &mut instances::Instance,
+    source_path: &std::path::Path,
+) -> Result<(), String> {
+    if !source_path.exists() {
+        return Ok(());
+    }
+
+    let ext = source_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if ext != "png" {
+        return Ok(());
+    }
+
+    downloader::ensure_instance_logos_dir()?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let filename = format!("{}_{}.png", instance.id, timestamp);
+    let destination = downloader::get_instance_logos_dir().join(&filename);
+
+    fs::copy(source_path, &destination)
+        .map_err(|e| format!("Failed to copy logo: {}", e))?;
+
+    if let Some(old_logo) = &instance.logo_filename {
+        if old_logo.starts_with(&format!("{}_", instance.id)) {
+            let old_path = downloader::get_instance_logos_dir().join(old_logo);
+            let _ = fs::remove_file(old_path);
+        }
+    }
+
+    instance.logo_filename = Some(filename);
+    instances::update_instance(instance.clone())?;
+    Ok(())
+}
+
+fn prism_loader_label(loader: &instances::ModLoader) -> &'static str {
+    match loader {
+        instances::ModLoader::Fabric => "Fabric",
+        instances::ModLoader::Forge => "Forge",
+        instances::ModLoader::NeoForge => "NeoForge",
+        instances::ModLoader::Vanilla => "Vanilla",
+    }
+}
+
+fn peek_prism_instance_folder(source_dir: &std::path::Path) -> Result<serde_json::Value, String> {
+    if !is_prism_instance_folder(source_dir) {
+        return Err("This folder is not a Prism instance (missing instance.cfg/mmc-pack.json/minecraft/)".to_string());
+    }
+
+    let (version_id, loader, loader_version) = parse_prism_pack_info(&source_dir.join("mmc-pack.json"))?;
+    let fallback_name = source_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Prism Instance")
+        .to_string();
+    let instance_name = read_prism_instance_name(&source_dir.join("instance.cfg")).unwrap_or(fallback_name);
+
+    Ok(serde_json::json!({
+        "source_type": "prism-folder",
+        "name": instance_name,
+        "version_id": version_id,
+        "mod_loader": prism_loader_label(&loader),
+        "mod_loader_version": loader_version,
+    }))
+}
+
+async fn import_prism_instance_folder(
+    source_dir: &std::path::Path,
+    custom_name: Option<String>,
+    app_handle: &AppHandle,
+) -> Result<instances::Instance, String> {
+    if !is_prism_instance_folder(source_dir) {
+        return Err("This folder is not a Prism instance (missing instance.cfg/mmc-pack.json/minecraft/)".to_string());
+    }
+
+    let source_minecraft_dir = source_dir.join("minecraft");
+    let (version_id, mod_loader, mod_loader_version) = parse_prism_pack_info(&source_dir.join("mmc-pack.json"))?;
+    let default_name = read_prism_instance_name(&source_dir.join("instance.cfg"))
+        .or_else(|| source_dir.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()))
+        .unwrap_or_else(|| "Imported Prism Instance".to_string());
+    let instance_name = clean_import_name(custom_name).unwrap_or_else(|| format!("{} (Imported)", default_name));
+
+    logger::emit_log(
+        app_handle,
+        "info",
+        &format!("Importing Prism instance '{}' from {}", instance_name, source_dir.display()),
+    );
+
+    let mut new_instance = instances::create_instance(instance_name.clone(), version_id.clone())?;
+    new_instance.mod_loader = mod_loader;
+    new_instance.mod_loader_version = mod_loader_version.clone();
+    instances::update_instance(new_instance.clone())?;
+
+    let game_dir = new_instance.get_game_directory();
+    fs::create_dir_all(&game_dir).map_err(|e| format!("Failed to create game directory: {}", e))?;
+
+    let total_files = count_files_recursive(&source_minecraft_dir);
+    let mut current_count = 0;
+    let _ = app_handle.emit("download-progress", downloader::DownloadProgress {
+        stage: format!("Importing Prism files ({} items)...", total_files),
+        current: 0,
+        total: total_files,
+        percentage: 0.0,
+        total_bytes: None,
+        downloaded_bytes: None,
+    });
+
+    copy_dir_with_progress(
+        &source_minecraft_dir,
+        &game_dir,
+        app_handle,
+        total_files,
+        &mut current_count,
+        "Importing",
+    )?;
+
+    let imported_meta = import_prism_mod_metadata(&source_minecraft_dir, &new_instance, app_handle).await?;
+    if imported_meta > 0 {
+        logger::emit_log(
+            app_handle,
+            "info",
+            &format!("Imported metadata for {} Prism-indexed mods", imported_meta),
+        );
+    }
+
+    let enriched_non_mod = enrich_non_mod_modrinth_metadata(&new_instance, app_handle).await?;
+    if enriched_non_mod > 0 {
+        logger::emit_log(
+            app_handle,
+            "info",
+            &format!("Enriched metadata for {} non-mod Modrinth items", enriched_non_mod),
+        );
+    }
+
+    let resolved_manual = resolve_manual_modrinth_metadata_for_instance(&new_instance, app_handle).await;
+    if resolved_manual.updated > 0 {
+        logger::emit_log(
+            app_handle,
+            "info",
+            &format!(
+                "Resolved Modrinth metadata for {} manual file(s) ({} scanned)",
+                resolved_manual.updated, resolved_manual.scanned
+            ),
+        );
+    }
+
+    let icon_path = source_minecraft_dir.join("icon.png");
+    if icon_path.exists() {
+        let _ = set_instance_logo_from_local_file(&mut new_instance, &icon_path);
+    }
+
+    if let Some(ref loader_version) = mod_loader_version {
+        match new_instance.mod_loader {
+            instances::ModLoader::Fabric => {
+                logger::emit_log(app_handle, "info", &format!("Installing Fabric {} for imported Prism instance", loader_version));
+                fabric::install_fabric(&new_instance, loader_version)
+                    .await
+                    .map_err(|e| format!("Failed to install Fabric: {}", e))?;
+            }
+            instances::ModLoader::Forge => {
+                logger::emit_log(app_handle, "info", &format!("Installing Forge {} for imported Prism instance", loader_version));
+                forge::install_forge(&new_instance, loader_version)
+                    .await
+                    .map_err(|e| format!("Failed to install Forge: {}", e))?;
+            }
+            instances::ModLoader::NeoForge => {
+                logger::emit_log(app_handle, "info", &format!("Installing NeoForge {} for imported Prism instance", loader_version));
+                forge::install_neoforge(&new_instance, loader_version)
+                    .await
+                    .map_err(|e| format!("Failed to install NeoForge: {}", e))?;
+            }
+            instances::ModLoader::Vanilla => {}
+        }
+    }
+
+    instances::update_instance(new_instance.clone())?;
+    logger::emit_log(
+        app_handle,
+        "info",
+        &format!("Successfully imported Prism instance: {}", instance_name),
+    );
+    let _ = app_handle.emit("refresh-instances", ());
+    Ok(new_instance)
 }
 
 #[tauri::command]
@@ -1016,6 +1746,264 @@ async fn peek_instance_zip(zip_path: String) -> Result<serde_json::Value, String
         .map_err(|e| format!("Failed to parse metadata: {}", e))?;
         
     Ok(metadata)
+}
+
+fn detect_prism_root_prefix_in_zip<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+) -> Result<Option<String>, String> {
+    let mut names: Vec<String> = Vec::new();
+    for i in 0..archive.len() {
+        let file = archive.by_index(i).map_err(|e| format!("Failed to read zip entry: {}", e))?;
+        names.push(file.name().replace('\\', "/"));
+    }
+
+    let name_set: HashSet<String> = names.iter().cloned().collect();
+    for name in &names {
+        let Some(prefix) = name.strip_suffix("instance.cfg") else {
+            continue;
+        };
+        let mmc_pack = format!("{}mmc-pack.json", prefix);
+        let minecraft_prefix = format!("{}minecraft/", prefix);
+        if name_set.contains(&mmc_pack) && names.iter().any(|n| n.starts_with(&minecraft_prefix)) {
+            return Ok(Some(prefix.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn read_zip_entry_string<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    entry_name: &str,
+) -> Result<String, String> {
+    use std::io::Read;
+
+    let mut entry = archive
+        .by_name(entry_name)
+        .map_err(|_| format!("Missing required Prism file in zip: {}", entry_name))?;
+    let mut content = String::new();
+    entry
+        .read_to_string(&mut content)
+        .map_err(|e| format!("Failed to read {}: {}", entry_name, e))?;
+    Ok(content)
+}
+
+fn peek_prism_instance_zip(zip_path: &str) -> Result<serde_json::Value, String> {
+    let zip_file = fs::File::open(zip_path).map_err(|e| format!("Failed to open zip file: {}", e))?;
+    let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| format!("Failed to read zip archive: {}", e))?;
+
+    let prism_prefix = detect_prism_root_prefix_in_zip(&mut archive)?.ok_or_else(|| {
+        "This zip is not a supported import. Expected a Palethea export or Prism instance zip.".to_string()
+    })?;
+    let instance_cfg = read_zip_entry_string(&mut archive, &format!("{}instance.cfg", prism_prefix))?;
+    let mmc_pack = read_zip_entry_string(&mut archive, &format!("{}mmc-pack.json", prism_prefix))?;
+    let (version_id, loader, loader_version) = parse_prism_pack_info_from_content(&mmc_pack)?;
+
+    let fallback_name = std::path::Path::new(zip_path)
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Prism Instance")
+        .to_string();
+    let instance_name = read_prism_instance_name_from_content(&instance_cfg).unwrap_or(fallback_name);
+
+    Ok(serde_json::json!({
+        "source_type": "prism-zip",
+        "name": instance_name,
+        "version_id": version_id,
+        "mod_loader": prism_loader_label(&loader),
+        "mod_loader_version": loader_version,
+    }))
+}
+
+fn is_safe_relative_zip_path(path: &std::path::Path) -> bool {
+    if path.is_absolute() {
+        return false;
+    }
+    path.components().all(|component| {
+        matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    })
+}
+
+async fn import_prism_instance_zip(
+    zip_path: String,
+    custom_name: Option<String>,
+    app_handle: AppHandle,
+) -> Result<instances::Instance, String> {
+    let zip_file = fs::File::open(&zip_path).map_err(|e| format!("Failed to open zip file: {}", e))?;
+    let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| format!("Failed to read zip archive: {}", e))?;
+    let prism_prefix = detect_prism_root_prefix_in_zip(&mut archive)?.ok_or_else(|| {
+        "This zip is not a Prism instance (missing instance.cfg/mmc-pack.json/minecraft/)".to_string()
+    })?;
+
+    let temp_import_dir = std::env::temp_dir().join(format!(
+        "palethea_prism_import_{}",
+        uuid::Uuid::new_v4().to_string().replace("-", "")
+    ));
+    fs::create_dir_all(&temp_import_dir)
+        .map_err(|e| format!("Failed to create temporary import directory: {}", e))?;
+
+    let total_entries = std::cmp::max(archive.len() as u32, 1);
+    let _ = app_handle.emit("download-progress", downloader::DownloadProgress {
+        stage: format!("Preparing import: reading archive (0/{})", total_entries),
+        current: 0,
+        total: total_entries,
+        percentage: 0.0,
+        total_bytes: None,
+        downloaded_bytes: None,
+    });
+
+    let extract_result: Result<(), String> = (|| {
+        let mut scanned_entries: u32 = 0;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| format!("Failed to read zip entry: {}", e))?;
+            let entry_name = file.name().replace('\\', "/");
+            scanned_entries += 1;
+            let file_name = std::path::Path::new(&entry_name)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("entry");
+
+            if scanned_entries % 25 == 0 || scanned_entries == total_entries {
+                let percentage = (scanned_entries as f32 / total_entries as f32) * 100.0;
+                let _ = app_handle.emit("download-progress", downloader::DownloadProgress {
+                    stage: format!(
+                        "Preparing import: extracting {} ({}/{})",
+                        file_name,
+                        scanned_entries,
+                        total_entries
+                    ),
+                    current: scanned_entries,
+                    total: total_entries,
+                    percentage,
+                    total_bytes: None,
+                    downloaded_bytes: None,
+                });
+            }
+
+            if !entry_name.starts_with(&prism_prefix) {
+                continue;
+            }
+
+            let relative_name = entry_name.strip_prefix(&prism_prefix).unwrap_or(&entry_name);
+            if relative_name.is_empty() {
+                continue;
+            }
+
+            let relative_path = std::path::Path::new(relative_name);
+            if !is_safe_relative_zip_path(relative_path) {
+                continue;
+            }
+
+            let destination_path = temp_import_dir.join(relative_path);
+            if file.is_dir() {
+                fs::create_dir_all(&destination_path)
+                    .map_err(|e| format!("Failed to create directory {}: {}", destination_path.display(), e))?;
+            } else {
+                if let Some(parent) = destination_path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| {
+                        format!("Failed to create directory {}: {}", parent.display(), e)
+                    })?;
+                }
+                let mut out_file = fs::File::create(&destination_path)
+                    .map_err(|e| format!("Failed to create file {}: {}", destination_path.display(), e))?;
+                std::io::copy(&mut file, &mut out_file)
+                    .map_err(|e| format!("Failed to extract file {}: {}", entry_name, e))?;
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = extract_result {
+        let _ = fs::remove_dir_all(&temp_import_dir);
+        return Err(error);
+    }
+
+    let _ = app_handle.emit("download-progress", downloader::DownloadProgress {
+        stage: "Preparing import: validating extracted files".to_string(),
+        current: total_entries,
+        total: total_entries,
+        percentage: 100.0,
+        total_bytes: None,
+        downloaded_bytes: None,
+    });
+
+    let import_result = import_prism_instance_folder(&temp_import_dir, custom_name, &app_handle).await;
+    let _ = fs::remove_dir_all(&temp_import_dir);
+    import_result
+}
+
+// ----------
+// peek_instance_source
+// Description: Peeks an import source path (Palethea zip or Prism folder)
+//              and returns normalized metadata used by the create flow.
+// ----------
+#[tauri::command]
+async fn peek_instance_source(source_path: String) -> Result<serde_json::Value, String> {
+    let source = std::path::PathBuf::from(&source_path);
+    if !source.exists() {
+        return Err("Selected import source does not exist".to_string());
+    }
+
+    if source.is_dir() {
+        if is_prism_instance_folder(&source) {
+            return peek_prism_instance_folder(&source);
+        }
+        return Err("Unsupported folder. Expected a Prism instance folder containing instance.cfg, mmc-pack.json and minecraft/.".to_string());
+    }
+
+    let ext = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if ext == "zip" {
+        if let Ok(metadata) = peek_instance_zip(source_path.clone()).await {
+            return Ok(metadata);
+        }
+        return peek_prism_instance_zip(&source_path);
+    }
+
+    Err("Unsupported import source. Select a Palethea .zip or Prism folder.".to_string())
+}
+
+// ----------
+// import_instance_source
+// Description: Imports from either a Palethea export .zip or a Prism instance folder.
+// ----------
+#[tauri::command]
+async fn import_instance_source(
+    source_path: String,
+    custom_name: Option<String>,
+    app_handle: AppHandle,
+) -> Result<instances::Instance, String> {
+    let source = std::path::PathBuf::from(&source_path);
+    if !source.exists() {
+        return Err("Selected import source does not exist".to_string());
+    }
+
+    if source.is_dir() {
+        if is_prism_instance_folder(&source) {
+            return import_prism_instance_folder(&source, custom_name, &app_handle).await;
+        }
+        return Err("Unsupported folder. Expected a Prism instance folder containing instance.cfg, mmc-pack.json and minecraft/.".to_string());
+    }
+
+    let ext = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if ext == "zip" {
+        if peek_instance_zip(source_path.clone()).await.is_ok() {
+            return import_instance_zip(source_path, custom_name, app_handle).await;
+        }
+        return import_prism_instance_zip(source_path, custom_name, app_handle).await;
+    }
+
+    Err("Unsupported import source. Select a Palethea .zip or Prism folder.".to_string())
 }
 
 // ----------
@@ -2824,6 +3812,406 @@ async fn get_modrinth_version(
         .map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct ManualMetadataResolveReport {
+    pub scanned: u32,
+    pub matched: u32,
+    pub updated: u32,
+    pub unresolved: u32,
+    pub skipped: u32,
+    pub errors: u32,
+}
+
+impl ManualMetadataResolveReport {
+    fn merge(&mut self, other: &Self) {
+        self.scanned += other.scanned;
+        self.matched += other.matched;
+        self.updated += other.updated;
+        self.unresolved += other.unresolved;
+        self.skipped += other.skipped;
+        self.errors += other.errors;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ManualMetadataCandidate {
+    parent_dir: std::path::PathBuf,
+    metadata_filename: String,
+    file_path: std::path::PathBuf,
+    fallback_name: Option<String>,
+}
+
+fn normalize_metadata_file_type(file_type: &str) -> Option<&'static str> {
+    match file_type.trim().to_lowercase().as_str() {
+        "mod" | "mods" => Some("mod"),
+        "resourcepack" | "resourcepacks" => Some("resourcepack"),
+        "shader" | "shaderpack" | "shaderpacks" | "shaders" => Some("shader"),
+        "datapack" | "datapacks" => Some("datapack"),
+        _ => None,
+    }
+}
+
+fn compute_file_sha1(file_path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+
+    let mut file = fs::File::open(file_path)
+        .map_err(|e| format!("Failed to open {}: {}", file_path.display(), e))?;
+    let mut hasher = Sha1::new();
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+async fn resolve_manual_modrinth_metadata_internal(
+    instance: &instances::Instance,
+    file_type: &str,
+    world_name: Option<&str>,
+    filename_filter: Option<&HashSet<String>>,
+    app_handle: Option<&AppHandle>,
+) -> Result<ManualMetadataResolveReport, String> {
+    let normalized = normalize_metadata_file_type(file_type)
+        .ok_or_else(|| format!("Invalid file type '{}'", file_type))?;
+
+    let mut candidates: Vec<ManualMetadataCandidate> = Vec::new();
+
+    match normalized {
+        "mod" => {
+            let mods_dir = files::get_mods_dir(instance);
+            for item in files::list_mods(instance) {
+                if item.provider == "Modrinth" {
+                    continue;
+                }
+                if let Some(filter) = filename_filter {
+                    if !filter.contains(&item.filename) {
+                        continue;
+                    }
+                }
+                let file_path = mods_dir.join(&item.filename);
+                if !file_path.is_file() {
+                    continue;
+                }
+                let metadata_filename = item.filename.trim_end_matches(".disabled").to_string();
+                let fallback_name = item.name.or_else(|| {
+                    Some(
+                        metadata_filename
+                            .trim_end_matches(".jar")
+                            .to_string(),
+                    )
+                });
+                candidates.push(ManualMetadataCandidate {
+                    parent_dir: mods_dir.clone(),
+                    metadata_filename,
+                    file_path,
+                    fallback_name,
+                });
+            }
+        }
+        "resourcepack" => {
+            let dir = files::get_resourcepacks_dir(instance);
+            for item in files::list_resourcepacks(instance) {
+                if item.provider == "Modrinth" {
+                    continue;
+                }
+                if let Some(filter) = filename_filter {
+                    if !filter.contains(&item.filename) {
+                        continue;
+                    }
+                }
+                let file_path = dir.join(&item.filename);
+                if !file_path.is_file() {
+                    continue;
+                }
+                candidates.push(ManualMetadataCandidate {
+                    parent_dir: dir.clone(),
+                    metadata_filename: item.filename.clone(),
+                    file_path,
+                    fallback_name: item.name,
+                });
+            }
+        }
+        "shader" => {
+            let dir = files::get_shaderpacks_dir(instance);
+            for item in files::list_shaderpacks(instance) {
+                if item.provider == "Modrinth" {
+                    continue;
+                }
+                if let Some(filter) = filename_filter {
+                    if !filter.contains(&item.filename) {
+                        continue;
+                    }
+                }
+                let file_path = dir.join(&item.filename);
+                if !file_path.is_file() {
+                    continue;
+                }
+                candidates.push(ManualMetadataCandidate {
+                    parent_dir: dir.clone(),
+                    metadata_filename: item.filename.clone(),
+                    file_path,
+                    fallback_name: item.name,
+                });
+            }
+        }
+        "datapack" => {
+            let world_names: Vec<String> = if let Some(world) = world_name {
+                vec![world.to_string()]
+            } else {
+                files::list_worlds(instance)
+                    .into_iter()
+                    .map(|world| world.folder_name)
+                    .collect()
+            };
+
+            for world in world_names {
+                let datapacks_dir = files::get_saves_dir(instance).join(&world).join("datapacks");
+                if !datapacks_dir.exists() {
+                    continue;
+                }
+                for item in files::list_datapacks(instance, &world) {
+                    if item.provider == "Modrinth" {
+                        continue;
+                    }
+                    if let Some(filter) = filename_filter {
+                        if !filter.contains(&item.filename) {
+                            continue;
+                        }
+                    }
+                    let file_path = datapacks_dir.join(&item.filename);
+                    if !file_path.is_file() {
+                        continue;
+                    }
+                    candidates.push(ManualMetadataCandidate {
+                        parent_dir: datapacks_dir.clone(),
+                        metadata_filename: item.filename.clone(),
+                        file_path,
+                        fallback_name: item.name,
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut report = ManualMetadataResolveReport {
+        scanned: candidates.len() as u32,
+        ..Default::default()
+    };
+
+    if candidates.is_empty() {
+        return Ok(report);
+    }
+
+    let mut matched_entries: Vec<(ManualMetadataCandidate, modrinth::ModrinthVersion)> = Vec::new();
+    for candidate in candidates {
+        let sha1 = match compute_file_sha1(&candidate.file_path) {
+            Ok(hash) => hash,
+            Err(error) => {
+                report.errors += 1;
+                if let Some(handle) = app_handle {
+                    logger::emit_log(handle, "warn", &format!("Failed to hash file: {}", error));
+                }
+                continue;
+            }
+        };
+
+        match modrinth::get_version_by_file_sha1(&sha1).await {
+            Ok(Some(version)) => {
+                report.matched += 1;
+                matched_entries.push((candidate, version));
+            }
+            Ok(None) => {
+                report.unresolved += 1;
+            }
+            Err(error) => {
+                report.errors += 1;
+                if let Some(handle) = app_handle {
+                    logger::emit_log(
+                        handle,
+                        "warn",
+                        &format!("Failed Modrinth hash lookup for {}: {}", sha1, error),
+                    );
+                }
+            }
+        }
+    }
+
+    if matched_entries.is_empty() {
+        return Ok(report);
+    }
+
+    let mut project_ids: Vec<String> = matched_entries
+        .iter()
+        .map(|(_, version)| version.project_id.clone())
+        .filter(|id| !id.trim().is_empty())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    project_ids.sort();
+
+    let mut projects_by_id: HashMap<String, modrinth::ModrinthProject> = HashMap::new();
+    if !project_ids.is_empty() {
+        match modrinth::get_projects(project_ids).await {
+            Ok(projects) => {
+                for project in projects {
+                    projects_by_id.insert(project.project_id.clone(), project);
+                }
+            }
+            Err(error) => {
+                if let Some(handle) = app_handle {
+                    logger::emit_log(
+                        handle,
+                        "warn",
+                        &format!("Failed to fetch Modrinth project details: {}", error),
+                    );
+                }
+            }
+        }
+    }
+
+    for (candidate, version) in matched_entries {
+        if version.project_id.trim().is_empty() {
+            report.unresolved += 1;
+            continue;
+        }
+
+        let project = projects_by_id.get(&version.project_id);
+        let version_name = if !version.version_number.trim().is_empty() {
+            Some(version.version_number.clone())
+        } else if !version.name.trim().is_empty() {
+            Some(version.name.clone())
+        } else {
+            None
+        };
+        let name = project
+            .map(|project| project.title.clone())
+            .or(candidate.fallback_name.clone());
+        let author = project.and_then(|project| {
+            let trimmed = project.author.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+        let icon_url = project.and_then(|project| project.icon_url.clone());
+        let categories = project.and_then(|project| {
+            if project.categories.is_empty() {
+                None
+            } else {
+                Some(project.categories.clone())
+            }
+        });
+
+        let meta = files::ModMeta {
+            project_id: version.project_id.clone(),
+            version_id: Some(version.id.clone()),
+            name,
+            author,
+            icon_url,
+            version_name,
+            categories,
+        };
+
+        match files::write_meta_for_entry(&candidate.parent_dir, &candidate.metadata_filename, &meta) {
+            Ok(_) => {
+                report.updated += 1;
+            }
+            Err(error) => {
+                report.errors += 1;
+                if let Some(handle) = app_handle {
+                    logger::emit_log(
+                        handle,
+                        "warn",
+                        &format!(
+                            "Failed to write metadata for {}: {}",
+                            candidate.metadata_filename, error
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+async fn resolve_manual_modrinth_metadata_for_instance(
+    instance: &instances::Instance,
+    app_handle: &AppHandle,
+) -> ManualMetadataResolveReport {
+    let mut aggregate = ManualMetadataResolveReport::default();
+
+    for target in ["mod", "resourcepack", "shader"] {
+        match resolve_manual_modrinth_metadata_internal(instance, target, None, None, Some(app_handle)).await {
+            Ok(report) => aggregate.merge(&report),
+            Err(error) => logger::emit_log(
+                app_handle,
+                "warn",
+                &format!("Failed to resolve {} metadata: {}", target, error),
+            ),
+        }
+    }
+
+    for world in files::list_worlds(instance) {
+        match resolve_manual_modrinth_metadata_internal(
+            instance,
+            "datapack",
+            Some(&world.folder_name),
+            None,
+            Some(app_handle),
+        )
+        .await
+        {
+            Ok(report) => aggregate.merge(&report),
+            Err(error) => logger::emit_log(
+                app_handle,
+                "warn",
+                &format!(
+                    "Failed to resolve datapack metadata for world {}: {}",
+                    world.folder_name, error
+                ),
+            ),
+        }
+    }
+
+    aggregate
+}
+
+#[tauri::command]
+async fn resolve_manual_modrinth_metadata(
+    app_handle: AppHandle,
+    instance_id: String,
+    file_type: String,
+    world_name: Option<String>,
+    filenames: Option<Vec<String>>,
+) -> Result<ManualMetadataResolveReport, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let normalized = normalize_metadata_file_type(&file_type)
+        .ok_or_else(|| format!("Invalid file type '{}'", file_type))?;
+    let filename_filter = filenames
+        .filter(|items| !items.is_empty())
+        .map(|items| items.into_iter().collect::<HashSet<String>>());
+
+    resolve_manual_modrinth_metadata_internal(
+        &instance,
+        normalized,
+        world_name.as_deref(),
+        filename_filter.as_ref(),
+        Some(&app_handle),
+    )
+    .await
+}
+
 #[tauri::command]
 async fn install_modrinth_file(
     app_handle: AppHandle,
@@ -3961,6 +5349,8 @@ pub fn run() {
             export_instance_zip,
             import_instance_zip,
             peek_instance_zip,
+            import_instance_source,
+            peek_instance_source,
             // Download commands
             download_version,
             is_version_downloaded,
@@ -4019,6 +5409,7 @@ pub fn run() {
             get_modpack_total_size,
             install_modpack,
             install_modrinth_file,
+            resolve_manual_modrinth_metadata,
             save_remote_file,
             // File management commands
             get_instance_mods,

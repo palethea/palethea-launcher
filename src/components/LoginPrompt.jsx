@@ -1,15 +1,43 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
+import { X } from 'lucide-react';
 import './LoginPrompt.css';
 
-function LoginPrompt({ onLogin, onClose, onOfflineMode }) {
+const XBOX_SETUP_URL = 'https://www.xbox.com/en-US/live';
+
+function LoginPrompt({ onLogin, onClose, onOfflineMode, canCancel = false }) {
   const [deviceCode, setDeviceCode] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [polling, setPolling] = useState(false);
   const [offlineUsername, setOfflineUsername] = useState('');
   const [showOfflineInput, setShowOfflineInput] = useState(false);
+
+  const normalizeError = (rawError) => {
+    const text = String(rawError || 'Unknown error');
+
+    if (
+      text.includes('XErr":2148916233')
+      || text.includes('XErr\\":2148916233')
+      || text.includes('start.ui.xboxlive.com/CreateAccount')
+      || (text.includes('XSTS authorization failed') && text.includes('401'))
+    ) {
+      return {
+        message: 'This Microsoft account needs an Xbox profile before it can be used for Minecraft login. Sign in on Xbox and complete the profile/gamertag setup, then try again.',
+        actionLabel: 'Open Xbox account setup',
+        actionUrl: XBOX_SETUP_URL,
+      };
+    }
+
+    if (text.includes('error decoding response body')) {
+      return {
+        message: 'Login failed because the response from Microsoft/Xbox could not be read. Please try again.',
+      };
+    }
+
+    return { message: text };
+  };
 
   const startMicrosoftLogin = async () => {
     setLoading(true);
@@ -43,11 +71,11 @@ function LoginPrompt({ onLogin, onClose, onOfflineMode }) {
           if (errStr.includes('authorization_pending') || errStr.includes('pending')) {
             setTimeout(pollForToken, 3000);
           } else if (errStr.includes('expired')) {
-            setError('Authentication expired. Please try again.');
+            setError({ message: 'Authentication expired. Please try again.' });
             setPolling(false);
             setDeviceCode(null);
           } else {
-            setError(errStr);
+            setError(normalizeError(errStr));
             setPolling(false);
             setDeviceCode(null);
           }
@@ -56,7 +84,7 @@ function LoginPrompt({ onLogin, onClose, onOfflineMode }) {
       
       pollForToken();
     } catch (err) {
-      setError(err.toString());
+      setError(normalizeError(err));
     }
     setLoading(false);
   };
@@ -88,7 +116,7 @@ function LoginPrompt({ onLogin, onClose, onOfflineMode }) {
       await invoke('set_offline_user', { username: offlineUsername.trim() });
       onOfflineMode(offlineUsername.trim());
     } catch (err) {
-      setError(err.toString());
+      setError({ message: String(err) });
     }
   };
 
@@ -96,6 +124,17 @@ function LoginPrompt({ onLogin, onClose, onOfflineMode }) {
     <div className="login-prompt-overlay">
       <div className="login-prompt">
         <div className="login-header">
+          {canCancel && (
+            <button
+              className="login-prompt-close"
+              type="button"
+              onClick={onClose}
+              title="Close login prompt"
+              aria-label="Close login prompt"
+            >
+              <X size={16} />
+            </button>
+          )}
           {/* <img src="/logoPL.png" className="login-logo" alt="Palethea" /> */}
           <h2>Welcome to Palethea</h2>
           <p className="login-subtitle">
@@ -105,7 +144,16 @@ function LoginPrompt({ onLogin, onClose, onOfflineMode }) {
 
         {error && (
           <div className="login-error">
-            {error}
+            <div className="login-error-message">{error.message}</div>
+            {error.actionUrl && (
+              <button
+                className="login-error-action"
+                type="button"
+                onClick={() => open(error.actionUrl)}
+              >
+                {error.actionLabel || 'Open help'}
+              </button>
+            )}
           </div>
         )}
 
@@ -129,6 +177,15 @@ function LoginPrompt({ onLogin, onClose, onOfflineMode }) {
             >
               Play Offline
             </button>
+            {canCancel && (
+              <button
+                className="btn btn-secondary offline-btn"
+                onClick={onClose}
+                disabled={loading}
+              >
+                Cancel
+              </button>
+            )}
             <p className="offline-note">
               Offline mode allows playing without an account, but you won't be able to join online servers.
             </p>

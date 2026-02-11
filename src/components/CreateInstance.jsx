@@ -268,35 +268,39 @@ function CreateInstance({
     setModpackVersionsLoading(false);
   }, []);
 
+  const applyImportSourceSelection = useCallback(async (selectedPath, fallbackName = 'Imported Instance') => {
+    setImportZipPath(selectedPath);
+    if (!name) {
+      setName(fallbackName);
+    }
+
+    try {
+      const metadata = await invoke('peek_instance_source', { sourcePath: selectedPath });
+      setImportInfo(metadata);
+    } catch (peekError) {
+      console.error('Failed to peek import source metadata:', peekError);
+      setImportInfo(null);
+    }
+  }, [name]);
+
   const handleSelectZipFile = useCallback(async () => {
     try {
       const selected = await open({
         multiple: false,
         filters: [{
-          name: 'Palethea Instance',
+          name: 'Instance Archive (.zip)',
           extensions: ['zip']
         }]
       });
 
       if (selected) {
-        setImportZipPath(selected);
-        // Extract name from filename for default name suggestion
         const filename = selected.split(/[/\\]/).pop()?.replace('.zip', '') || 'Imported Instance';
-        if (!name) {
-          setName(filename);
-        }
-
-        try {
-          const metadata = await invoke('peek_instance_zip', { zipPath: selected });
-          setImportInfo(metadata);
-        } catch (peekError) {
-          console.error('Failed to peek zip metadata:', peekError);
-        }
+        await applyImportSourceSelection(selected, filename);
       }
     } catch (error) {
       console.error('Failed to select file:', error);
     }
-  }, [name]);
+  }, [applyImportSourceSelection]);
 
   const handleDecodeShareCode = useCallback(async (code) => {
     setShareCode(code);
@@ -354,7 +358,7 @@ function CreateInstance({
       if (importZipPath) {
         // Pass import data
         onCreate(name.trim() || null, 'import', 'import', {
-          zipPath: importZipPath
+          sourcePath: importZipPath
         }, selectedJava);
       }
     } else if (creationMode === 'share-code') {
@@ -404,10 +408,11 @@ function CreateInstance({
       setIsJavaChecking(false);
     };
 
-    if (step === 3) {
+    const javaStep = creationMode === 'import' ? 2 : 3;
+    if (step === javaStep) {
       checkJava();
     }
-  }, [step, selectedJava]);
+  }, [step, selectedJava, creationMode]);
 
   useEffect(() => {
     // When selected version changes, update recommended java
@@ -441,17 +446,17 @@ function CreateInstance({
       />
       <div className={isPage ? 'create-header' : 'modal-header'}>
         <h2>{creationMode === 'import'
-          ? (step === 0 ? 'Instance Identity' : step === 1 ? 'Select File' : 'Java Environment')
+          ? (step === 0 ? 'Instance Identity' : step === 1 ? 'Select Source' : 'Java Environment')
           : (step === 0 ? 'Instance Identity' : step === 1 ? 'Minecraft Version' : step === 2 ? 'Modifications' : 'Java Environment')
         }</h2>
         {!isPage && <button className="close-btn" onClick={onClose}>×</button>}
       </div>
 
-      <div className="create-steps">
+        <div className="create-steps">
         <div className={`create-step ${step === 0 ? 'active' : ''}`}>Setup</div>
         {creationMode === 'import' ? (
           <>
-            <div className={`create-step ${step === 1 ? 'active' : ''}`}>Select File</div>
+            <div className={`create-step ${step === 1 ? 'active' : ''}`}>Select Source</div>
             <div className={`create-step ${step === 2 ? 'active' : ''}`}>Java</div>
           </>
         ) : (
@@ -524,9 +529,9 @@ function CreateInstance({
                 >
                   <div className="mode-icon">📁</div>
                   <div className="mode-details">
-                    <div className="mode-title">Import from .zip</div>
+                    <div className="mode-title">Import Instance</div>
                     <div className="mode-description">
-                      Import an instance shared by a friend. Simply select the .zip file they shared with you.
+                      Import from a Palethea export .zip or PrismLauncher instance .zip.
                     </div>
                   </div>
                   <div className="mode-check">
@@ -575,12 +580,14 @@ function CreateInstance({
               {importZipPath ? (
                 <>
                   <div className="import-filename">{importZipPath.split(/[/\\]/).pop()}</div>
-                  <div className="import-hint">Click to select a different file</div>
+                  <div className="import-hint">
+                    Click to select a different .zip file
+                  </div>
                 </>
               ) : (
                 <>
-                  <div className="import-title">Select Instance File</div>
-                  <div className="import-hint">Click here to browse for a .zip file shared with you</div>
+                  <div className="import-title">Select Instance .zip</div>
+                  <div className="import-hint">Click here to browse for a Palethea export or PrismLauncher .zip</div>
                 </>
               )}
             </div>

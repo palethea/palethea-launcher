@@ -60,6 +60,39 @@ const devError = (...args) => {
   }
 };
 
+const SUPPORTED_LOADER_KEYS = new Set(['fabric', 'forge', 'neoforge']);
+
+const compareLooseVersions = (left, right) => {
+  const leftParts = String(left || '').match(/\d+/g)?.map(Number) || [];
+  const rightParts = String(right || '').match(/\d+/g)?.map(Number) || [];
+
+  if (leftParts.length > 0 && rightParts.length > 0) {
+    const maxLength = Math.max(leftParts.length, rightParts.length);
+    for (let i = 0; i < maxLength; i += 1) {
+      const leftVal = leftParts[i] ?? 0;
+      const rightVal = rightParts[i] ?? 0;
+      if (leftVal > rightVal) return 1;
+      if (leftVal < rightVal) return -1;
+    }
+    return 0;
+  }
+
+  return String(left || '').localeCompare(String(right || ''), undefined, {
+    numeric: true,
+    sensitivity: 'base'
+  });
+};
+
+const pickPreferredLoaderVersion = (loaderKey, versions) => {
+  if (!Array.isArray(versions) || versions.length === 0) return null;
+  if (loaderKey === 'forge') {
+    return versions.find((v) => v?.version_type === 'latest')
+      || versions.find((v) => v?.version_type === 'recommended')
+      || versions[0];
+  }
+  return versions[0];
+};
+
 function FpsCounter() {
   const [fps, setFps] = useState(0);
   const framesRef = useRef(0);
@@ -254,13 +287,33 @@ function App() {
     });
   }, []);
 
-  const promptLaunchUpdateChoice = useCallback((instance, updates) => {
+  const promptLaunchUpdateChoice = useCallback((instance, modUpdates, loaderUpdate = null) => {
+    const normalizedMods = Array.isArray(modUpdates) ? modUpdates : [];
+    const entries = [
+      ...(loaderUpdate ? [{
+        id: `loader-${loaderUpdate.loaderKey}`,
+        type: 'loader',
+        name: `${loaderUpdate.loaderLabel} Loader`,
+        currentLabel: loaderUpdate.currentVersion,
+        latestLabel: loaderUpdate.latestVersion
+      }] : []),
+      ...normalizedMods.map((item, index) => ({
+        id: `mod-${item.project_id || item.installed_filename || index}`,
+        type: 'mod',
+        name: item.installed_name || item.project_id || `Mod ${index + 1}`,
+        currentLabel: item.installed_version_name || item.installed_version_id || 'Installed',
+        latestLabel: item.latest_version?.version_number || item.latest_version?.name || 'Latest'
+      }))
+    ];
+
     return new Promise((resolve) => {
       launchUpdatePromptResolveRef.current = resolve;
       setLaunchUpdatePrompt({
         instanceId: instance.id,
         instanceName: instance.name,
-        updates: Array.isArray(updates) ? updates : [],
+        modUpdates: normalizedMods,
+        loaderUpdate,
+        entries,
         disableFutureChecks: false
       });
     });
@@ -879,16 +932,16 @@ function App() {
       };
 
       // ----------
-      // Import from .zip handler
-      // Description: Imports an instance from a shared .zip file
+      // Import from source handler
+      // Description: Imports from Palethea .zip exports or Prism instance folders
       // ----------
       if (modLoader === 'import') {
-        const { zipPath } = modLoaderVersion;
+        const { sourcePath } = modLoaderVersion;
         setLoadingStatus('Importing instance...');
         setLoadingProgress(20);
 
-        const importedInstance = await invoke('import_instance_zip', {
-          zipPath,
+        const importedInstance = await invoke('import_instance_source', {
+          sourcePath,
           customName: name || null
         });
 
@@ -1232,6 +1285,43 @@ function App() {
     );
   }, [instances]);
 
+  const findLoaderUpdateForLaunch = useCallback(async (instance) => {
+    if (!instance || !instance.version_id) return null;
+
+    const loaderKey = String(instance.mod_loader || '').toLowerCase();
+    if (!SUPPORTED_LOADER_KEYS.has(loaderKey)) return null;
+
+    const currentVersion = String(instance.mod_loader_version || '').trim();
+    if (!currentVersion) return null;
+
+    let loaderVersions = [];
+    try {
+      const rows = await invoke('get_loader_versions', {
+        loader: loaderKey,
+        gameVersion: instance.version_id
+      });
+      loaderVersions = Array.isArray(rows) ? rows : [];
+    } catch (error) {
+      console.error(`Failed to load ${loaderKey} versions:`, error);
+      return null;
+    }
+
+    if (loaderVersions.length === 0) return null;
+
+    const preferred = pickPreferredLoaderVersion(loaderKey, loaderVersions);
+    const latestVersion = preferred?.version ? String(preferred.version).trim() : '';
+    if (!latestVersion || latestVersion === currentVersion) return null;
+
+    if (compareLooseVersions(latestVersion, currentVersion) <= 0) return null;
+
+    return {
+      loaderKey,
+      loaderLabel: instance.mod_loader || loaderKey,
+      currentVersion,
+      latestVersion
+    };
+  }, []);
+
   const applyPendingModUpdatesForLaunch = useCallback(async (instanceId, updates) => {
     if (!Array.isArray(updates) || updates.length === 0) {
       return { updatedCount: 0, failedCount: 0 };
@@ -1331,6 +1421,59 @@ function App() {
     return { updatedCount, failedCount };
   }, [handleQueueDownload, handleUpdateDownloadStatus, handleDequeueDownload]);
 
+  const applyPendingLoaderUpdateForLaunch = useCallback(async (instanceId, loaderUpdate) => {
+    if (!loaderUpdate?.loaderKey || !loaderUpdate.latestVersion) {
+      return { updated: false, failed: false };
+    }
+
+    const loaderLabel = loaderUpdate.loaderLabel || loaderUpdate.loaderKey;
+    const downloadId = `launch-loader-update:${instanceId}:${loaderUpdate.loaderKey}`;
+
+    setLaunchProgressByInstance((prev) => ({
+      ...prev,
+      [instanceId]: {
+        status: `Updating ${loaderLabel} loader...`,
+        progress: 23,
+        bytes: { current: 0, total: 0 },
+        count: { current: 0, total: 0 },
+        telemetry: {
+          stageLabel: `Updating ${loaderLabel}`,
+          currentItem: loaderUpdate.latestVersion,
+          speedBps: 0
+        }
+      }
+    }));
+
+    handleQueueDownload({
+      id: downloadId,
+      name: `${loaderLabel} ${loaderUpdate.latestVersion}`,
+      icon: null,
+      status: 'Queued'
+    });
+    handleUpdateDownloadStatus(downloadId, 'Downloading loader...');
+
+    try {
+      if (loaderUpdate.loaderKey === 'fabric') {
+        await invoke('install_fabric', { instanceId, loaderVersion: loaderUpdate.latestVersion });
+      } else if (loaderUpdate.loaderKey === 'forge') {
+        await invoke('install_forge', { instanceId, loaderVersion: loaderUpdate.latestVersion });
+      } else if (loaderUpdate.loaderKey === 'neoforge') {
+        await invoke('install_neoforge', { instanceId, loaderVersion: loaderUpdate.latestVersion });
+      } else {
+        throw new Error(`Unsupported loader: ${loaderUpdate.loaderKey}`);
+      }
+
+      handleUpdateDownloadStatus(downloadId, { status: 'Updated', progress: 100, trackBackendProgress: false });
+      setTimeout(() => handleDequeueDownload(downloadId), 700);
+      return { updated: true, failed: false };
+    } catch (error) {
+      console.error(`Failed to update ${loaderLabel} before launch:`, error);
+      handleUpdateDownloadStatus(downloadId, { status: 'Failed', trackBackendProgress: false });
+      setTimeout(() => handleDequeueDownload(downloadId, false), 1100);
+      return { updated: false, failed: true };
+    }
+  }, [handleQueueDownload, handleUpdateDownloadStatus, handleDequeueDownload]);
+
   const handleLaunchInstance = useCallback(async (instanceId) => {
     if (runningInstances[instanceId]) {
       showNotification("Instance is already running", "info");
@@ -1373,35 +1516,44 @@ function App() {
     try {
       const targetInstance = instances.find((inst) => inst.id === instanceId)
         || await invoke('get_instance_details', { instanceId });
-      const shouldCheckForModUpdates = targetInstance?.check_mod_updates_on_launch !== false;
+      const shouldCheckForLaunchUpdates = targetInstance?.check_mod_updates_on_launch !== false;
 
-      if (shouldCheckForModUpdates) {
+      if (shouldCheckForLaunchUpdates) {
         setLaunchProgressByInstance((prev) => ({
           ...prev,
           [instanceId]: {
-            status: 'Checking mod updates...',
+            status: 'Checking updates...',
             progress: 7,
             bytes: { current: 0, total: 0 },
             count: { current: 0, total: 0 },
             telemetry: {
-              stageLabel: 'Checking mod updates',
+              stageLabel: 'Checking updates',
               currentItem: null,
               speedBps: 0
             }
           }
         }));
 
-        let availableUpdates = [];
+        let availableModUpdates = [];
+        let availableLoaderUpdate = null;
         try {
           const updateRows = await invoke('get_instance_mod_updates', { instanceId });
-          availableUpdates = Array.isArray(updateRows) ? updateRows : [];
+          availableModUpdates = Array.isArray(updateRows) ? updateRows : [];
         } catch (scanError) {
           console.error('Failed to scan mod updates before launch:', scanError);
           showNotification('Could not check for mod updates before launch.', 'warning');
         }
 
-        if (availableUpdates.length > 0) {
-          const choice = await promptLaunchUpdateChoice(targetInstance, availableUpdates);
+        try {
+          availableLoaderUpdate = await findLoaderUpdateForLaunch(targetInstance);
+        } catch (loaderScanError) {
+          console.error('Failed to scan loader updates before launch:', loaderScanError);
+        }
+
+        const totalLaunchUpdates = availableModUpdates.length + (availableLoaderUpdate ? 1 : 0);
+
+        if (totalLaunchUpdates > 0) {
+          const choice = await promptLaunchUpdateChoice(targetInstance, availableModUpdates, availableLoaderUpdate);
 
           if (choice?.disableFutureChecks) {
             try {
@@ -1413,18 +1565,40 @@ function App() {
           }
 
           if (choice?.action === 'update') {
-            const { updatedCount, failedCount } = await applyPendingModUpdatesForLaunch(instanceId, availableUpdates);
-            if (updatedCount > 0) {
-              showNotification(`Updated ${updatedCount} mod${updatedCount > 1 ? 's' : ''} before launch.`, 'success');
+            const { updatedCount, failedCount } = await applyPendingModUpdatesForLaunch(instanceId, availableModUpdates);
+            const loaderResult = await applyPendingLoaderUpdateForLaunch(instanceId, availableLoaderUpdate);
+            if (loaderResult.updated && availableLoaderUpdate?.latestVersion) {
+              setInstances((prev) =>
+                prev.map((inst) => (inst.id === instanceId
+                  ? { ...inst, mod_loader_version: availableLoaderUpdate.latestVersion }
+                  : inst))
+              );
             }
-            if (failedCount > 0) {
-              showNotification(`${failedCount} mod update${failedCount > 1 ? 's' : ''} failed. Launching anyway.`, 'warning');
+            if (updatedCount > 0 || loaderResult.updated) {
+              const updateParts = [];
+              if (updatedCount > 0) {
+                updateParts.push(`${updatedCount} mod${updatedCount > 1 ? 's' : ''}`);
+              }
+              if (loaderResult.updated) {
+                updateParts.push('1 loader');
+              }
+              showNotification(`Updated ${updateParts.join(' and ')} before launch.`, 'success');
+            }
+            if (failedCount > 0 || loaderResult.failed) {
+              const failureParts = [];
+              if (failedCount > 0) {
+                failureParts.push(`${failedCount} mod update${failedCount > 1 ? 's' : ''}`);
+              }
+              if (loaderResult.failed) {
+                failureParts.push('loader update');
+              }
+              showNotification(`${failureParts.join(' and ')} failed. Launching anyway.`, 'warning');
             }
           } else if (choice?.action === 'cancel') {
             showNotification('Launch canceled.', 'info');
             return;
           } else {
-            showNotification(`Skipped ${availableUpdates.length} mod update${availableUpdates.length > 1 ? 's' : ''}.`, 'info');
+            showNotification(`Skipped ${totalLaunchUpdates} update${totalLaunchUpdates > 1 ? 's' : ''}.`, 'info');
             setLaunchProgressByInstance((prev) => ({
               ...prev,
               [instanceId]: {
@@ -1441,6 +1615,21 @@ function App() {
             }));
           }
         }
+
+        setLaunchProgressByInstance((prev) => ({
+          ...prev,
+          [instanceId]: {
+            status: 'Preparing launch...',
+            progress: 9,
+            bytes: { current: 0, total: 0 },
+            count: { current: 0, total: 0 },
+            telemetry: {
+              stageLabel: 'Preparing launch',
+              currentItem: null,
+              speedBps: 0
+            }
+          }
+        }));
       }
 
       // Clear old logs first so the console doesn't show them
@@ -1503,7 +1692,9 @@ function App() {
     instances,
     promptLaunchUpdateChoice,
     persistLaunchUpdateCheckPreference,
-    applyPendingModUpdatesForLaunch
+    applyPendingModUpdatesForLaunch,
+    applyPendingLoaderUpdateForLaunch,
+    findLoaderUpdateForLaunch
   ]);
 
   handleLaunchInstanceRef.current = handleLaunchInstance;
@@ -1879,6 +2070,9 @@ function App() {
             onStop={handleStopInstance}
             onCreate={() => setActiveTab('create')}
             onContextMenu={handleInstanceContextMenu}
+            onInstancesRefresh={loadInstances}
+            onShowNotification={showNotification}
+            skinCache={skinCache}
             isLoading={isLoading}
             launchingInstanceIds={launchingInstanceIds}
             launchingInstanceId={launchingInstanceId}
@@ -1981,6 +2175,80 @@ function App() {
     }
   };
 
+  const renderLaunchUpdatePromptModal = () => {
+    if (!launchUpdatePrompt) return null;
+
+    const entries = launchUpdatePrompt.entries || [];
+    const totalCount = entries.length;
+    const modCount = launchUpdatePrompt.modUpdates?.length || 0;
+    const hasLoaderUpdate = Boolean(launchUpdatePrompt.loaderUpdate);
+
+    return (
+      <ConfirmModal
+        title={`Updates found for ${launchUpdatePrompt.instanceName}`}
+        message={
+          <div className="launch-update-check-message">
+            <p className="launch-update-check-intro">
+              {modCount > 0 && hasLoaderUpdate
+                ? `${modCount} mod update${modCount > 1 ? 's' : ''} and 1 loader update are available before launch.`
+                : hasLoaderUpdate
+                  ? '1 loader update is available before launch.'
+                  : `${modCount} mod update${modCount > 1 ? 's are' : ' is'} available before launch.`}
+            </p>
+            <div className="launch-update-check-list">
+              {entries.slice(0, 8).map((item) => (
+                <div key={`${launchUpdatePrompt.instanceId}-${item.id}`} className="launch-update-check-item">
+                  <span className="launch-update-check-name">
+                    {item.name}
+                    {item.type === 'loader' && <span className="launch-update-type-chip">Loader</span>}
+                  </span>
+                  <span className="launch-update-version-flow">
+                    <span className="launch-update-version-pill old">{item.currentLabel}</span>
+                    <span className="launch-update-version-arrow">→</span>
+                    <span className="launch-update-version-pill new">{item.latestLabel}</span>
+                  </span>
+                </div>
+              ))}
+              {entries.length > 8 && (
+                <div className="launch-update-check-more">
+                  +{entries.length - 8} more update{entries.length - 8 > 1 ? 's' : ''}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              className={`launch-update-check-toggle-btn ${launchUpdatePrompt.disableFutureChecks ? 'enabled' : ''}`}
+              onClick={() =>
+                setLaunchUpdatePrompt((prev) =>
+                  prev ? { ...prev, disableFutureChecks: !prev.disableFutureChecks } : prev
+                )
+              }
+            >
+              <span className={`launch-update-check-switch ${launchUpdatePrompt.disableFutureChecks ? 'enabled' : ''}`} />
+              <span className="launch-update-check-toggle-copy">
+                <span className="launch-update-check-toggle-title">
+                  Disable future launch update checks
+                </span>
+                <span className="launch-update-check-toggle-sub">
+                  Skip this prompt next time for this instance.
+                </span>
+              </span>
+            </button>
+          </div>
+        }
+        confirmText={`Update & Launch (${totalCount})`}
+        cancelText="Cancel Launch"
+        extraConfirmText="Ignore & Launch"
+        variant="primary"
+        actionLayout="flat"
+        modalClassName="launch-update-confirm-modal"
+        onConfirm={() => resolveLaunchUpdatePrompt('update')}
+        onExtraConfirm={() => resolveLaunchUpdatePrompt('ignore')}
+        onCancel={() => resolveLaunchUpdatePrompt('cancel')}
+      />
+    );
+  };
+
   if (popoutMode === 'editor' && popoutInstanceId) {
     return (
       <div className={`app popout-window bg-${launcherSettings?.background_style || 'gradient'}`} style={{ height: '100vh', width: '100vw' }}>
@@ -2037,67 +2305,7 @@ function App() {
           </div>
         )}
 
-        {launchUpdatePrompt && (
-          <ConfirmModal
-            title={`Updates found for ${launchUpdatePrompt.instanceName}`}
-            message={
-              <div className="launch-update-check-message">
-                <p className="launch-update-check-intro">
-                  {launchUpdatePrompt.updates.length} mod update{launchUpdatePrompt.updates.length > 1 ? 's are' : ' is'} available before launch.
-                </p>
-                <div className="launch-update-check-list">
-                  {launchUpdatePrompt.updates.slice(0, 8).map((item) => {
-                    const latestLabel = item.latest_version?.version_number || item.latest_version?.name || 'Latest';
-                    const currentLabel = item.installed_version_name || item.installed_version_id || 'Installed';
-                    return (
-                      <div key={`${launchUpdatePrompt.instanceId}-${item.project_id}`} className="launch-update-check-item">
-                        <span className="launch-update-check-name">{item.installed_name || item.project_id}</span>
-                        <span className="launch-update-version-flow">
-                          <span className="launch-update-version-pill old">{currentLabel}</span>
-                          <span className="launch-update-version-arrow">→</span>
-                          <span className="launch-update-version-pill new">{latestLabel}</span>
-                        </span>
-                      </div>
-                    );
-                  })}
-                  {launchUpdatePrompt.updates.length > 8 && (
-                    <div className="launch-update-check-more">
-                      +{launchUpdatePrompt.updates.length - 8} more update{launchUpdatePrompt.updates.length - 8 > 1 ? 's' : ''}
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className={`launch-update-check-toggle-btn ${launchUpdatePrompt.disableFutureChecks ? 'enabled' : ''}`}
-                  onClick={() =>
-                    setLaunchUpdatePrompt((prev) =>
-                      prev ? { ...prev, disableFutureChecks: !prev.disableFutureChecks } : prev
-                    )
-                  }
-                >
-                  <span className={`launch-update-check-switch ${launchUpdatePrompt.disableFutureChecks ? 'enabled' : ''}`} />
-                  <span className="launch-update-check-toggle-copy">
-                    <span className="launch-update-check-toggle-title">
-                      Disable future launch update checks
-                    </span>
-                    <span className="launch-update-check-toggle-sub">
-                      Skip this prompt next time for this instance.
-                    </span>
-                  </span>
-                </button>
-              </div>
-            }
-            confirmText={`Update & Launch (${launchUpdatePrompt.updates.length})`}
-            cancelText="Cancel Launch"
-            extraConfirmText="Ignore & Launch"
-            variant="primary"
-            actionLayout="flat"
-            modalClassName="launch-update-confirm-modal"
-            onConfirm={() => resolveLaunchUpdatePrompt('update')}
-            onExtraConfirm={() => resolveLaunchUpdatePrompt('ignore')}
-            onCancel={() => resolveLaunchUpdatePrompt('cancel')}
-          />
-        )}
+        {renderLaunchUpdatePromptModal()}
 
         {isInitializing && (
           <div className="app-initializing">
@@ -2245,70 +2453,11 @@ function App() {
             handleSetUsername(username);
             setShowLoginPrompt(false);
           }}
+          canCancel={accounts.length > 0}
         />
       )}
 
-      {launchUpdatePrompt && (
-        <ConfirmModal
-          title={`Updates found for ${launchUpdatePrompt.instanceName}`}
-          message={
-            <div className="launch-update-check-message">
-              <p className="launch-update-check-intro">
-                {launchUpdatePrompt.updates.length} mod update{launchUpdatePrompt.updates.length > 1 ? 's are' : ' is'} available before launch.
-              </p>
-              <div className="launch-update-check-list">
-                {launchUpdatePrompt.updates.slice(0, 8).map((item) => {
-                  const latestLabel = item.latest_version?.version_number || item.latest_version?.name || 'Latest';
-                  const currentLabel = item.installed_version_name || item.installed_version_id || 'Installed';
-                  return (
-                    <div key={`${launchUpdatePrompt.instanceId}-${item.project_id}`} className="launch-update-check-item">
-                      <span className="launch-update-check-name">{item.installed_name || item.project_id}</span>
-                      <span className="launch-update-version-flow">
-                        <span className="launch-update-version-pill old">{currentLabel}</span>
-                        <span className="launch-update-version-arrow">→</span>
-                        <span className="launch-update-version-pill new">{latestLabel}</span>
-                      </span>
-                    </div>
-                  );
-                })}
-                {launchUpdatePrompt.updates.length > 8 && (
-                  <div className="launch-update-check-more">
-                    +{launchUpdatePrompt.updates.length - 8} more update{launchUpdatePrompt.updates.length - 8 > 1 ? 's' : ''}
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className={`launch-update-check-toggle-btn ${launchUpdatePrompt.disableFutureChecks ? 'enabled' : ''}`}
-                onClick={() =>
-                  setLaunchUpdatePrompt((prev) =>
-                    prev ? { ...prev, disableFutureChecks: !prev.disableFutureChecks } : prev
-                  )
-                }
-              >
-                <span className={`launch-update-check-switch ${launchUpdatePrompt.disableFutureChecks ? 'enabled' : ''}`} />
-                <span className="launch-update-check-toggle-copy">
-                  <span className="launch-update-check-toggle-title">
-                    Disable future launch update checks
-                  </span>
-                  <span className="launch-update-check-toggle-sub">
-                    Skip this prompt next time for this instance.
-                  </span>
-                </span>
-              </button>
-            </div>
-          }
-          confirmText={`Update & Launch (${launchUpdatePrompt.updates.length})`}
-          cancelText="Cancel Launch"
-          extraConfirmText="Ignore & Launch"
-          variant="primary"
-          actionLayout="flat"
-          modalClassName="launch-update-confirm-modal"
-          onConfirm={() => resolveLaunchUpdatePrompt('update')}
-          onExtraConfirm={() => resolveLaunchUpdatePrompt('ignore')}
-          onCancel={() => resolveLaunchUpdatePrompt('cancel')}
-        />
-      )}
+      {renderLaunchUpdatePromptModal()}
 
       {confirmModal && (
         <ConfirmModal

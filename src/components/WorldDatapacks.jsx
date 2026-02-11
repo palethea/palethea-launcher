@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Trash2, RefreshCcw, Plus, Upload, FolderOpen, Loader2, ListFilterPlus, ChevronDown, Check, X } from 'lucide-react';
+import { Trash2, RefreshCcw, Plus, Upload, FolderOpen, Loader2, ListFilterPlus, ChevronDown, Check, X, Wand2 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
@@ -53,6 +53,7 @@ function WorldDatapacks({
     const [deleteConfirm, setDeleteConfirm] = useState({ show: false, datapack: null });
     const [versionModal, setVersionModal] = useState({ show: false, project: null, updateItem: null });
     const [selectedItems, setSelectedItems] = useState([]); // Array of filenames
+    const [isResolvingManual, setIsResolvingManual] = useState(false);
 
     const installedSearchRef = useRef();
     const findSearchRef = useRef();
@@ -355,6 +356,33 @@ function WorldDatapacks({
         }
     };
 
+    const handleResolveManualMetadata = useCallback(async () => {
+        if (isResolvingManual) return;
+        setIsResolvingManual(true);
+        try {
+            const result = await invoke('resolve_manual_modrinth_metadata', {
+                instanceId: instance.id,
+                fileType: 'datapack',
+                worldName: world.folder_name
+            });
+            await loadInstalledDatapacks();
+            if (onShowNotification) {
+                if (result.updated > 0) {
+                    onShowNotification(`Matched ${result.updated}/${result.scanned} datapack file${result.updated === 1 ? '' : 's'} on Modrinth.`, 'success');
+                } else if (result.scanned > 0) {
+                    onShowNotification('No Modrinth matches found for these datapacks.', 'info');
+                } else {
+                    onShowNotification('No manual datapacks available to check.', 'info');
+                }
+            }
+        } catch (error) {
+            console.error('Failed to resolve datapacks on Modrinth:', error);
+            onShowNotification?.(`Failed to check Modrinth: ${error}`, 'error');
+        } finally {
+            setIsResolvingManual(false);
+        }
+    }, [instance.id, world.folder_name, loadInstalledDatapacks, onShowNotification, isResolvingManual]);
+
     const confirmDelete = useCallback(async () => {
         const dp = deleteConfirm.datapack;
         setDeleteConfirm({ show: false, datapack: null });
@@ -582,6 +610,15 @@ function WorldDatapacks({
                                     <div className="group-header">
                                         <h3 className="group-title">Manual</h3>
                                         <div className="group-header-line"></div>
+                                        <button
+                                            className={`resolve-modrinth-btn-inline ${isResolvingManual ? 'loading' : ''}`}
+                                            onClick={handleResolveManualMetadata}
+                                            disabled={isResolvingManual}
+                                            title="Check manual files on Modrinth and attach metadata"
+                                        >
+                                            {isResolvingManual ? <Loader2 size={12} className="spin" /> : <Wand2 size={12} />}
+                                            <span>Find on Modrinth</span>
+                                        </button>
                                     </div>
                                     <div className="installed-list">
                                         {filteredInstalledDatapacks

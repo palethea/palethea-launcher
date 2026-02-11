@@ -316,6 +316,19 @@ fn delete_meta_for_entry(parent_dir: &Path, filename: &str) {
     }
 }
 
+fn should_skip_pack_entry(path: &Path, filename: &str) -> bool {
+    if path.is_dir() && filename == "metadata" {
+        return true;
+    }
+
+    // Prism/packwiz index artifacts (e.g. ".index", ".index.zip") should never be shown as packs.
+    if filename.starts_with('.') {
+        return true;
+    }
+
+    false
+}
+
 /// List installed mods
 pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
     let mods_dir = get_mods_dir(instance);
@@ -438,7 +451,7 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                 .unwrap_or("")
                 .to_string();
 
-            if path.is_dir() && filename == "metadata" {
+            if should_skip_pack_entry(&path, &filename) {
                 continue;
             }
             
@@ -522,7 +535,7 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                 .unwrap_or("")
                 .to_string();
 
-            if path.is_dir() && filename == "metadata" {
+            if should_skip_pack_entry(&path, &filename) {
                 continue;
             }
             
@@ -798,7 +811,7 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
                 .unwrap_or("")
                 .to_string();
 
-            if path.is_dir() && filename == "metadata" {
+            if should_skip_pack_entry(&path, &filename) {
                 continue;
             }
             

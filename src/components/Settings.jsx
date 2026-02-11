@@ -158,10 +158,11 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
           setIsLoggingIn(false);
           onLogin(newUser);
         } catch (error) {
+          const errorMessage = String(error);
           // "authorization_pending" is expected while waiting
-          if (!error.includes('authorization_pending')) {
-            console.error('Login error:', error);
-            if (error.includes('expired') || error.includes('denied')) {
+          if (!errorMessage.includes('authorization_pending')) {
+            console.error('Login error:', errorMessage);
+            if (errorMessage.includes('expired') || errorMessage.includes('denied')) {
               clearInterval(pollInterval);
               setLoginCode(null);
               setIsLoggingIn(false);

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -6,8 +7,90 @@ use crate::minecraft::downloader::get_minecraft_dir;
 
 // Microsoft's public Xbox Live client ID (used by many third-party launchers)
 const MICROSOFT_CLIENT_ID: &str = "000000004C12AE6F";
+const AUTH_ACCEPT_ENCODING: &str = "identity";
 fn create_client() -> reqwest::Client {
     super::http_client()
+}
+
+fn parse_form_encoded_pairs(body: &str) -> std::collections::HashMap<String, String> {
+    let mut fields = std::collections::HashMap::new();
+    for pair in body.split('&') {
+        if let Some((raw_key, raw_value)) = pair.split_once('=') {
+            let key = urlencoding::decode(raw_key).unwrap_or_else(|_| raw_key.into()).to_string();
+            let value = urlencoding::decode(raw_value).unwrap_or_else(|_| raw_value.into()).to_string();
+            fields.insert(key, value);
+        }
+    }
+    fields
+}
+
+fn truncate_body(body: &str) -> String {
+    let compact = body.replace('\n', " ").replace('\r', " ");
+    if compact.len() > 280 {
+        format!("{}...", &compact[..280])
+    } else {
+        compact
+    }
+}
+
+fn parse_device_code_response(body: &str) -> Result<DeviceCodeResponse, String> {
+    if let Ok(parsed) = serde_json::from_str::<DeviceCodeResponse>(body) {
+        return Ok(parsed);
+    }
+
+    let fields = parse_form_encoded_pairs(body);
+    if fields.is_empty() {
+        return Err("response is neither JSON nor form-encoded".to_string());
+    }
+
+    Ok(DeviceCodeResponse {
+        device_code: fields.get("device_code").cloned().unwrap_or_default(),
+        user_code: fields.get("user_code").cloned().unwrap_or_default(),
+        verification_uri: fields
+            .get("verification_uri")
+            .or_else(|| fields.get("verification_url"))
+            .cloned()
+            .unwrap_or_default(),
+        _expires_in: fields.get("expires_in").and_then(|v| v.parse::<u32>().ok()),
+        interval: fields.get("interval").and_then(|v| v.parse::<u32>().ok()),
+        error: fields.get("error").cloned(),
+        error_description: fields.get("error_description").cloned(),
+    })
+}
+
+fn parse_token_response(body: &str) -> Result<TokenResponse, String> {
+    if let Ok(parsed) = serde_json::from_str::<TokenResponse>(body) {
+        return Ok(parsed);
+    }
+
+    let fields = parse_form_encoded_pairs(body);
+    if fields.is_empty() {
+        return Err("response is neither JSON nor form-encoded".to_string());
+    }
+
+    Ok(TokenResponse {
+        access_token: fields.get("access_token").cloned(),
+        refresh_token: fields.get("refresh_token").cloned(),
+        error: fields.get("error").cloned(),
+        _error_description: fields.get("error_description").cloned(),
+    })
+}
+
+fn parse_json_response<T: DeserializeOwned>(
+    status: reqwest::StatusCode,
+    body: &str,
+    context: &str,
+) -> Result<T, Box<dyn Error + Send + Sync>> {
+    serde_json::from_str::<T>(body).map_err(|e| {
+        format!(
+            "{} failed to parse JSON (status {}): {}. Body: {}",
+            context,
+            status,
+            e,
+            truncate_body(body)
+        )
+        .into()
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -103,6 +186,7 @@ pub async fn start_device_code_flow() -> Result<DeviceCodeInfo, Box<dyn Error + 
     
     let response = client
         .post("https://login.live.com/oauth20_connect.srf")
+        .header(reqwest::header::ACCEPT_ENCODING, AUTH_ACCEPT_ENCODING)
         .form(&[
             ("client_id", MICROSOFT_CLIENT_ID),
             ("scope", "service::user.auth.xboxlive.com::MBI_SSL"),
@@ -111,12 +195,19 @@ pub async fn start_device_code_flow() -> Result<DeviceCodeInfo, Box<dyn Error + 
         .send()
         .await?;
     
-    let text = response.text().await?;
-    let device_code: DeviceCodeResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("Failed to parse device code response: {} - Body: {}", e, text))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed reading device code response body (status {}): {}", status, e))?;
+    let device_code = parse_device_code_response(&text)
+        .map_err(|e| format!("Failed to parse device code response (status {}): {}. Body: {}", status, e, truncate_body(&text)))?;
     
     if let Some(error) = device_code.error {
         return Err(format!("{}: {}", error, device_code.error_description.unwrap_or_default()).into());
+    }
+    if device_code.device_code.is_empty() || device_code.user_code.is_empty() || device_code.verification_uri.is_empty() {
+        return Err(format!("Microsoft device code response missing required fields (status {}). Body: {}", status, truncate_body(&text)).into());
     }
     
     Ok(DeviceCodeInfo {
@@ -133,6 +224,7 @@ pub async fn poll_for_token(device_code: &str) -> Result<TokenResponse, Box<dyn 
     
     let response = client
         .post("https://login.live.com/oauth20_token.srf")
+        .header(reqwest::header::ACCEPT_ENCODING, AUTH_ACCEPT_ENCODING)
         .form(&[
             ("client_id", MICROSOFT_CLIENT_ID),
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
@@ -141,10 +233,22 @@ pub async fn poll_for_token(device_code: &str) -> Result<TokenResponse, Box<dyn 
         .send()
         .await?;
     
-    let token: TokenResponse = response.json().await?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed reading token response body (status {}): {}", status, e))?;
+    let token = parse_token_response(&text)
+        .map_err(|e| format!("Failed to parse token response (status {}): {}. Body: {}", status, e, truncate_body(&text)))?;
     
     if let Some(error) = &token.error {
         return Err(error.clone().into());
+    }
+    if !status.is_success() {
+        return Err(format!("Microsoft token request failed with status {}. Body: {}", status, truncate_body(&text)).into());
+    }
+    if token.access_token.is_none() {
+        return Err(format!("Microsoft token response missing access token (status {}). Body: {}", status, truncate_body(&text)).into());
     }
     
     Ok(token)
@@ -159,6 +263,7 @@ async fn authenticate_xbox(ms_token: &str) -> Result<(String, String), Box<dyn E
         .post("https://user.auth.xboxlive.com/user/authenticate")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
+        .header(reqwest::header::ACCEPT_ENCODING, AUTH_ACCEPT_ENCODING)
         .json(&serde_json::json!({
             "Properties": {
                 "AuthMethod": "RPS",
@@ -171,7 +276,15 @@ async fn authenticate_xbox(ms_token: &str) -> Result<(String, String), Box<dyn E
         .send()
         .await?;
     
-    let xbox_auth: XboxAuthResponse = xbox_response.json().await?;
+    let xbox_status = xbox_response.status();
+    let xbox_body = xbox_response
+        .text()
+        .await
+        .map_err(|e| format!("Failed reading Xbox auth response body (status {}): {}", xbox_status, e))?;
+    if !xbox_status.is_success() {
+        return Err(format!("Xbox authentication failed (status {}): {}", xbox_status, truncate_body(&xbox_body)).into());
+    }
+    let xbox_auth: XboxAuthResponse = parse_json_response(xbox_status, &xbox_body, "Xbox authentication")?;
     let user_hash = xbox_auth.display_claims.xui.first()
         .ok_or("No Xbox user info")?
         .uhs.clone();
@@ -180,6 +293,7 @@ async fn authenticate_xbox(ms_token: &str) -> Result<(String, String), Box<dyn E
     let xsts_response = client
         .post("https://xsts.auth.xboxlive.com/xsts/authorize")
         .header("Content-Type", "application/json")
+        .header(reqwest::header::ACCEPT_ENCODING, AUTH_ACCEPT_ENCODING)
         .json(&serde_json::json!({
             "Properties": {
                 "SandboxId": "RETAIL",
@@ -191,7 +305,15 @@ async fn authenticate_xbox(ms_token: &str) -> Result<(String, String), Box<dyn E
         .send()
         .await?;
     
-    let xsts_auth: XboxAuthResponse = xsts_response.json().await?;
+    let xsts_status = xsts_response.status();
+    let xsts_body = xsts_response
+        .text()
+        .await
+        .map_err(|e| format!("Failed reading XSTS response body (status {}): {}", xsts_status, e))?;
+    if !xsts_status.is_success() {
+        return Err(format!("XSTS authorization failed (status {}): {}", xsts_status, truncate_body(&xsts_body)).into());
+    }
+    let xsts_auth: XboxAuthResponse = parse_json_response(xsts_status, &xsts_body, "XSTS authorization")?;
     
     Ok((xsts_auth.token, user_hash))
 }
@@ -203,13 +325,22 @@ async fn authenticate_minecraft(xsts_token: &str, user_hash: &str) -> Result<Str
     let response = client
         .post("https://api.minecraftservices.com/authentication/login_with_xbox")
         .header("Content-Type", "application/json")
+        .header(reqwest::header::ACCEPT_ENCODING, AUTH_ACCEPT_ENCODING)
         .json(&serde_json::json!({
             "identityToken": format!("XBL3.0 x={};{}", user_hash, xsts_token)
         }))
         .send()
         .await?;
     
-    let mc_auth: MinecraftAuthResponse = response.json().await?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed reading Minecraft auth response body (status {}): {}", status, e))?;
+    if !status.is_success() {
+        return Err(format!("Minecraft authentication failed (status {}): {}", status, truncate_body(&body)).into());
+    }
+    let mc_auth: MinecraftAuthResponse = parse_json_response(status, &body, "Minecraft authentication")?;
     Ok(mc_auth.access_token)
 }
 
@@ -220,14 +351,23 @@ async fn get_minecraft_profile(mc_token: &str) -> Result<(String, String), Box<d
     let response = client
         .get("https://api.minecraftservices.com/minecraft/profile")
         .header("Authorization", format!("Bearer {}", mc_token))
+        .header(reqwest::header::ACCEPT_ENCODING, AUTH_ACCEPT_ENCODING)
         .send()
         .await?;
     
-    if !response.status().is_success() {
-        return Err("Account does not own Minecraft".into());
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed reading Minecraft profile response body (status {}): {}", status, e))?;
+    if !status.is_success() {
+        if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
+            return Err("Account does not own Minecraft".into());
+        }
+        return Err(format!("Failed to fetch Minecraft profile (status {}): {}", status, truncate_body(&body)).into());
     }
     
-    let profile: MinecraftProfileResponse = response.json().await?;
+    let profile: MinecraftProfileResponse = parse_json_response(status, &body, "Minecraft profile")?;
     Ok((profile.id, profile.name))
 }
 
@@ -256,6 +396,7 @@ pub async fn refresh_token(refresh_tok: &str) -> Result<TokenResponse, Box<dyn E
     
     let response = client
         .post("https://login.live.com/oauth20_token.srf")
+        .header(reqwest::header::ACCEPT_ENCODING, AUTH_ACCEPT_ENCODING)
         .form(&[
             ("client_id", MICROSOFT_CLIENT_ID),
             ("grant_type", "refresh_token"),
@@ -265,10 +406,22 @@ pub async fn refresh_token(refresh_tok: &str) -> Result<TokenResponse, Box<dyn E
         .send()
         .await?;
     
-    let token: TokenResponse = response.json().await?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed reading refresh token response body (status {}): {}", status, e))?;
+    let token = parse_token_response(&text)
+        .map_err(|e| format!("Failed to parse refresh token response (status {}): {}. Body: {}", status, e, truncate_body(&text)))?;
     
     if let Some(error) = &token.error {
         return Err(error.clone().into());
+    }
+    if !status.is_success() {
+        return Err(format!("Microsoft refresh token request failed with status {}. Body: {}", status, truncate_body(&text)).into());
+    }
+    if token.access_token.is_none() {
+        return Err(format!("Microsoft refresh response missing access token (status {}). Body: {}", status, truncate_body(&text)).into());
     }
     
     Ok(token)

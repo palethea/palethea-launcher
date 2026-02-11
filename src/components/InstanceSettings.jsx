@@ -479,11 +479,11 @@ function InstanceSettings({
                 <span className={`instance-setting-toggle ${checkModUpdatesOnLaunch ? 'enabled' : ''}`} />
                 <div className="instance-setting-toggle-copy">
                   <span className="instance-setting-toggle-title">
-                    Check mod updates before launch
+                    Check updates before launch
                   </span>
                   <span className="instance-setting-toggle-sub">
                     {checkModUpdatesOnLaunch
-                      ? 'Show launch prompt when updates are available'
+                      ? 'Show launch prompt when mod or loader updates are available'
                       : 'Skip pre-launch update check for this instance'}
                   </span>
                 </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Trash2, RefreshCcw, Plus, Upload, Loader2, ChevronDown, Check, ListFilterPlus, Settings2, X } from 'lucide-react';
+import { Trash2, RefreshCcw, Plus, Upload, Loader2, ChevronDown, Check, ListFilterPlus, Settings2, X, Wand2 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
@@ -94,6 +94,7 @@ function InstanceResources({
 
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updatesFound, setUpdatesFound] = useState({}); // { project_id: version_obj }
+  const [resolvingManualType, setResolvingManualType] = useState(null);
   const installedSearchRef = useRef();
   const findSearchRef = useRef();
 
@@ -522,6 +523,36 @@ function InstanceResources({
     }
   }, [instance.id, onShowNotification]);
 
+  const handleResolveManualMetadata = useCallback(async (type, filenames = null) => {
+    if (resolvingManualType) return;
+    setResolvingManualType(type);
+    try {
+      const result = await invoke('resolve_manual_modrinth_metadata', {
+        instanceId: instance.id,
+        fileType: type,
+        filenames
+      });
+      await loadResources();
+      if (onShowNotification) {
+        if (result.updated > 0) {
+          onShowNotification(
+            `Matched ${result.updated}/${result.scanned} ${type === 'resourcepack' ? 'pack' : 'shader'} file${result.updated === 1 ? '' : 's'} on Modrinth.`,
+            'success'
+          );
+        } else if (result.scanned > 0) {
+          onShowNotification('No Modrinth matches found for the selected files.', 'info');
+        } else {
+          onShowNotification('No manual files available to check.', 'info');
+        }
+      }
+    } catch (error) {
+      console.error('Failed to resolve metadata on Modrinth:', error);
+      onShowNotification?.(`Failed to check Modrinth: ${error}`, 'error');
+    } finally {
+      setResolvingManualType(null);
+    }
+  }, [instance.id, loadResources, onShowNotification, resolvingManualType]);
+
   const matchesAllSelectedCategories = useCallback((project) => {
     return matchesSelectedCategories(project, selectedCategories);
   }, [selectedCategories]);
@@ -786,6 +817,15 @@ function InstanceResources({
                   <div className="group-header">
                     <h3 className="group-title">Manual</h3>
                     <div className="group-header-line"></div>
+                    <button
+                      className={`resolve-modrinth-btn-inline ${resolvingManualType === 'resourcepack' ? 'loading' : ''}`}
+                      onClick={() => handleResolveManualMetadata('resourcepack')}
+                      disabled={resolvingManualType !== null}
+                      title="Check manual files on Modrinth and attach metadata"
+                    >
+                      {resolvingManualType === 'resourcepack' ? <Loader2 size={12} className="spin" /> : <Wand2 size={12} />}
+                      <span>Find on Modrinth</span>
+                    </button>
                   </div>
                   <div className="installed-list">
                     {filteredResourcePacks
@@ -1024,6 +1064,15 @@ function InstanceResources({
                   <div className="group-header">
                     <h3 className="group-title">Manual</h3>
                     <div className="group-header-line"></div>
+                    <button
+                      className={`resolve-modrinth-btn-inline ${resolvingManualType === 'shader' ? 'loading' : ''}`}
+                      onClick={() => handleResolveManualMetadata('shader')}
+                      disabled={resolvingManualType !== null}
+                      title="Check manual files on Modrinth and attach metadata"
+                    >
+                      {resolvingManualType === 'shader' ? <Loader2 size={12} className="spin" /> : <Wand2 size={12} />}
+                      <span>Find on Modrinth</span>
+                    </button>
                   </div>
                   <div className="installed-list">
                     {filteredShaderPacks

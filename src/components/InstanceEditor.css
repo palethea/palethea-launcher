@@ -3196,7 +3196,8 @@
 }
 
 .check-updates-btn-inline,
-.update-all-btn-inline {
+.update-all-btn-inline,
+.resolve-modrinth-btn-inline {
   background: var(--surface-light);
   color: var(--text-secondary);
   border: 1px solid var(--border);
@@ -3219,6 +3220,17 @@
 }
 
 .check-updates-btn-inline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.resolve-modrinth-btn-inline:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: #7dd3fc;
+  border-color: rgba(125, 211, 252, 0.45);
+}
+
+.resolve-modrinth-btn-inline:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

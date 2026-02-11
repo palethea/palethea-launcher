@@ -359,6 +359,33 @@ pub async fn get_versions_bulk(version_ids: Vec<String>) -> Result<Vec<ModrinthV
     Ok(all_versions)
 }
 
+/// Resolve a version by a file SHA1 hash on Modrinth.
+/// Returns Ok(None) when no matching file exists.
+pub async fn get_version_by_file_sha1(sha1_hash: &str) -> Result<Option<ModrinthVersion>, Box<dyn Error + Send + Sync>> {
+    if sha1_hash.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let _permit = MODRINTH_SEMAPHORE.acquire().await?;
+    let client = super::http_client();
+    let url = format!("{}/version_file/{}", MODRINTH_API_BASE, sha1_hash);
+
+    let response = client
+        .get(&url)
+        .query(&[("algorithm", "sha1")])
+        .header("User-Agent", get_user_agent())
+        .send()
+        .await?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+
+    let response = response.error_for_status()?;
+    let version: ModrinthVersion = response.json().await?;
+    Ok(Some(version))
+}
+
 /// Download a file from Modrinth with optional progress reporting
 pub async fn download_mod_file(
     file: &ModrinthFile,
