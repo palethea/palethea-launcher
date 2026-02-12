@@ -1,13 +1,29 @@
 mod minecraft;
 
-use minecraft::{versions, downloader, instances, launcher, settings, auth, modrinth, files, fabric, forge, java, logger, discord};
+use minecraft::{versions, downloader, instances, launcher, settings, auth, modrinth, files, fabric, forge, java, logger, discord, secrets, curseforge};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::Path;
 use std::sync::{Mutex, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{State, AppHandle, Emitter, Manager};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
+#[cfg(target_os = "windows")]
+use windows::core::{Interface, PCWSTR};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 // Global state for tracking running game processes
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -20,6 +36,10 @@ pub struct RunningProcessInfo {
 
 static RUNNING_PROCESSES: LazyLock<Mutex<HashMap<String, RunningProcessInfo>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static BOOTSTRAP_START: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
+static MANUAL_METADATA_VERSION_CACHE: LazyLock<Mutex<HashMap<String, Option<modrinth::ModrinthVersion>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static MANUAL_METADATA_PROJECT_CACHE: LazyLock<Mutex<HashMap<String, Option<modrinth::ModrinthProject>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 
 // App state for storing user info
@@ -29,6 +49,7 @@ pub struct AppState {
     pub access_token: Mutex<String>,
     pub is_microsoft_auth: Mutex<bool>,
     pub refresh_token: Mutex<Option<String>>,
+    pub pending_shortcut_launch: Mutex<Option<String>>,
 }
 
 impl Default for AppState {
@@ -39,6 +60,7 @@ impl Default for AppState {
             access_token: Mutex::new("0".to_string()),
             is_microsoft_auth: Mutex::new(false),
             refresh_token: Mutex::new(None),
+            pending_shortcut_launch: Mutex::new(None),
         }
     }
 }
@@ -63,6 +85,7 @@ fn terminate_pid(pid: u32) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let status = std::process::Command::new("taskkill")
+            .creation_flags(CREATE_NO_WINDOW)
             .args(["/F", "/PID", &pid.to_string()])
             .status()
             .map_err(|e| format!("Failed to kill process {}: {}", pid, e))?;
@@ -113,7 +136,94 @@ fn request_exit_confirmation(app: &AppHandle) {
     }
 }
 
+fn sanitize_shortcut_name(name: &str) -> String {
+    let mut sanitized = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string();
+
+    if sanitized.is_empty() {
+        sanitized = "Palethea Instance".to_string();
+    }
+
+    sanitized
+}
+
+fn extract_launch_instance_from_args(args: &[String]) -> Option<String> {
+    for (idx, arg) in args.iter().enumerate() {
+        if arg == "--launch-instance" {
+            return args.get(idx + 1).map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+        }
+
+        if let Some(value) = arg.strip_prefix("--launch-instance=") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn set_pending_shortcut_launch(app: &AppHandle, instance_id: String) {
+    let debug_instance_id = instance_id.clone();
+    let state = app.state::<AppState>();
+    if let Ok(mut pending) = state.pending_shortcut_launch.lock() {
+        *pending = Some(instance_id);
+    };
+    let msg = format!(
+        "[ShortcutDebug] Stored pending shortcut launch for instance_id={}",
+        debug_instance_id
+    );
+    log::info!("{}", msg);
+    logger::append_shortcut_debug(&msg);
+}
+
+fn launch_shortcut_instance(app: &AppHandle, instance_id: String) {
+    let msg = format!(
+        "[ShortcutDebug] Emitting shortcut-launch-instance for instance_id={}",
+        instance_id
+    );
+    log::info!("{}", msg);
+    logger::append_shortcut_debug(&msg);
+    show_main_window(app);
+    let _ = app.emit("shortcut-launch-instance", instance_id);
+}
+
+fn handle_launch_args(app: &AppHandle, args: &[String], emit_immediately: bool) {
+    let msg = format!(
+        "[ShortcutDebug] handle_launch_args emit_immediately={} argv={:?}",
+        emit_immediately,
+        args
+    );
+    log::info!("{}", msg);
+    logger::append_shortcut_debug(&msg);
+    if let Some(instance_id) = extract_launch_instance_from_args(args) {
+        let parsed_msg = format!(
+            "[ShortcutDebug] Parsed --launch-instance argument for instance_id={}",
+            instance_id
+        );
+        log::info!("{}", parsed_msg);
+        logger::append_shortcut_debug(&parsed_msg);
+        if emit_immediately {
+            launch_shortcut_instance(app, instance_id);
+        } else {
+            set_pending_shortcut_launch(app, instance_id);
+        }
+    }
+}
+
 const TRAY_ID_SHOW: &str = "tray_show";
+const TRAY_ID_SETTINGS: &str = "tray_settings";
 const TRAY_ID_EXIT: &str = "tray_exit";
 const TRAY_LAUNCH_PREFIX: &str = "tray_launch::";
 const TRAY_STOP_PREFIX: &str = "tray_stop::";
@@ -127,16 +237,6 @@ fn format_short_playtime(seconds: u64) -> String {
     } else {
         format!("{}m", minutes)
     }
-}
-
-fn tray_label_with_icon(label: &str, icon: &str) -> String {
-    format!("{} {}", label, icon)
-}
-
-fn tray_submenu_title(icon: &str, title: &str) -> String {
-    // Native Linux tray menus can render submenu arrows too close to text.
-    // Padding here gives the arrow visual spacing.
-    format!("{}   ", tray_label_with_icon(title, icon))
 }
 
 fn resolve_tray_instance_logo_path(instance: &instances::Instance) -> std::path::PathBuf {
@@ -178,6 +278,23 @@ fn append_tray_item_with_optional_icon(
     Ok(())
 }
 
+fn append_tray_root_item_with_optional_icon(
+    app: &AppHandle,
+    menu: &tauri::menu::Menu<tauri::Wry>,
+    id: String,
+    text: String,
+    icon: Option<tauri::image::Image<'static>>,
+) -> tauri::Result<()> {
+    if let Some(icon) = icon {
+        let item = tauri::menu::IconMenuItem::with_id(app, id, text, true, Some(icon), None::<&str>)?;
+        menu.append(&item)?;
+    } else {
+        let item = tauri::menu::MenuItem::with_id(app, id, text, true, None::<&str>)?;
+        menu.append(&item)?;
+    }
+    Ok(())
+}
+
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let all_instances = instances::load_instances().unwrap_or_default();
 
@@ -201,7 +318,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         b_ts.cmp(&a_ts)
     });
     recent.retain(|i| i.last_played.is_some());
-    recent.truncate(3);
+    recent.truncate(5);
 
     let instance_names: HashMap<String, String> = all_instances
         .iter()
@@ -214,26 +331,9 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         .collect();
     let running_infos = RUNNING_PROCESSES.lock().map(|m| m.clone()).unwrap_or_default();
 
-    let quick_launch_submenu = tauri::menu::Submenu::new(
-        app,
-        tray_submenu_title("▶", "Quick Launch (Top 3)"),
-        true,
-    )?;
-    if top_played.is_empty() {
-        let empty = tauri::menu::MenuItem::new(app, "No played instances yet", false, None::<&str>)?;
-        quick_launch_submenu.append(&empty)?;
-    } else {
-        for instance in top_played {
-            let id = format!("{}{}", TRAY_LAUNCH_PREFIX, instance.id);
-            let text = format!("{}  ({})  ▶", instance.name, format_short_playtime(instance.playtime_seconds));
-            let icon = load_tray_instance_icon(&instance);
-            append_tray_item_with_optional_icon(app, &quick_launch_submenu, id, text, icon)?;
-        }
-    }
-
     let recent_submenu = tauri::menu::Submenu::new(
         app,
-        tray_submenu_title("⏱", "Recent Instances"),
+        "Recent",
         true,
     )?;
     if recent.is_empty() {
@@ -242,7 +342,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     } else {
         for instance in recent {
             let id = format!("{}{}", TRAY_LAUNCH_PREFIX, instance.id);
-            let text = format!("{}  ({})  ⏱", instance.name, instance.version_id);
+            let text = format!("{} ({})", instance.name, instance.version_id);
             let icon = load_tray_instance_icon(&instance);
             append_tray_item_with_optional_icon(app, &recent_submenu, id, text, icon)?;
         }
@@ -250,7 +350,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
 
     let running_submenu = tauri::menu::Submenu::new(
         app,
-        tray_submenu_title("●", "Running Instances"),
+        "Running",
         true,
     )?;
     if running_infos.is_empty() {
@@ -271,7 +371,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
                 .as_secs()
                 .saturating_sub(info.start_time);
             let id = format!("{}{}", TRAY_STOP_PREFIX, instance_id);
-            let text = format!("Stop {}  ({})  ■", instance_name, format_short_playtime(running_for));
+            let text = format!("Stop {} ({})", instance_name, format_short_playtime(running_for));
             let icon = instances_by_id
                 .get(&instance_id)
                 .and_then(load_tray_instance_icon);
@@ -279,33 +379,59 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         }
     }
 
-    let open_item = tauri::menu::MenuItem::with_id(
+    let menu = tauri::menu::Menu::new(app)?;
+
+    let open_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png")).ok();
+
+    append_tray_root_item_with_optional_icon(
         app,
-        TRAY_ID_SHOW,
-        tray_label_with_icon("Open Palethea", "↑"),
+        &menu,
+        TRAY_ID_SHOW.to_string(),
+        "Open Palethea".to_string(),
+        open_icon,
+    )?;
+
+    let separator_top = tauri::menu::PredefinedMenuItem::separator(app)?;
+    menu.append(&separator_top)?;
+
+    if top_played.is_empty() {
+        let empty = tauri::menu::MenuItem::new(app, "No played instances yet", false, None::<&str>)?;
+        menu.append(&empty)?;
+    } else {
+        for instance in top_played {
+            let id = format!("{}{}", TRAY_LAUNCH_PREFIX, instance.id);
+            let text = instance.name.clone();
+            let icon = load_tray_instance_icon(&instance);
+            append_tray_root_item_with_optional_icon(app, &menu, id, text, icon)?;
+        }
+    }
+
+    let separator_middle = tauri::menu::PredefinedMenuItem::separator(app)?;
+    menu.append(&separator_middle)?;
+    menu.append(&recent_submenu)?;
+    menu.append(&running_submenu)?;
+
+    let separator_bottom = tauri::menu::PredefinedMenuItem::separator(app)?;
+    menu.append(&separator_bottom)?;
+
+    let settings_item = tauri::menu::MenuItem::with_id(
+        app,
+        TRAY_ID_SETTINGS,
+        "Settings",
         true,
         None::<&str>,
     )?;
     let exit_item = tauri::menu::MenuItem::with_id(
         app,
         TRAY_ID_EXIT,
-        tray_label_with_icon("Exit", "✕"),
+        "Exit",
         true,
         None::<&str>,
     )?;
-    let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+    menu.append(&settings_item)?;
+    menu.append(&exit_item)?;
 
-    tauri::menu::Menu::with_items(
-        app,
-        &[
-            &open_item,
-            &quick_launch_submenu,
-            &recent_submenu,
-            &running_submenu,
-            &separator,
-            &exit_item,
-        ],
-    )
+    Ok(menu)
 }
 
 fn refresh_tray_menu(app: &AppHandle) {
@@ -2745,6 +2871,63 @@ fn save_settings(new_settings: settings::LauncherSettings) -> Result<(), String>
     settings::save_settings(&new_settings)
 }
 
+fn copy_dir_recursive_simple(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let ty = entry.file_type().map_err(|e| e.to_string())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive_simple(&src_path, &dst_path)?;
+        } else {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::copy(&src_path, &dst_path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn backup_path_if_exists(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+    if src.is_dir() {
+        copy_dir_recursive_simple(src, dst)
+    } else {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::copy(src, dst).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+fn restore_path_if_exists(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+    if src.is_dir() {
+        copy_dir_recursive_simple(src, dst)
+    } else {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::copy(src, dst).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn has_curseforge_api_key() -> bool {
+    secrets::has_curseforge_api_key()
+}
+
 #[tauri::command]
 async fn download_java_for_instance(instance_id: String, version: u32) -> Result<instances::Instance, String> {
     let instance = instances::get_instance(&instance_id)?;
@@ -3318,6 +3501,28 @@ fn get_data_directory() -> String {
     downloader::get_minecraft_dir().to_string_lossy().to_string()
 }
 
+#[tauri::command]
+fn take_pending_shortcut_launch(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let mut pending = state
+        .pending_shortcut_launch
+        .lock()
+        .map_err(|_| "Shortcut launch state corrupted".to_string())?;
+    let next = pending.take();
+    if let Some(instance_id) = next.as_deref() {
+        let msg = format!(
+            "[ShortcutDebug] Consumed pending shortcut launch for instance_id={}",
+            instance_id
+        );
+        log::info!("{}", msg);
+        logger::append_shortcut_debug(&msg);
+    } else {
+        let msg = "[ShortcutDebug] No pending shortcut launch to consume".to_string();
+        log::info!("{}", msg);
+        logger::append_shortcut_debug(&msg);
+    }
+    Ok(next)
+}
+
 // ============== DISK CLEANUP COMMANDS ==============
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -3768,6 +3973,59 @@ async fn get_modpack_total_size(version_id: String) -> Result<u64, String> {
 }
 
 #[tauri::command]
+async fn search_curseforge_modpacks(
+    query: String,
+    categories: Option<Vec<String>>,
+    limit: u32,
+    offset: u32,
+) -> Result<curseforge::CurseForgeSearchResult, String> {
+    curseforge::search_modpacks(&query, categories, limit, offset)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn search_curseforge_projects(
+    query: String,
+    project_type: String,
+    categories: Option<Vec<String>>,
+    limit: u32,
+    offset: u32,
+) -> Result<curseforge::CurseForgeSearchResult, String> {
+    curseforge::search_projects(&project_type, &query, categories, limit, offset)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_curseforge_modpack_versions(
+    project_id: String,
+) -> Result<Vec<curseforge::CurseForgeModpackVersion>, String> {
+    curseforge::get_modpack_versions(&project_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_curseforge_modpack(
+    project_id: String,
+) -> Result<curseforge::CurseForgeModpack, String> {
+    curseforge::get_modpack(&project_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_curseforge_modpack_total_size(
+    project_id: String,
+    file_id: String,
+) -> Result<u64, String> {
+    curseforge::get_modpack_total_size(&project_id, &file_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn install_modpack(
     instance_id: String,
     version_id: String,
@@ -3776,6 +4034,111 @@ async fn install_modpack(
     modrinth::install_modpack(&app_handle, &instance_id, &version_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn install_curseforge_modpack(
+    instance_id: String,
+    project_id: String,
+    file_id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    curseforge::install_modpack(&app_handle, &instance_id, &project_id, &file_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn switch_instance_modpack_version(
+    instance_id: String,
+    target_version_id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let provider = instance
+        .modpack_provider
+        .clone()
+        .unwrap_or_else(|| "Modrinth".to_string())
+        .trim()
+        .to_ascii_lowercase();
+
+    let project_id = instance.modpack_project_id.clone();
+    let current_version = instance.modpack_version_id.clone().unwrap_or_default();
+    if !current_version.is_empty() && current_version == target_version_id {
+        return Ok(());
+    }
+
+    let game_dir = instance.get_game_directory();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup_root = std::env::temp_dir().join(format!("palethea_modpack_switch_{}_{}", instance_id, timestamp));
+    fs::create_dir_all(&backup_root).map_err(|e| e.to_string())?;
+
+    let backup_mods = backup_root.join("mods");
+    let backup_config = backup_root.join("config");
+    let backup_options = backup_root.join("options.txt");
+    let backup_options_of = backup_root.join("optionsof.txt");
+    let backup_options_shader = backup_root.join("optionsshaders.txt");
+    let backup_servers = backup_root.join("servers.dat");
+
+    let mods_dir = game_dir.join("mods");
+    let config_dir = game_dir.join("config");
+    let options_txt = game_dir.join("options.txt");
+    let options_of_txt = game_dir.join("optionsof.txt");
+    let options_shader_txt = game_dir.join("optionsshaders.txt");
+    let servers_dat = game_dir.join("servers.dat");
+
+    backup_path_if_exists(&mods_dir, &backup_mods)?;
+    backup_path_if_exists(&config_dir, &backup_config)?;
+    backup_path_if_exists(&options_txt, &backup_options)?;
+    backup_path_if_exists(&options_of_txt, &backup_options_of)?;
+    backup_path_if_exists(&options_shader_txt, &backup_options_shader)?;
+    backup_path_if_exists(&servers_dat, &backup_servers)?;
+
+    if mods_dir.exists() {
+        fs::remove_dir_all(&mods_dir).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
+
+    let install_result = if provider == "curseforge" {
+        let pack_project_id = project_id.ok_or_else(|| "This instance is missing modpack project metadata".to_string())?;
+        curseforge::install_modpack(&app_handle, &instance_id, &pack_project_id, &target_version_id)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        modrinth::install_modpack(&app_handle, &instance_id, &target_version_id)
+            .await
+            .map_err(|e| e.to_string())
+    };
+
+    if let Err(install_error) = install_result {
+        if mods_dir.exists() {
+            let _ = fs::remove_dir_all(&mods_dir);
+        }
+        let _ = restore_path_if_exists(&backup_mods, &mods_dir);
+        let _ = restore_path_if_exists(&backup_config, &config_dir);
+        let _ = restore_path_if_exists(&backup_options, &options_txt);
+        let _ = restore_path_if_exists(&backup_options_of, &options_of_txt);
+        let _ = restore_path_if_exists(&backup_options_shader, &options_shader_txt);
+        let _ = restore_path_if_exists(&backup_servers, &servers_dat);
+        let _ = fs::remove_dir_all(&backup_root);
+        return Err(format!("Failed to switch modpack version: {}", install_error));
+    }
+
+    restore_path_if_exists(&backup_config, &config_dir)?;
+    restore_path_if_exists(&backup_options, &options_txt)?;
+    restore_path_if_exists(&backup_options_of, &options_of_txt)?;
+    restore_path_if_exists(&backup_options_shader, &options_shader_txt)?;
+    restore_path_if_exists(&backup_servers, &servers_dat)?;
+
+    let mut updated_instance = instances::get_instance(&instance_id)?;
+    updated_instance.modpack_version_id = Some(target_version_id);
+    instances::update_instance(updated_instance)?;
+
+    let _ = fs::remove_dir_all(&backup_root);
+    Ok(())
 }
 
 #[tauri::command]
@@ -4024,13 +4387,34 @@ async fn resolve_manual_modrinth_metadata_internal(
             }
         };
 
+        if let Ok(cache) = MANUAL_METADATA_VERSION_CACHE.lock() {
+            if let Some(cached_version) = cache.get(&sha1).cloned() {
+                match cached_version {
+                    Some(version) => {
+                        report.matched += 1;
+                        matched_entries.push((candidate, version));
+                    }
+                    None => {
+                        report.unresolved += 1;
+                    }
+                }
+                continue;
+            }
+        }
+
         match modrinth::get_version_by_file_sha1(&sha1).await {
             Ok(Some(version)) => {
                 report.matched += 1;
+                if let Ok(mut cache) = MANUAL_METADATA_VERSION_CACHE.lock() {
+                    cache.insert(sha1.clone(), Some(version.clone()));
+                }
                 matched_entries.push((candidate, version));
             }
             Ok(None) => {
                 report.unresolved += 1;
+                if let Ok(mut cache) = MANUAL_METADATA_VERSION_CACHE.lock() {
+                    cache.insert(sha1.clone(), None);
+                }
             }
             Err(error) => {
                 report.errors += 1;
@@ -4059,19 +4443,65 @@ async fn resolve_manual_modrinth_metadata_internal(
     project_ids.sort();
 
     let mut projects_by_id: HashMap<String, modrinth::ModrinthProject> = HashMap::new();
-    if !project_ids.is_empty() {
-        match modrinth::get_projects(project_ids).await {
-            Ok(projects) => {
-                for project in projects {
-                    projects_by_id.insert(project.project_id.clone(), project);
+    let mut missing_project_ids: Vec<String> = Vec::new();
+    if let Ok(cache) = MANUAL_METADATA_PROJECT_CACHE.lock() {
+        for project_id in &project_ids {
+            match cache.get(project_id) {
+                Some(Some(project)) => {
+                    projects_by_id.insert(project_id.clone(), project.clone());
+                }
+                Some(None) => {}
+                None => missing_project_ids.push(project_id.clone()),
+            }
+        }
+    } else {
+        missing_project_ids = project_ids.clone();
+    }
+
+    if !missing_project_ids.is_empty() {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            modrinth::get_projects(missing_project_ids.clone()),
+        )
+        .await
+        {
+            Ok(Ok(projects)) => {
+                let fetched_ids: HashSet<String> = projects
+                    .iter()
+                    .map(|project| project.project_id.clone())
+                    .collect();
+
+                if let Ok(mut cache) = MANUAL_METADATA_PROJECT_CACHE.lock() {
+                    for project in projects {
+                        projects_by_id.insert(project.project_id.clone(), project.clone());
+                        cache.insert(project.project_id.clone(), Some(project));
+                    }
+                    for project_id in missing_project_ids {
+                        if !fetched_ids.contains(&project_id) {
+                            cache.insert(project_id, None);
+                        }
+                    }
+                } else {
+                    for project in projects {
+                        projects_by_id.insert(project.project_id.clone(), project);
+                    }
                 }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 if let Some(handle) = app_handle {
                     logger::emit_log(
                         handle,
                         "warn",
                         &format!("Failed to fetch Modrinth project details: {}", error),
+                    );
+                }
+            }
+            Err(_) => {
+                if let Some(handle) = app_handle {
+                    logger::emit_log(
+                        handle,
+                        "warn",
+                        "Timed out fetching Modrinth project details during manual metadata resolve",
                     );
                 }
             }
@@ -4312,6 +4742,111 @@ async fn install_modrinth_file(
 }
 
 #[tauri::command]
+async fn install_curseforge_file(
+    app_handle: AppHandle,
+    instance_id: String,
+    project_id: String,
+    file_id: String,
+    file_type: String, // "mod", "resourcepack", "shader", "datapack"
+    filename: String,
+    file_url: Option<String>,
+    world_name: Option<String>,
+    name: Option<String>,
+    author: Option<String>,
+    icon_url: Option<String>,
+    version_name: Option<String>,
+    categories: Option<Vec<String>>,
+) -> Result<(), String> {
+    let instance = instances::get_instance(&instance_id)?;
+
+    let dest_dir = match file_type.as_str() {
+        "mod" => files::get_mods_dir(&instance),
+        "resourcepack" => files::get_resourcepacks_dir(&instance),
+        "shader" => files::get_shaderpacks_dir(&instance),
+        "datapack" => {
+            if let Some(wname) = world_name {
+                files::get_saves_dir(&instance).join(wname).join("datapacks")
+            } else {
+                return Err("World name required for datapack installation".to_string());
+            }
+        }
+        _ => return Err("Invalid file type".to_string()),
+    };
+
+    let resolved_filename = if filename.trim().is_empty() {
+        format!("{}-{}.jar", project_id.trim(), file_id.trim())
+    } else {
+        filename
+    };
+    let dest_path = dest_dir.join(&resolved_filename);
+
+    let resolved_url = if let Some(url) = file_url.filter(|value| !value.trim().is_empty()) {
+        url
+    } else {
+        curseforge::get_file_download_url_for_ids(&project_id, &file_id)
+            .await
+            .map_err(|e| format!("Failed to resolve CurseForge download URL: {}", e))?
+    };
+
+    let client = minecraft::http_client();
+    let response = client
+        .get(&resolved_url)
+        .header("User-Agent", format!("PaletheaLauncher/{}", minecraft::get_launcher_version()))
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("HTTP error: {}", e))?;
+
+    let total_size = response.content_length();
+
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let mut file = std::fs::File::create(&dest_path).map_err(|e| format!("Failed to create file: {}", e))?;
+    let mut downloaded: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+
+    use futures::StreamExt;
+    let mut stream = response.bytes_stream();
+    while let Some(item) = stream.next().await {
+        let chunk = item.map_err(|e| format!("Download error: {}", e))?;
+        std::io::Write::write_all(&mut file, &chunk).map_err(|e| format!("Write error: {}", e))?;
+        downloaded += chunk.len() as u64;
+
+        if last_emit.elapsed().as_millis() > 100 || total_size.map_or(false, |total| downloaded == total) {
+            let percentage = total_size.map_or(0.0, |total| (downloaded as f32 / total as f32) * 100.0);
+            let _ = app_handle.emit(
+                "download-progress",
+                downloader::DownloadProgress {
+                    stage: format!("Downloading {}...", name.as_ref().unwrap_or(&resolved_filename)),
+                    percentage,
+                    current: 1,
+                    total: 1,
+                    total_bytes: total_size,
+                    downloaded_bytes: Some(downloaded),
+                },
+            );
+            last_emit = std::time::Instant::now();
+        }
+    }
+
+    let meta = files::ModMeta {
+        project_id: project_id.clone(),
+        version_id: Some(file_id.clone()),
+        name: name.or_else(|| Some(resolved_filename.trim_end_matches(".jar").trim_end_matches(".zip").to_string())),
+        author,
+        icon_url,
+        version_name,
+        categories,
+    };
+    let _ = files::write_meta_for_entry(&dest_dir, &resolved_filename, &meta);
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn save_remote_file(url: String, path: String) -> Result<(), String> {
     let dest_path = std::path::PathBuf::from(path);
     
@@ -4343,6 +4878,7 @@ async fn save_remote_file(url: String, path: String) -> Result<(), String> {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct InstanceModUpdate {
+    pub provider: String,
     pub project_id: String,
     pub installed_filename: String,
     #[serde(default)]
@@ -4357,18 +4893,29 @@ struct InstanceModUpdate {
     pub installed_icon_url: Option<String>,
     #[serde(default)]
     pub installed_categories: Option<Vec<String>>,
-    pub latest_version: modrinth::ModrinthVersion,
+    #[serde(default)]
+    pub latest_version: Option<modrinth::ModrinthVersion>,
+    #[serde(default)]
+    pub latest_curseforge_version: Option<curseforge::CurseForgeModpackVersion>,
 }
 
 #[tauri::command]
-async fn get_instance_mod_updates(instance_id: String) -> Result<Vec<InstanceModUpdate>, String> {
+async fn get_instance_mod_updates(
+    instance_id: String,
+    file_type: Option<String>,
+    world_name: Option<String>,
+) -> Result<Vec<InstanceModUpdate>, String> {
     use futures::stream::{self, StreamExt};
 
     let instance = instances::get_instance(&instance_id)?;
-    let installed_mods = files::list_mods(&instance);
+    let normalized_file_type = file_type
+        .unwrap_or_else(|| "mod".to_string())
+        .trim()
+        .to_ascii_lowercase();
 
     #[derive(Debug, Clone)]
     struct InstalledModRow {
+        provider: String,
         project_id: String,
         filename: String,
         version_id: Option<String>,
@@ -4379,21 +4926,92 @@ async fn get_instance_mod_updates(instance_id: String) -> Result<Vec<InstanceMod
         categories: Option<Vec<String>>,
     }
 
+    let installed_rows: Vec<InstalledModRow> = match normalized_file_type.as_str() {
+        "mod" => files::list_mods(&instance)
+            .into_iter()
+            .filter(|m| m.enabled)
+            .filter_map(|m| {
+                let project_id = m.project_id?;
+                let provider = normalize_provider_label(Some(m.provider.as_str()), &project_id);
+                Some(InstalledModRow {
+                    provider,
+                    project_id,
+                    filename: m.filename,
+                    version_id: m.version_id,
+                    version_name: m.version,
+                    name: m.name,
+                    author: m.author,
+                    icon_url: m.icon_url,
+                    categories: m.categories,
+                })
+            })
+            .collect(),
+        "resourcepack" => files::list_resourcepacks(&instance)
+            .into_iter()
+            .filter_map(|pack| {
+                let project_id = pack.project_id?;
+                let provider = normalize_provider_label(Some(pack.provider.as_str()), &project_id);
+                Some(InstalledModRow {
+                    provider,
+                    project_id,
+                    filename: pack.filename,
+                    version_id: pack.version_id,
+                    version_name: pack.version,
+                    name: pack.name,
+                    author: pack.author,
+                    icon_url: pack.icon_url,
+                    categories: pack.categories,
+                })
+            })
+            .collect(),
+        "shader" => files::list_shaderpacks(&instance)
+            .into_iter()
+            .filter_map(|shader| {
+                let project_id = shader.project_id?;
+                let provider = normalize_provider_label(Some(shader.provider.as_str()), &project_id);
+                Some(InstalledModRow {
+                    provider,
+                    project_id,
+                    filename: shader.filename,
+                    version_id: shader.version_id,
+                    version_name: shader.version,
+                    name: shader.name,
+                    author: shader.author,
+                    icon_url: shader.icon_url,
+                    categories: shader.categories,
+                })
+            })
+            .collect(),
+        "datapack" => {
+            let world = world_name.ok_or_else(|| "World name required for datapack update checks".to_string())?;
+            files::list_datapacks(&instance, &world)
+                .into_iter()
+                .filter(|pack| pack.enabled)
+                .filter_map(|pack| {
+                    let project_id = pack.project_id?;
+                    let provider = normalize_provider_label(Some(pack.provider.as_str()), &project_id);
+                    Some(InstalledModRow {
+                        provider,
+                        project_id,
+                        filename: pack.filename,
+                        version_id: pack.version_id,
+                        version_name: pack.version,
+                        name: pack.name,
+                        author: pack.author,
+                        icon_url: pack.icon_url,
+                        categories: None,
+                    })
+                })
+                .collect()
+        }
+        other => {
+            return Err(format!("Unsupported file_type '{}'", other));
+        }
+    };
+
     let mut rows_by_project: HashMap<String, InstalledModRow> = HashMap::new();
-    for m in installed_mods.into_iter().filter(|m| m.enabled) {
-        let Some(project_id) = m.project_id.clone() else {
-            continue;
-        };
-        let row = InstalledModRow {
-            project_id: project_id.clone(),
-            filename: m.filename,
-            version_id: m.version_id,
-            version_name: m.version,
-            name: m.name,
-            author: m.author,
-            icon_url: m.icon_url,
-            categories: m.categories,
-        };
+    for row in installed_rows {
+        let project_id = row.project_id.clone();
 
         match rows_by_project.get(&project_id) {
             Some(existing) => {
@@ -4413,12 +5031,64 @@ async fn get_instance_mod_updates(instance_id: String) -> Result<Vec<InstanceMod
     }
 
     let game_version = instance.version_id.clone();
-    let loader_key = normalize_loader_key(&instance.mod_loader).map(str::to_string);
+    let file_type_for_updates = normalized_file_type.clone();
+    let loader_key = if normalized_file_type == "mod" {
+        normalize_loader_key(&instance.mod_loader).map(str::to_string)
+    } else {
+        None
+    };
 
     let mut updates: Vec<InstanceModUpdate> = stream::iter(rows.into_iter().map(|row| {
         let game_version = game_version.clone();
         let loader_key = loader_key.clone();
+        let file_type_for_updates = file_type_for_updates.clone();
         async move {
+            if row.provider.eq_ignore_ascii_case("CurseForge") || is_numeric_project_id(&row.project_id) {
+                let mut versions = match curseforge::get_modpack_versions(&row.project_id).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!(
+                            "get_instance_mod_updates: failed to fetch CurseForge versions for {}: {}",
+                            row.project_id, e
+                        );
+                        return None;
+                    }
+                };
+
+                versions.retain(|version| {
+                    curseforge_file_matches_instance(
+                        version,
+                        &game_version,
+                        loader_key.as_deref(),
+                        &file_type_for_updates,
+                    )
+                });
+                if versions.is_empty() {
+                    return None;
+                }
+
+                versions.sort_by(|a, b| b.date_published.cmp(&a.date_published));
+                let latest_version = versions.remove(0);
+
+                if row.version_id.as_deref() == Some(latest_version.id.as_str()) {
+                    return None;
+                }
+
+                return Some(InstanceModUpdate {
+                    provider: "CurseForge".to_string(),
+                    project_id: row.project_id,
+                    installed_filename: row.filename,
+                    installed_version_id: row.version_id,
+                    installed_version_name: row.version_name,
+                    installed_name: row.name,
+                    installed_author: row.author,
+                    installed_icon_url: row.icon_url,
+                    installed_categories: row.categories,
+                    latest_version: None,
+                    latest_curseforge_version: Some(latest_version),
+                });
+            }
+
             let mut versions = match modrinth::get_project_versions(
                 &row.project_id,
                 Some(&game_version),
@@ -4448,6 +5118,7 @@ async fn get_instance_mod_updates(instance_id: String) -> Result<Vec<InstanceMod
             }
 
             Some(InstanceModUpdate {
+                provider: "Modrinth".to_string(),
                 project_id: row.project_id,
                 installed_filename: row.filename,
                 installed_version_id: row.version_id,
@@ -4456,7 +5127,8 @@ async fn get_instance_mod_updates(instance_id: String) -> Result<Vec<InstanceMod
                 installed_author: row.author,
                 installed_icon_url: row.icon_url,
                 installed_categories: row.categories,
-                latest_version,
+                latest_version: Some(latest_version),
+                latest_curseforge_version: None,
             })
         }
     }))
@@ -4507,6 +5179,165 @@ fn normalize_loader_key(loader: &instances::ModLoader) -> Option<&'static str> {
         instances::ModLoader::Fabric => Some("fabric"),
         instances::ModLoader::Forge => Some("forge"),
         instances::ModLoader::NeoForge => Some("neoforge"),
+    }
+}
+
+fn is_numeric_project_id(project_id: &str) -> bool {
+    !project_id.trim().is_empty() && project_id.chars().all(|c| c.is_ascii_digit())
+}
+
+fn is_modrinth_like_version_id(version_id: &str) -> bool {
+    let trimmed = version_id.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 64
+        && trimmed.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+fn normalize_provider_label(provider: Option<&str>, project_id: &str) -> String {
+    if let Some(value) = provider {
+        if value.eq_ignore_ascii_case("curseforge") {
+            return "CurseForge".to_string();
+        }
+        if value.eq_ignore_ascii_case("modrinth") {
+            return "Modrinth".to_string();
+        }
+    }
+    if is_numeric_project_id(project_id) {
+        "CurseForge".to_string()
+    } else {
+        "Modrinth".to_string()
+    }
+}
+
+fn parse_mc_version_parts(value: &str) -> Vec<u32> {
+    value
+        .split('.')
+        .filter_map(|part| part.trim().parse::<u32>().ok())
+        .collect()
+}
+
+fn curseforge_game_version_matches(requested_game_version: &str, token: &str) -> bool {
+    let requested = requested_game_version.trim().to_ascii_lowercase();
+    let candidate = token.trim().to_ascii_lowercase();
+    if requested.is_empty() || candidate.is_empty() {
+        return false;
+    }
+
+    if candidate == requested {
+        return true;
+    }
+
+    if requested.starts_with(&(candidate.clone() + "."))
+        || candidate.starts_with(&(requested.clone() + "."))
+    {
+        return true;
+    }
+
+    let req_parts = parse_mc_version_parts(&requested);
+    let cand_parts = parse_mc_version_parts(&candidate);
+
+    if req_parts.len() >= 2
+        && cand_parts.len() >= 2
+        && req_parts[0] == cand_parts[0]
+        && req_parts[1] == cand_parts[1]
+    {
+        return true;
+    }
+
+    false
+}
+
+fn curseforge_file_matches_instance(
+    version: &curseforge::CurseForgeModpackVersion,
+    game_version: &str,
+    loader_key: Option<&str>,
+    file_type: &str,
+) -> bool {
+    let lower_tokens: Vec<String> = version
+        .game_versions
+        .iter()
+        .map(|item| item.trim().to_ascii_lowercase())
+        .filter(|item| !item.is_empty())
+        .collect();
+
+    if !lower_tokens.is_empty() {
+        let game_version_lower = game_version.to_ascii_lowercase();
+        let has_mc_tokens = lower_tokens
+            .iter()
+            .any(|token| token.contains('.') && token.chars().any(|c| c.is_ascii_digit()));
+        let has_requested_game_version = lower_tokens
+            .iter()
+            .any(|token| curseforge_game_version_matches(&game_version_lower, token));
+        if has_mc_tokens && !has_requested_game_version {
+            // Non-mod content on CurseForge often uses broad tags like "1.21".
+            // The matcher above is already fuzzy; if it still misses, reject as incompatible.
+            if file_type == "mod" || file_type == "resourcepack" || file_type == "shader" || file_type == "datapack" {
+                return false;
+            }
+        }
+    }
+
+    let Some(loader) = loader_key.map(|value| value.to_ascii_lowercase()) else {
+        return true;
+    };
+
+    let normalized_loader_tags: Vec<String> = version
+        .loaders
+        .iter()
+        .map(|item| item.trim().to_ascii_lowercase())
+        .filter(|item| !item.is_empty())
+        .collect();
+
+    let loader_match = |token: &str| match loader.as_str() {
+        "fabric" => token.contains("fabric") || token.contains("quilt"),
+        "forge" => token == "forge" || (token.contains("forge") && !token.contains("neo")),
+        "neoforge" => token.contains("neoforge") || token.contains("neo forge"),
+        _ => true,
+    };
+
+    if !normalized_loader_tags.is_empty() {
+        return normalized_loader_tags.iter().any(|token| loader_match(token));
+    }
+
+    let has_loader_tokens = lower_tokens.iter().any(|token| {
+        token.contains("fabric")
+            || token == "forge"
+            || token.contains("forge")
+            || token.contains("neo")
+            || token.contains("quilt")
+    });
+    if has_loader_tokens {
+        return lower_tokens.iter().any(|token| loader_match(token));
+    }
+
+    // Safe fallback for CurseForge mod update checks:
+    // if loader tags are missing, infer from filename/display name. If still unknown,
+    // skip the update to avoid cross-loader corruption (e.g. Forge instance receiving Fabric files).
+    if file_type != "mod" {
+        return true;
+    }
+
+    let fallback_text = format!(
+        "{} {} {}",
+        version.name,
+        version.version_number,
+        version
+            .files
+            .first()
+            .map(|file| file.filename.as_str())
+            .unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+
+    let hints_fabric = fallback_text.contains("fabric") || fallback_text.contains("quilt");
+    let hints_neoforge = fallback_text.contains("neoforge") || fallback_text.contains("neo-forge") || fallback_text.contains("neo forge");
+    let hints_forge = fallback_text.contains("forge") && !hints_neoforge;
+
+    match loader.as_str() {
+        "fabric" => hints_fabric && !hints_forge && !hints_neoforge,
+        "forge" => hints_forge && !hints_fabric && !hints_neoforge,
+        "neoforge" => hints_neoforge && !hints_fabric,
+        _ => true,
     }
 }
 
@@ -4593,7 +5424,13 @@ async fn scan_mod_conflicts(instance_id: String) -> Result<Vec<ModConflictIssue>
     let mut unique_version_ids = Vec::new();
     let mut seen_versions = HashSet::new();
     for row in &enabled_mods {
+        if is_numeric_project_id(&row.project_id) {
+            continue;
+        }
         if let Some(vid) = &row.version_id {
+            if !is_modrinth_like_version_id(vid) {
+                continue;
+            }
             if seen_versions.insert(vid.clone()) {
                 unique_version_ids.push(vid.clone());
             }
@@ -5004,6 +5841,218 @@ fn import_instance_file(instance_id: String, source_path: String, folder_type: S
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn to_wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_windows_shortcut_icon(instance: &instances::Instance) -> Option<PathBuf> {
+    let logo_filename = instance
+        .logo_filename
+        .clone()
+        .unwrap_or_else(|| "minecraft_logo.png".to_string());
+    let mut source_logo = downloader::get_instance_logos_dir().join(logo_filename);
+    if !source_logo.exists() {
+        source_logo = downloader::get_instance_logos_dir().join("minecraft_logo.png");
+    }
+    if !source_logo.exists() {
+        return None;
+    }
+
+    let icon_dir = downloader::get_minecraft_dir().join("shortcut_icons");
+    if fs::create_dir_all(&icon_dir).is_err() {
+        return None;
+    }
+
+    let icon_path = icon_dir.join(format!("{}.ico", instance.id));
+    let image = image::open(&source_logo).ok()?;
+    let resized = image.resize_exact(256, 256, image::imageops::FilterType::Lanczos3);
+    resized.save_with_format(&icon_path, image::ImageFormat::Ico).ok()?;
+    Some(icon_path)
+}
+
+#[cfg(target_os = "windows")]
+fn create_windows_instance_shortcut(
+    shortcut_path: &Path,
+    target_path: &Path,
+    icon_path: Option<&Path>,
+    instance_id: &str,
+    instance_name: &str,
+) -> Result<(), String> {
+    let arguments = format!("--launch-instance \"{}\"", instance_id);
+    let working_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
+    let description = format!("Launch {} directly in Palethea", instance_name);
+
+    let target_w = to_wide_null(&target_path.to_string_lossy());
+    let args_w = to_wide_null(&arguments);
+    let work_dir_w = to_wide_null(&working_dir.to_string_lossy());
+    let description_w = to_wide_null(&description);
+    let shortcut_w = to_wide_null(&shortcut_path.to_string_lossy());
+    let icon_w = icon_path.map(|path| to_wide_null(&path.to_string_lossy()));
+
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .map_err(|e| format!("Failed to initialize COM for shortcut creation: {}", e))?;
+
+        let create_result = (|| -> Result<(), String> {
+            let shell_link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+                .map_err(|e| format!("Failed to create Windows ShellLink COM object: {}", e))?;
+
+            shell_link
+                .SetPath(PCWSTR(target_w.as_ptr()))
+                .map_err(|e| format!("Failed to set shortcut target: {}", e))?;
+            shell_link
+                .SetArguments(PCWSTR(args_w.as_ptr()))
+                .map_err(|e| format!("Failed to set shortcut arguments: {}", e))?;
+            shell_link
+                .SetWorkingDirectory(PCWSTR(work_dir_w.as_ptr()))
+                .map_err(|e| format!("Failed to set shortcut working directory: {}", e))?;
+            shell_link
+                .SetDescription(PCWSTR(description_w.as_ptr()))
+                .map_err(|e| format!("Failed to set shortcut description: {}", e))?;
+
+            if let Some(icon_buffer) = icon_w.as_ref() {
+                shell_link
+                    .SetIconLocation(PCWSTR(icon_buffer.as_ptr()), 0)
+                    .map_err(|e| format!("Failed to set shortcut icon: {}", e))?;
+            }
+
+            let persist_file: IPersistFile = shell_link
+                .cast()
+                .map_err(|e| format!("Failed to cast shortcut to IPersistFile: {}", e))?;
+            persist_file
+                .Save(PCWSTR(shortcut_w.as_ptr()), true)
+                .map_err(|e| format!("Failed to save shortcut file: {}", e))?;
+
+            Ok(())
+        })();
+
+        CoUninitialize();
+        create_result
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn escape_desktop_arg(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ")
+        .replace('\r', " ")
+}
+
+#[cfg(target_os = "linux")]
+fn create_linux_instance_shortcut(
+    shortcut_path: &Path,
+    target_path: &Path,
+    icon_path: &Path,
+    instance_id: &str,
+    instance_name: &str,
+) -> Result<(), String> {
+    let clean_name = instance_name.replace('\n', " ").replace('\r', " ");
+    let exec_line = format!(
+        "\"{}\" --launch-instance \"{}\"",
+        escape_desktop_arg(&target_path.to_string_lossy()),
+        escape_desktop_arg(instance_id),
+    );
+
+    let desktop_entry = format!(
+        "[Desktop Entry]\nVersion=1.0\nType=Application\nName=Play {name}\nComment=Launch {name} directly in Palethea\nExec={exec}\nIcon={icon}\nTerminal=false\nCategories=Game;\nStartupNotify=true\n",
+        name = clean_name,
+        exec = exec_line,
+        icon = escape_desktop_arg(&icon_path.to_string_lossy()),
+    );
+
+    fs::write(shortcut_path, desktop_entry)
+        .map_err(|e| format!("Failed to write desktop shortcut file: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(shortcut_path)
+            .map_err(|e| format!("Failed to read shortcut permissions: {}", e))?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(shortcut_path, permissions)
+            .map_err(|e| format!("Failed to make shortcut executable: {}", e))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn create_instance_shortcut(instance_id: String, _app: AppHandle) -> Result<String, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let executable = std::env::current_exe()
+        .map_err(|e| format!("Failed to determine launcher executable path: {}", e))?;
+
+    let desktop_dir = dirs::desktop_dir()
+        .ok_or_else(|| "Could not find your desktop directory".to_string())?;
+    fs::create_dir_all(&desktop_dir)
+        .map_err(|e| format!("Failed to ensure desktop directory exists: {}", e))?;
+
+    let shortcut_name = format!("{} - Palethea", sanitize_shortcut_name(&instance.name));
+
+    #[cfg(target_os = "windows")]
+    {
+        let shortcut_path = desktop_dir.join(format!("{}.lnk", shortcut_name));
+        let icon_path = prepare_windows_shortcut_icon(&instance);
+        let msg = format!(
+            "[ShortcutDebug] Creating Windows shortcut target={} shortcut={} icon={}",
+            executable.to_string_lossy(),
+            shortcut_path.to_string_lossy(),
+            icon_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
+        log::info!("{}", msg);
+        logger::append_shortcut_debug(&msg);
+        create_windows_instance_shortcut(
+            &shortcut_path,
+            &executable,
+            icon_path.as_deref(),
+            &instance_id,
+            &instance.name,
+        )?;
+        return Ok(shortcut_path.to_string_lossy().to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let shortcut_path = desktop_dir.join(format!("{}.desktop", shortcut_name));
+        let logo_filename = instance
+            .logo_filename
+            .clone()
+            .unwrap_or_else(|| "minecraft_logo.png".to_string());
+        let mut icon_path = downloader::get_instance_logos_dir().join(logo_filename);
+        if !icon_path.exists() {
+            icon_path = downloader::get_instance_logos_dir().join("minecraft_logo.png");
+        }
+        if !icon_path.exists() {
+            icon_path = executable.clone();
+        }
+
+        create_linux_instance_shortcut(
+            &shortcut_path,
+            &executable,
+            &icon_path,
+            &instance_id,
+            &instance.name,
+        )?;
+        return Ok(shortcut_path.to_string_lossy().to_string());
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = executable;
+        let _ = desktop_dir;
+        Err("Desktop shortcut creation is currently supported on Windows and Linux only".to_string())
+    }
+}
+
 #[tauri::command]
 async fn open_instance_folder(_app: AppHandle, instance_id: String, folder_type: String) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
@@ -5081,6 +6130,7 @@ fn open_path_native(path: &std::path::Path) -> Result<(), String> {
         // explorer process instead of spawning a new heavy explorer.exe process.
         // The empty string "" is for the 'title' argument of start which is required if the path has spaces.
         Command::new("cmd")
+            .creation_flags(CREATE_NO_WINDOW)
             .args(["/c", "start", "", &path.to_string_lossy()])
             .spawn()
             .map(|_| ())
@@ -5157,6 +6207,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            handle_launch_args(&app, &argv, true);
+        }))
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
@@ -5208,6 +6261,9 @@ pub fn run() {
 
                         if id == TRAY_ID_SHOW {
                             show_main_window(app);
+                        } else if id == TRAY_ID_SETTINGS {
+                            show_main_window(app);
+                            let _ = app.emit("tray-open-settings", ());
                         } else if id == TRAY_ID_EXIT {
                             if has_running_processes() {
                                 request_exit_confirmation(app);
@@ -5223,12 +6279,12 @@ pub fn run() {
                     })
                     .on_tray_icon_event(|tray, event| {
                         if let tauri::tray::TrayIconEvent::Click { button, button_state, .. } = event {
-                            if button_state == tauri::tray::MouseButtonState::Up {
-                                refresh_tray_menu(tray.app_handle());
-                            }
                             if button == tauri::tray::MouseButton::Left
                                 && button_state == tauri::tray::MouseButtonState::Up
                             {
+                                // Rebuild only for left-click open action.
+                                // Rebuilding on every mouse-up causes Windows context menu jitter/flicker.
+                                refresh_tray_menu(tray.app_handle());
                                 show_main_window(tray.app_handle());
                             }
                         }
@@ -5323,6 +6379,10 @@ pub fn run() {
                 }
             }
 
+            // Store launch args if app was opened directly with a shortcut target.
+            let startup_args: Vec<String> = std::env::args().collect();
+            handle_launch_args(app.handle(), &startup_args, false);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -5334,6 +6394,7 @@ pub fn run() {
             // Instance commands
             get_instances,
             create_instance,
+            create_instance_shortcut,
             delete_instance,
             update_instance,
             clone_instance,
@@ -5364,6 +6425,7 @@ pub fn run() {
             get_java_path,
             get_settings,
             save_settings,
+            has_curseforge_api_key,
             download_java_for_instance,
             download_java_global,
             is_java_version_installed,
@@ -5390,6 +6452,7 @@ pub fn run() {
             set_offline_user,
             get_current_user,
             get_data_directory,
+            take_pending_shortcut_launch,
             // Mod loader commands
             get_loader_versions,
             install_fabric,
@@ -5402,13 +6465,21 @@ pub fn run() {
             clear_assets_cache,
             // Modrinth commands
             search_modrinth,
+            search_curseforge_modpacks,
+            search_curseforge_projects,
+            get_curseforge_modpack,
+            get_curseforge_modpack_versions,
+            get_curseforge_modpack_total_size,
             get_modrinth_project,
             get_modrinth_projects,
             get_modrinth_versions,
             get_modrinth_version,
             get_modpack_total_size,
             install_modpack,
+            install_curseforge_modpack,
+            switch_instance_modpack_version,
             install_modrinth_file,
+            install_curseforge_file,
             resolve_manual_modrinth_metadata,
             save_remote_file,
             // File management commands

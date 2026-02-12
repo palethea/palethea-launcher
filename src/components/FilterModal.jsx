@@ -78,7 +78,7 @@ function FilterModal({ isOpen, onClose, categories, selectedCategories, onApply,
             {displayedCategories.map(cat => (
               <div 
                 key={cat.id} 
-                className={`category-item-modal ${cat.isSection ? 'section-header-modal' : ''} ${currentSelected.includes(cat.id) ? 'selected' : ''}`}
+                className={`category-item-modal ${cat.isSection ? 'section-header-modal' : ''} ${cat.isSubcategory ? 'subcategory-modal' : ''} ${currentSelected.includes(cat.id) ? 'selected' : ''}`}
                 onClick={() => toggleCategory(cat.id, cat.isSection)}
               >
                 <span className="cat-label">{cat.label}</span>

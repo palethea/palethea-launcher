@@ -196,6 +196,7 @@ function InstanceEditor({
         return <InstanceWorlds
           instance={instance}
           onShowNotification={onShowNotification}
+          onShowConfirm={handleShowConfirm}
           isScrolled={scrolled}
           onQueueDownload={onQueueDownload}
           onDequeueDownload={onDequeueDownload}

@@ -7,9 +7,11 @@ import ModVersionModal from './ModVersionModal';
 import FilterModal from './FilterModal';
 import useModrinthSearch from '../hooks/useModrinthSearch';
 import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
+import { maybeShowCurseForgeBlockedDownloadModal } from '../utils/curseforgeInstallError';
+import { formatInstalledVersionLabel, withVersionPrefix } from '../utils/versionDisplay';
 import './FilterModal.css';
 
-const DATAPACK_CATEGORIES = [
+const MODRINTH_DATAPACK_CATEGORIES = [
     { id: 'group-categories', label: 'Categories', isSection: true },
     { id: 'adventure', label: 'Adventure' },
     { id: 'cursed', label: 'Cursed' },
@@ -32,10 +34,56 @@ const DATAPACK_CATEGORIES = [
     { id: 'worldgen', label: 'World Generation' },
 ];
 
+const CURSEFORGE_DATAPACK_CATEGORIES = [
+    { id: 'group-categories', label: 'Categories', isSection: true },
+    { id: 'cf-dp-adventure', label: 'Adventure', queryValue: 'Adventure' },
+    { id: 'cf-dp-fantasy', label: 'Fantasy', queryValue: 'Fantasy' },
+    { id: 'cf-dp-library', label: 'Library', queryValue: 'Library' },
+    { id: 'cf-dp-magic', label: 'Magic', queryValue: 'Magic' },
+    { id: 'cf-dp-tech', label: 'Tech', queryValue: 'Tech' },
+    { id: 'cf-dp-utility', label: 'Utility', queryValue: 'Utility' },
+    { id: 'cf-dp-mod-support', label: 'Mod Support', queryValue: 'Mod Support' },
+    { id: 'cf-dp-misc', label: 'Miscellaneous', queryValue: 'Miscellaneous' },
+    { id: 'cf-dp-modjam-2025', label: 'ModJam 2025', queryValue: 'ModJam 2025' },
+];
+
+const resolveSelectedCategoryQueryValues = (options, selectedIds) => {
+    const values = [];
+    for (const id of selectedIds || []) {
+        const match = (options || []).find((option) => option.id === id);
+        const rawValue = match?.queryValue ?? id;
+        const entries = Array.isArray(rawValue) ? rawValue : [rawValue];
+        for (const entry of entries) {
+            const normalized = String(entry || '').trim();
+            if (!normalized || values.includes(normalized)) continue;
+            values.push(normalized);
+        }
+    }
+    return values;
+};
+
+const isCurseForgeProjectId = (value) => /^\d+$/.test(String(value || '').trim());
+
+const normalizeProviderLabel = (provider, projectId) => {
+    const normalized = String(provider || '').toLowerCase();
+    if (normalized === 'curseforge') return 'CurseForge';
+    if (normalized === 'modrinth') return 'Modrinth';
+    return isCurseForgeProjectId(projectId) ? 'CurseForge' : 'Modrinth';
+};
+
+const getUpdateRowLatestVersion = (row) => {
+    const provider = normalizeProviderLabel(row?.provider, row?.project_id).toLowerCase();
+    if (provider === 'curseforge') {
+        return row?.latest_curseforge_version || null;
+    }
+    return row?.latest_version || null;
+};
+
 function WorldDatapacks({
     instance,
     world,
     onShowNotification,
+    onShowConfirm,
     onBack,
     isScrolled,
     onQueueDownload,
@@ -44,16 +92,22 @@ function WorldDatapacks({
 }) {
     const [activeSubTab, setActiveSubTab] = useState('installed');
     const [searchQuery, setSearchQuery] = useState('');
+    const [findSearchQuery, setFindSearchQuery] = useState('');
     const [installedDatapacks, setInstalledDatapacks] = useState([]);
     const [installing, setInstalling] = useState(null);
     const [updatingItems, setUpdatingItems] = useState([]); // Array of filenames being updated
     const [loading, setLoading] = useState(true);
+    const [findProvider, setFindProvider] = useState('modrinth');
+    const [hasCurseForgeKey, setHasCurseForgeKey] = useState(false);
     const [selectedCategories, setSelectedCategories] = useState([]);
+    const [appliedFindCategories, setAppliedFindCategories] = useState([]);
     const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
     const [deleteConfirm, setDeleteConfirm] = useState({ show: false, datapack: null });
     const [versionModal, setVersionModal] = useState({ show: false, project: null, updateItem: null });
     const [selectedItems, setSelectedItems] = useState([]); // Array of filenames
     const [isResolvingManual, setIsResolvingManual] = useState(false);
+    const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+    const [updatesFound, setUpdatesFound] = useState({});
 
     const installedSearchRef = useRef();
     const findSearchRef = useRef();
@@ -75,25 +129,61 @@ function WorldDatapacks({
         setLoading(false);
     }, [instance.id, world.folder_name, onShowNotification]);
 
+    const activeFilterCategories = useMemo(
+        () => (activeSubTab === 'find' && findProvider === 'curseforge' ? CURSEFORGE_DATAPACK_CATEGORIES : MODRINTH_DATAPACK_CATEGORIES),
+        [activeSubTab, findProvider]
+    );
+    const selectedCategoryQueryValues = useMemo(
+        () => resolveSelectedCategoryQueryValues(activeFilterCategories, selectedCategories),
+        [activeFilterCategories, selectedCategories]
+    );
+    const appliedCategoryQueryValues = useMemo(
+        () => resolveSelectedCategoryQueryValues(activeFilterCategories, appliedFindCategories),
+        [activeFilterCategories, appliedFindCategories]
+    );
+    const effectiveFindCategories = useMemo(
+        () => appliedCategoryQueryValues,
+        [appliedCategoryQueryValues]
+    );
+
     const {
         searchResults,
         popularItems: popularDatapacks,
         searching,
         loadingPopular,
         loadingMore,
+        canLoadMore,
         handleSearch,
         loadPopularItems: loadPopularDatapacks,
-        lastElementRef,
+        loadMore,
         resetFeed
     } = useModrinthSearch({
+        provider: findProvider,
         projectType: 'datapack',
         gameVersion: instance.version_id,
         loader: 'datapack',
-        categories: selectedCategories,
-        query: searchQuery,
+        categories: effectiveFindCategories,
+        query: findSearchQuery,
         withPopular: true,
         searchEmptyQuery: false
     });
+
+    const executeFindSearch = useCallback((queryOverride = searchQuery, categoriesOverride = selectedCategories) => {
+        if (findProvider === 'curseforge' && !hasCurseForgeKey) return;
+        const categoryQueryValues = Array.isArray(categoriesOverride)
+            ? resolveSelectedCategoryQueryValues(activeFilterCategories, categoriesOverride)
+            : selectedCategoryQueryValues;
+
+        setFindSearchQuery(queryOverride);
+        setAppliedFindCategories(categoriesOverride);
+
+        if (queryOverride.trim() === '' && categoriesOverride.length === 0) {
+            loadPopularDatapacks();
+            return;
+        }
+
+        handleSearch(0, queryOverride, categoryQueryValues);
+    }, [searchQuery, selectedCategories, findProvider, hasCurseForgeKey, loadPopularDatapacks, handleSearch, activeFilterCategories, selectedCategoryQueryValues]);
 
     // Effects
     useEffect(() => {
@@ -101,22 +191,42 @@ function WorldDatapacks({
     }, [world.folder_name, loadInstalledDatapacks]);
 
     useEffect(() => {
-        if (activeSubTab !== 'find') return;
-        const delay = searchQuery.trim() === '' && selectedCategories.length === 0 ? 0 : 500;
-        const timer = setTimeout(() => {
-            if (searchQuery.trim() === '' && selectedCategories.length === 0) {
-                loadPopularDatapacks();
-            } else {
-                handleSearch();
+        const loadCurseForgeKeyStatus = async () => {
+            try {
+                const hasKey = await invoke('has_curseforge_api_key');
+                setHasCurseForgeKey(Boolean(hasKey));
+            } catch (error) {
+                console.error('Failed to check CurseForge key status:', error);
+                setHasCurseForgeKey(false);
             }
-        }, delay);
-        return () => clearTimeout(timer);
-    }, [activeSubTab, selectedCategories, searchQuery, loadPopularDatapacks, handleSearch]);
+        };
+        loadCurseForgeKeyStatus();
+    }, []);
 
     useEffect(() => {
+        if (activeSubTab !== 'find') return;
+        if (findProvider === 'curseforge' && !hasCurseForgeKey) return;
+        if (findSearchQuery.trim() !== '' || appliedFindCategories.length > 0) return;
+        loadPopularDatapacks();
+    }, [activeSubTab, findProvider, hasCurseForgeKey, findSearchQuery, appliedFindCategories.length, loadPopularDatapacks]);
+
+    useEffect(() => {
+        setSearchQuery('');
+        setFindSearchQuery('');
+        setSelectedCategories([]);
+        setAppliedFindCategories([]);
         setSelectedItems([]);
         resetFeed();
     }, [activeSubTab, resetFeed]);
+
+    useEffect(() => {
+        if (activeSubTab !== 'find') return;
+        setSearchQuery('');
+        setFindSearchQuery('');
+        setSelectedCategories([]);
+        setAppliedFindCategories([]);
+        resetFeed();
+    }, [activeSubTab, findProvider, resetFeed]);
 
     useEffect(() => {
         const handleKeyDown = (e) => {
@@ -145,13 +255,15 @@ function WorldDatapacks({
     }, [installedDatapacks, searchQuery, selectedCategories]);
 
     const matchesAllSelectedCategories = useCallback((project) => {
-        return matchesSelectedCategories(project, selectedCategories);
-    }, [selectedCategories]);
+        if (findProvider === 'curseforge') return true;
+        return matchesSelectedCategories(project, appliedFindCategories);
+    }, [findProvider, appliedFindCategories]);
 
     const displayItems = useMemo(() => {
-        const base = (searchQuery.trim() || selectedCategories.length > 0) ? searchResults : popularDatapacks;
+        const base = (findSearchQuery.trim() || appliedFindCategories.length > 0) ? searchResults : popularDatapacks;
         return base.filter(matchesAllSelectedCategories);
-    }, [searchQuery, selectedCategories, searchResults, popularDatapacks, matchesAllSelectedCategories]);
+    }, [findSearchQuery, appliedFindCategories, searchResults, popularDatapacks, matchesAllSelectedCategories]);
+    const hasAppliedFindFilters = findSearchQuery.trim().length > 0 || appliedFindCategories.length > 0;
 
     // Helpers
     const getInstalledItem = (project) => {
@@ -206,7 +318,13 @@ function WorldDatapacks({
     }, []);
 
     const handleInstall = useCallback(async (project, version, skipDeps = false, updateItem = null) => {
-        const downloadId = project.project_id || project.id || project.slug;
+        const resolvedProjectId = String(project?.project_id || project?.id || project?.slug || updateItem?.project_id || '').trim();
+        const providerLabel = normalizeProviderLabel(
+            project?.provider_label || project?.provider || updateItem?.provider,
+            resolvedProjectId
+        );
+        const provider = providerLabel.toLowerCase();
+        const downloadId = resolvedProjectId || updateItem?.filename || project?.slug;
 
         if (onQueueDownload) {
             onQueueDownload({
@@ -217,7 +335,7 @@ function WorldDatapacks({
             });
         }
 
-        setInstalling(project.slug || project.project_id || project.id);
+        setInstalling(resolvedProjectId || project.slug || project.project_id || project.id);
         if (updateItem) {
             setUpdatingItems(prev => [...prev, updateItem.filename]);
         }
@@ -228,9 +346,9 @@ function WorldDatapacks({
             }
 
             let resolvedVersion = version;
-            if (!resolvedVersion) {
+            if (provider === 'modrinth' && !resolvedVersion) {
                 const versions = await invoke('get_modrinth_versions', {
-                    projectId: project.slug || project.project_id,
+                    projectId: project.slug || project.project_id || resolvedProjectId,
                     gameVersion: instance.version_id,
                     loader: 'datapack'
                 });
@@ -250,32 +368,75 @@ function WorldDatapacks({
                 resolvedVersion = versions[0];
             }
 
-            // Prefer .zip files for datapacks if available, otherwise fallback to primary or first file
-            const file = resolvedVersion.files.find(f => f.filename.toLowerCase().endsWith('.zip')) ||
-                resolvedVersion.files.find(f => f.primary) ||
-                resolvedVersion.files[0];
+            let installedFilename = '';
+            if (provider === 'curseforge') {
+                if (!resolvedProjectId) {
+                    throw new Error('Missing CurseForge project ID');
+                }
+                if (!resolvedVersion) {
+                    const cfVersions = await invoke('get_curseforge_modpack_versions', { projectId: resolvedProjectId });
+                    if (!Array.isArray(cfVersions) || cfVersions.length === 0) {
+                        throw new Error('No compatible CurseForge file found');
+                    }
+                    const sorted = [...cfVersions].sort((a, b) => new Date(b.date_published) - new Date(a.date_published));
+                    resolvedVersion = sorted[0];
+                }
 
-            if (onUpdateDownloadStatus) {
-                onUpdateDownloadStatus(downloadId, 'Downloading...');
+                const file = resolvedVersion?.files?.find((f) => String(f.filename || '').toLowerCase().endsWith('.zip'))
+                    || resolvedVersion?.files?.find((f) => f.primary)
+                    || resolvedVersion?.files?.[0];
+                if (!file) {
+                    throw new Error('Selected CurseForge version has no downloadable file');
+                }
+                installedFilename = file.filename || `${resolvedProjectId}-${resolvedVersion.id}.zip`;
+
+                if (onUpdateDownloadStatus) {
+                    onUpdateDownloadStatus(downloadId, 'Downloading...');
+                }
+
+                await invoke('install_curseforge_file', {
+                    instanceId: instance.id,
+                    projectId: resolvedProjectId,
+                    fileId: resolvedVersion.id,
+                    fileType: 'datapack',
+                    filename: installedFilename,
+                    fileUrl: file.url || null,
+                    worldName: world.folder_name,
+                    iconUrl: project.icon_url || project.thumbnail || updateItem?.icon_url || null,
+                    name: project.title || project.name || updateItem?.name || null,
+                    author: project.author || updateItem?.author || null,
+                    versionName: resolvedVersion.name || resolvedVersion.version_number || null,
+                    categories: project.categories || project.display_categories || (updateItem ? updateItem.categories : null) || null
+                });
+            } else {
+                // Prefer .zip files for datapacks if available, otherwise fallback to primary or first file
+                const file = resolvedVersion.files.find(f => f.filename.toLowerCase().endsWith('.zip')) ||
+                    resolvedVersion.files.find(f => f.primary) ||
+                    resolvedVersion.files[0];
+                installedFilename = file.filename;
+
+                if (onUpdateDownloadStatus) {
+                    onUpdateDownloadStatus(downloadId, 'Downloading...');
+                }
+
+                await invoke('install_modrinth_file', {
+                    instanceId: instance.id,
+                    fileUrl: file.url,
+                    filename: file.filename,
+                    fileType: 'datapack',
+                    projectId: resolvedProjectId || project.slug || project.id,
+                    versionId: resolvedVersion.id,
+                    worldName: world.folder_name,
+                    iconUrl: project.icon_url || project.thumbnail,
+                    name: project.title || project.name,
+                    author: project.author,
+                    versionName: resolvedVersion.version_number,
+                    categories: project.categories || project.display_categories || (updateItem ? updateItem.categories : null) || null
+                });
             }
 
-            await invoke('install_modrinth_file', {
-                instanceId: instance.id,
-                fileUrl: file.url,
-                filename: file.filename,
-                fileType: 'datapack',
-                projectId: project.project_id || project.slug || project.id,
-                versionId: resolvedVersion.id,
-                worldName: world.folder_name,
-                iconUrl: project.icon_url || project.thumbnail,
-                name: project.title || project.name,
-                author: project.author,
-                versionName: resolvedVersion.version_number,
-                categories: project.categories || project.display_categories || (updateItem ? updateItem.categories : null) || null
-            });
-
             // If updating, delete the old file
-            if (updateItem && updateItem.filename !== file.filename) {
+            if (updateItem && updateItem.filename !== installedFilename) {
                 if (import.meta.env.DEV) {
                     invoke('log_event', { level: 'info', message: `Deleting old datapack: ${updateItem.filename}` }).catch(() => { });
                 }
@@ -293,7 +454,15 @@ function WorldDatapacks({
             await loadInstalledDatapacks();
         } catch (error) {
             console.error('Failed to install datapack:', error);
-            if (onShowNotification) {
+            const handledCurseForgeRestriction = await maybeShowCurseForgeBlockedDownloadModal({
+                error,
+                provider,
+                project,
+                projectId: resolvedProjectId,
+                onShowConfirm,
+                onShowNotification,
+            });
+            if (!handledCurseForgeRestriction && onShowNotification) {
                 onShowNotification('Failed to install datapack: ' + error, 'error');
             }
         }
@@ -304,7 +473,7 @@ function WorldDatapacks({
         if (updateItem) {
             setUpdatingItems(prev => prev.filter(f => f !== updateItem.filename));
         }
-    }, [instance.id, instance.version_id, world.folder_name, onShowNotification, loadInstalledDatapacks, onQueueDownload, onDequeueDownload, onUpdateDownloadStatus]);
+    }, [instance.id, instance.version_id, world.folder_name, onShowNotification, onShowConfirm, loadInstalledDatapacks, onQueueDownload, onDequeueDownload, onUpdateDownloadStatus]);
 
     const handleDelete = useCallback((datapack) => {
         setDeleteConfirm({ show: true, datapack });
@@ -383,6 +552,78 @@ function WorldDatapacks({
         }
     }, [instance.id, world.folder_name, loadInstalledDatapacks, onShowNotification, isResolvingManual]);
 
+    const handleBulkCheckUpdates = useCallback(async () => {
+        const tracked = installedDatapacks.filter((p) => p.project_id && (!p.provider || p.provider !== 'Manual'));
+        if (tracked.length === 0) return;
+
+        setIsCheckingUpdates(true);
+        try {
+            const rows = await invoke('get_instance_mod_updates', {
+                instanceId: instance.id,
+                fileType: 'datapack',
+                worldName: world.folder_name
+            });
+            const updates = {};
+            for (const row of Array.isArray(rows) ? rows : []) {
+                if (row?.project_id && getUpdateRowLatestVersion(row)) {
+                    updates[row.project_id] = row;
+                }
+            }
+            setUpdatesFound(updates);
+            if (onShowNotification) {
+                const count = Object.keys(updates).length;
+                if (count > 0) {
+                    onShowNotification(`Found updates for ${count} datapack${count > 1 ? 's' : ''}!`, 'info');
+                } else {
+                    onShowNotification('All datapacks are up to date.', 'success');
+                }
+            }
+        } catch (error) {
+            console.error('Datapack update check failed:', error);
+            onShowNotification?.(`Failed to check updates: ${error}`, 'error');
+        } finally {
+            setIsCheckingUpdates(false);
+        }
+    }, [installedDatapacks, instance.id, world.folder_name, onShowNotification]);
+
+    const handleUpdateAll = useCallback(async () => {
+        const managed = installedDatapacks.filter((p) => p.project_id && (!p.provider || p.provider !== 'Manual'));
+        const toUpdate = managed.filter((item) => updatesFound[item.project_id]);
+        if (toUpdate.length === 0) return;
+
+        onShowConfirm?.({
+            title: 'Update Datapacks',
+            message: `Would you like to update ${toUpdate.length} datapack${toUpdate.length > 1 ? 's' : ''} to the latest version?`,
+            confirmText: 'Update All',
+            cancelText: 'Cancel',
+            variant: 'primary',
+            onConfirm: async () => {
+                for (const item of toUpdate) {
+                    const updateRow = updatesFound[item.project_id];
+                    const latestVersion = getUpdateRowLatestVersion(updateRow);
+                    if (!latestVersion) continue;
+                    try {
+                        const provider = normalizeProviderLabel(updateRow?.provider || item.provider, item.project_id);
+                        const project = provider === 'CurseForge'
+                            ? await invoke('get_curseforge_modpack', { projectId: item.project_id })
+                            : await invoke('get_modrinth_project', { projectId: item.project_id });
+                        await handleInstall({
+                            ...project,
+                            project_id: item.project_id,
+                            slug: item.project_id,
+                            provider_label: provider,
+                            project_type: 'datapack'
+                        }, latestVersion, true, item);
+                    } catch (error) {
+                        console.error(`Failed to update datapack ${item.name}:`, error);
+                    }
+                }
+                setUpdatesFound({});
+                onShowNotification?.('Completed datapack updates', 'info');
+            }
+        });
+    }, [installedDatapacks, updatesFound, onShowConfirm, handleInstall, onShowNotification]);
+
     const confirmDelete = useCallback(async () => {
         const dp = deleteConfirm.datapack;
         setDeleteConfirm({ show: false, datapack: null });
@@ -452,10 +693,10 @@ function WorldDatapacks({
             <FilterModal
                 isOpen={isFilterModalOpen}
                 onClose={() => setIsFilterModalOpen(false)}
-                categories={DATAPACK_CATEGORIES}
+                categories={activeFilterCategories}
                 selectedCategories={selectedCategories}
                 onApply={setSelectedCategories}
-                title="Datapack Categories"
+                title={activeSubTab === 'find' && findProvider === 'curseforge' ? 'CurseForge Datapack Categories' : 'Datapack Categories'}
             />
 
             {activeSubTab === 'installed' ? (
@@ -506,10 +747,10 @@ function WorldDatapacks({
                                 </button>
                             </div>
 
-                            {installedDatapacks.filter(p => p.provider === 'Modrinth').length > 0 && (
+                            {installedDatapacks.filter(p => p.project_id && (!p.provider || p.provider !== 'Manual')).length > 0 && (
                                 <div className="mod-group">
                                     <div className="group-header">
-                                        <h3 className="group-title">Modrinth</h3>
+                                        <h3 className="group-title">Managed</h3>
                                         <div className="group-header-line"></div>
                                         <button className="select-all-btn-inline" onClick={handleSelectAll}>
                                             <div className={`selection-checkbox mini ${selectedItems.length === installedDatapacks.length && installedDatapacks.length > 0 ? 'checked' : ''}`}>
@@ -517,14 +758,40 @@ function WorldDatapacks({
                                             </div>
                                             <span>{selectedItems.length === installedDatapacks.length && installedDatapacks.length > 0 ? 'Deselect All' : 'Select All'}</span>
                                         </button>
+                                        <button
+                                            className={`check-updates-btn-inline ${isCheckingUpdates ? 'loading' : ''}`}
+                                            onClick={handleBulkCheckUpdates}
+                                            disabled={isCheckingUpdates}
+                                        >
+                                            {isCheckingUpdates ? <Loader2 size={12} className="spin" /> : <RefreshCcw size={12} />}
+                                            <span>Check Updates</span>
+                                            {Object.keys(updatesFound).length > 0 && (
+                                                <span className="update-badge pulse">{Object.keys(updatesFound).length}</span>
+                                            )}
+                                        </button>
+                                        {Object.keys(updatesFound).length > 0 && (
+                                            <button
+                                                className="update-all-btn-inline"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleUpdateAll();
+                                                }}
+                                                title="Update All"
+                                            >
+                                                Update All
+                                            </button>
+                                        )}
                                     </div>
                                     <div className="installed-list">
                                         {filteredInstalledDatapacks
-                                            .filter(p => p.provider === 'Modrinth')
+                                            .filter(p => p.project_id && (!p.provider || p.provider !== 'Manual'))
                                             .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename))
                                             .map((dp) => {
                                                 const isUpdating = updatingItems.includes(dp.filename);
                                                 const isSelected = selectedItems.includes(dp.filename);
+                                                const versionLabel = withVersionPrefix(
+                                                    formatInstalledVersionLabel(dp.version, dp.provider, dp.filename)
+                                                );
                                                 return (
                                                     <div
                                                         key={dp.filename}
@@ -533,7 +800,15 @@ function WorldDatapacks({
                                                             if (selectedItems.length > 0) {
                                                                 handleToggleSelect(dp.filename);
                                                             } else {
-                                                                handleRequestInstall({ project_id: dp.project_id, title: dp.name, slug: dp.project_id, icon_url: dp.icon_url, project_type: 'datapack', categories: dp.categories }, dp);
+                                                                handleRequestInstall({
+                                                                    project_id: dp.project_id,
+                                                                    title: dp.name,
+                                                                    slug: dp.project_id,
+                                                                    icon_url: dp.icon_url,
+                                                                    project_type: 'datapack',
+                                                                    provider_label: normalizeProviderLabel(dp.provider, dp.project_id),
+                                                                    categories: dp.categories
+                                                                }, dp);
                                                             }
                                                         }}
                                                     >
@@ -560,7 +835,10 @@ function WorldDatapacks({
                                                             <div className="item-info">
                                                                 <div className="item-title-row">
                                                                     <h4>{dp.name || dp.filename}</h4>
-                                                                    {dp.version && <span className="mod-version-tag">v{dp.version}</span>}
+                                                                    {versionLabel && <span className="mod-version-tag">{versionLabel}</span>}
+                                                                    {updatesFound[dp.project_id] && (
+                                                                        <span className="update-available-tag pulse">Update Available</span>
+                                                                    )}
                                                                 </div>
                                                                 <div className="item-meta-row">
                                                                     <span className="mod-provider">{dp.provider}</span>
@@ -580,7 +858,14 @@ function WorldDatapacks({
                                                                     title="Update Datapack"
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
-                                                                        handleRequestInstall({ project_id: dp.project_id, title: dp.name, slug: dp.project_id, icon_url: dp.icon_url, project_type: 'datapack' }, dp);
+                                                                        handleRequestInstall({
+                                                                            project_id: dp.project_id,
+                                                                            title: dp.name,
+                                                                            slug: dp.project_id,
+                                                                            icon_url: dp.icon_url,
+                                                                            project_type: 'datapack',
+                                                                            provider_label: normalizeProviderLabel(dp.provider, dp.project_id)
+                                                                        }, dp);
                                                                     }}
                                                                     disabled={isUpdating}
                                                                 >
@@ -605,7 +890,7 @@ function WorldDatapacks({
                                     </div>
                                 </div>
                             )}
-                            {installedDatapacks.filter(p => !p.provider || p.provider === 'Manual').length > 0 && (
+                            {installedDatapacks.filter(p => !p.project_id || !p.provider || p.provider === 'Manual').length > 0 && (
                                 <div className="mod-group">
                                     <div className="group-header">
                                         <h3 className="group-title">Manual</h3>
@@ -614,15 +899,15 @@ function WorldDatapacks({
                                             className={`resolve-modrinth-btn-inline ${isResolvingManual ? 'loading' : ''}`}
                                             onClick={handleResolveManualMetadata}
                                             disabled={isResolvingManual}
-                                            title="Check manual files on Modrinth and attach metadata"
+                                            title="Find metadata for manual files"
                                         >
                                             {isResolvingManual ? <Loader2 size={12} className="spin" /> : <Wand2 size={12} />}
-                                            <span>Find on Modrinth</span>
+                                            <span>Find on Modrinth/CurseForge</span>
                                         </button>
                                     </div>
                                     <div className="installed-list">
                                         {filteredInstalledDatapacks
-                                            .filter(p => !p.provider || p.provider === 'Manual')
+                                            .filter(p => !p.project_id || !p.provider || p.provider === 'Manual')
                                             .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename))
                                             .map((dp) => {
                                                 const isSelected = selectedItems.includes(dp.filename);
@@ -686,6 +971,20 @@ function WorldDatapacks({
                 <div className="find-section">
                     <div className="mods-container">
                         <div className="search-controls-refined">
+                            <div className="sub-tabs">
+                                <button
+                                    className={`sub-tab ${findProvider === 'modrinth' ? 'active' : ''}`}
+                                    onClick={() => setFindProvider('modrinth')}
+                                >
+                                    Modrinth
+                                </button>
+                                <button
+                                    className={`sub-tab ${findProvider === 'curseforge' ? 'active' : ''}`}
+                                    onClick={() => setFindProvider('curseforge')}
+                                >
+                                    CurseForge
+                                </button>
+                            </div>
                             <button
                                 className={`filter-btn-modal ${selectedCategories.length > 0 ? 'active' : ''}`}
                                 onClick={() => setIsFilterModalOpen(true)}
@@ -702,10 +1001,10 @@ function WorldDatapacks({
                                     <input
                                         ref={findSearchRef}
                                         type="text"
-                                        placeholder="Search Modrinth for datapacks..."
+                                        placeholder={findProvider === 'curseforge' ? 'Search CurseForge datapacks...' : 'Search Modrinth for datapacks...'}
                                         value={searchQuery}
                                         onChange={(e) => setSearchQuery(e.target.value)}
-                                        onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                                        onKeyDown={(e) => e.key === 'Enter' && executeFindSearch()}
                                     />
                                     {searchQuery && (
                                         <button className="clear-search-btn" onClick={() => setSearchQuery('')} title="Clear search">
@@ -716,85 +1015,114 @@ function WorldDatapacks({
                             </div>
                             <button
                                 className="search-btn"
-                                onClick={handleSearch}
-                                disabled={searching}
+                                onClick={() => executeFindSearch()}
+                                disabled={searching || (findProvider === 'curseforge' && !hasCurseForgeKey)}
                             >
                                 {searching ? <Loader2 className="spin-icon" size={18} /> : 'Search'}
                             </button>
                         </div>
 
                         <h3 className="section-title">
-                            {searchQuery.trim() || selectedCategories.length > 0 ? 'Search Results' : 'Popular Datapacks'}
+                            {hasAppliedFindFilters ? 'Search Results' : 'Popular Datapacks'}
                         </h3>
 
-                        {(searching || loadingPopular) ? (
+                        {findProvider === 'curseforge' && !hasCurseForgeKey ? (
+                            <div className="empty-state error-state">
+                                <p style={{ color: '#ef4444' }}>CurseForge key not configured</p>
+                                <p style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
+                                    Set `CURSEFORGE_API_KEY` for backend runtime.
+                                </p>
+                            </div>
+                        ) : (searching || loadingPopular) ? (
                             <div className="loading-mods">Loading...</div>
                         ) : (
-                            <div className="search-results">
-                                {(searchQuery.trim() || selectedCategories.length > 0 ? searchResults : popularDatapacks).map((project, index, array) => {
-                                    const installedItem = getInstalledItem(project);
-                                    const isDownloading = installing === project.slug;
+                            <div className="search-results-viewport">
+                                <div className="search-results">
+                                    {displayItems.map((project, index) => {
+                                        const installedItem = getInstalledItem(project);
+                                        const isDownloading = installing === (project.slug || project.project_id || project.id);
 
-                                    return (
-                                        <div
-                                            key={`${project.project_id || project.slug}-${index}`}
-                                            className={`search-result-card ${isDownloading ? 'mod-updating' : ''}`}
-                                            ref={index === array.length - 1 ? lastElementRef : null}
-                                        >
-                                            {isDownloading && (
-                                                <div className="mod-updating-overlay">
-                                                    <RefreshCcw className="spin-icon" size={20} />
-                                                    <span>Downloading...</span>
-                                                </div>
-                                            )}
-                                            <div className="result-header">
-                                                {project.icon_url && (
-                                                    <img src={project.icon_url} alt="" className="result-icon" />
+                                        return (
+                                            <div
+                                                key={`${project.project_id || project.slug || project.id || index}`}
+                                                className={`search-result-card ${isDownloading ? 'mod-updating' : ''}`}
+                                            >
+                                                {isDownloading && (
+                                                    <div className="mod-updating-overlay">
+                                                        <RefreshCcw className="spin-icon" size={20} />
+                                                        <span>Downloading...</span>
+                                                    </div>
                                                 )}
-                                                <div className="result-info">
-                                                    <h4>{project.title}</h4>
-                                                    <span className="result-author">by {project.author}</span>
+                                                <div className="result-header">
+                                                    {project.icon_url && (
+                                                        <img src={project.icon_url} alt="" className="result-icon" />
+                                                    )}
+                                                    <div className="result-info">
+                                                        <h4>{project.title}</h4>
+                                                        <span className="result-author">by {project.author}</span>
+                                                    </div>
+                                                </div>
+                                                <p className="result-description">{project.description}</p>
+                                                <div className="result-footer">
+                                                    <div className="result-meta">
+                                                        <span className="result-downloads">{formatDownloads(project.downloads)} downloads</span>
+                                                    </div>
+                                                    {installedItem ? (
+                                                        <button
+                                                            className="install-btn reinstall"
+                                                            onClick={() => handleRequestInstall({
+                                                                ...project,
+                                                                provider_label: findProvider === 'curseforge' ? 'CurseForge' : 'Modrinth',
+                                                                project_type: 'datapack',
+                                                                categories: project.categories || installedItem.categories
+                                                            }, installedItem)}
+                                                            disabled={isDownloading}
+                                                        >
+                                                            Reinstall
+                                                        </button>
+                                                    ) : (
+                                                        <button
+                                                            className="install-btn"
+                                                            onClick={() => handleRequestInstall({
+                                                                ...project,
+                                                                provider_label: findProvider === 'curseforge' ? 'CurseForge' : 'Modrinth',
+                                                                project_type: 'datapack'
+                                                            })}
+                                                            disabled={isDownloading}
+                                                        >
+                                                            Install
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </div>
-                                            <p className="result-description">{project.description}</p>
-                                            <div className="result-footer">
-                                                <div className="result-meta">
-                                                    <span className="result-downloads">{formatDownloads(project.downloads)} downloads</span>
-                                                </div>
-                                                {installedItem ? (
-                                                    <button
-                                                        className="install-btn reinstall"
-                                                        onClick={() => handleRequestInstall({ ...project, categories: project.categories || installedItem.categories }, installedItem)}
-                                                        disabled={isDownloading}
-                                                    >
-                                                        Reinstall
-                                                    </button>
-                                                ) : (
-                                                    <button
-                                                        className="install-btn"
-                                                        onClick={() => handleRequestInstall(project)}
-                                                        disabled={isDownloading}
-                                                    >
-                                                        Install
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                                {(searchQuery.trim() || selectedCategories.length > 0 ? searchResults : popularDatapacks).length === 0 && (
+                                        );
+                                    })}
+                                </div>
+                                {displayItems.length === 0 && (
                                     <div className="empty-state">
                                         <p>
-                                            {searchQuery.trim() || selectedCategories.length > 0
-                                                ? `No datapacks found for "${searchQuery || (selectedCategories.length > 0 ? `${selectedCategories.length} filters applied` : '')}".`
+                                            {hasAppliedFindFilters
+                                                ? `No datapacks found for "${findSearchQuery || (appliedFindCategories.length > 0 ? `${appliedFindCategories.length} filters applied` : '')}".`
                                                 : 'No popular datapacks available for this version.'}
                                         </p>
                                     </div>
                                 )}
-                                {loadingMore && (
-                                    <div className="loading-more">
-                                        <Loader2 className="spin-icon" size={24} />
-                                        <span>Loading more datapacks...</span>
+                                {canLoadMore && (
+                                    <div className="search-load-more-actions">
+                                        <button
+                                            className="search-load-more-btn"
+                                            onClick={loadMore}
+                                            disabled={loadingMore || searching || loadingPopular}
+                                        >
+                                            {loadingMore ? (
+                                                <>
+                                                    <Loader2 className="search-load-more-spinner" size={16} />
+                                                    <span>Loading...</span>
+                                                </>
+                                            ) : (
+                                                <span>Load More</span>
+                                            )}
+                                        </button>
                                     </div>
                                 )}
                             </div>

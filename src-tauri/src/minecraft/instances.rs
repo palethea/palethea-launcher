@@ -77,6 +77,18 @@ pub struct Instance {
     pub preferred_account: Option<String>,
     #[serde(default = "default_true")]
     pub check_mod_updates_on_launch: bool,
+    #[serde(default)]
+    pub modpack_provider: Option<String>,
+    #[serde(default)]
+    pub modpack_project_id: Option<String>,
+    #[serde(default)]
+    pub modpack_version_id: Option<String>,
+    #[serde(default)]
+    pub modpack_title: Option<String>,
+    #[serde(default)]
+    pub modpack_author: Option<String>,
+    #[serde(default)]
+    pub modpack_url: Option<String>,
 }
 
 impl Instance {
@@ -103,6 +115,12 @@ impl Instance {
             color_accent: None,
             preferred_account: None,
             check_mod_updates_on_launch: true,
+            modpack_provider: None,
+            modpack_project_id: None,
+            modpack_version_id: None,
+            modpack_title: None,
+            modpack_author: None,
+            modpack_url: None,
         }
     }
     
@@ -274,6 +292,12 @@ pub fn clone_instance(instance_id: &str, new_name: String) -> Result<Instance, S
         color_accent: source.color_accent.clone(),
         preferred_account: source.preferred_account.clone(),
         check_mod_updates_on_launch: source.check_mod_updates_on_launch,
+        modpack_provider: source.modpack_provider.clone(),
+        modpack_project_id: source.modpack_project_id.clone(),
+        modpack_version_id: source.modpack_version_id.clone(),
+        modpack_title: source.modpack_title.clone(),
+        modpack_author: source.modpack_author.clone(),
+        modpack_url: source.modpack_url.clone(),
     };
     
     // Create new instance directory

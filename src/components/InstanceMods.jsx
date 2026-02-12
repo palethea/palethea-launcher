@@ -1,15 +1,17 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Trash2, RefreshCcw, Plus, Upload, Copy, Code, Loader2, ChevronDown, Check, ListFilterPlus, Play, Square, X, TriangleAlert, ShieldCheck } from 'lucide-react';
+import { Trash2, RefreshCcw, Plus, Upload, Copy, Code, Loader2, ChevronDown, Check, ListFilterPlus, Play, Square, X, TriangleAlert, ShieldCheck, Wand2 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
 import FilterModal from './FilterModal';
 import useModrinthSearch from '../hooks/useModrinthSearch';
 import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
+import { maybeShowCurseForgeBlockedDownloadModal } from '../utils/curseforgeInstallError';
+import { formatInstalledVersionLabel, withVersionPrefix } from '../utils/versionDisplay';
 import './FilterModal.css';
 
-const MOD_CATEGORIES = [
+const MODRINTH_MOD_CATEGORIES = [
   { id: 'group-categories', label: 'Categories', isSection: true },
   { id: 'adventure', label: 'Adventure' },
   { id: 'cursed', label: 'Cursed' },
@@ -32,6 +34,97 @@ const MOD_CATEGORIES = [
   { id: 'worldgen', label: 'World Generation' },
 ];
 
+const CURSEFORGE_MOD_CATEGORIES = [
+  { id: 'group-core', label: 'Core Categories', isSection: true },
+  { id: 'cf-addons', label: 'Addons', queryValue: 'Addons' },
+  { id: 'cf-adventure-rpg', label: 'Adventure and RPG', queryValue: 'Adventure and RPG' },
+  { id: 'cf-api-library', label: 'API and Library', queryValue: 'API and Library' },
+  { id: 'cf-armor-tools-weapons', label: 'Armor, Tools, and Weapons', queryValue: 'Armor, Tools, and Weapons' },
+  { id: 'cf-bug-fixes', label: 'Bug Fixes', queryValue: 'Bug Fixes' },
+  { id: 'cf-cosmetic', label: 'Cosmetic', queryValue: 'Cosmetic' },
+  { id: 'cf-creativemode', label: 'CreativeMode', queryValue: 'CreativeMode' },
+  { id: 'cf-education', label: 'Education', queryValue: 'Education' },
+  { id: 'cf-food', label: 'Food', queryValue: 'Food' },
+  { id: 'cf-magic', label: 'Magic', queryValue: 'Magic' },
+  { id: 'cf-map-information', label: 'Map and Information', queryValue: 'Map and Information' },
+  { id: 'cf-mcreator', label: 'MCreator', queryValue: 'MCreator' },
+  { id: 'cf-misc', label: 'Miscellaneous', queryValue: 'Miscellaneous' },
+  { id: 'cf-performance', label: 'Performance', queryValue: 'Performance' },
+  { id: 'cf-redstone', label: 'Redstone', queryValue: 'Redstone' },
+  { id: 'cf-server-utility', label: 'Server Utility', queryValue: 'Server Utility' },
+  { id: 'cf-storage', label: 'Storage', queryValue: 'Storage' },
+  { id: 'cf-technology', label: 'Technology', queryValue: 'Technology' },
+  { id: 'cf-twitch-integration', label: 'Twitch Integration', queryValue: 'Twitch Integration' },
+  { id: 'cf-utility-qol', label: 'Utility & QoL', queryValue: 'Utility & QoL' },
+  { id: 'cf-world-gen', label: 'World Gen', queryValue: 'World Gen' },
+
+  { id: 'group-addons', label: 'Addons Subcategories', isSection: true },
+  { id: 'cf-addon-ae2', label: 'Applied Energistics 2', isSubcategory: true, queryValue: ['Addons', 'Applied Energistics 2'] },
+  { id: 'cf-addon-blood-magic', label: 'Blood Magic', isSubcategory: true, queryValue: ['Addons', 'Blood Magic'] },
+  { id: 'cf-addon-buildcraft', label: 'Buildcraft', isSubcategory: true, queryValue: ['Addons', 'Buildcraft'] },
+  { id: 'cf-addon-crafttweaker', label: 'CraftTweaker', isSubcategory: true, queryValue: ['Addons', 'CraftTweaker'] },
+  { id: 'cf-addon-create', label: 'Create', isSubcategory: true, queryValue: ['Addons', 'Create'] },
+  { id: 'cf-addon-forestry', label: 'Forestry', isSubcategory: true, queryValue: ['Addons', 'Forestry'] },
+  { id: 'cf-addon-galacticraft', label: 'Galacticraft', isSubcategory: true, queryValue: ['Addons', 'Galacticraft'] },
+  { id: 'cf-addon-industrial-craft', label: 'Industrial Craft', isSubcategory: true, queryValue: ['Addons', 'Industrial Craft'] },
+  { id: 'cf-addon-integrated-dynamics', label: 'Integrated Dynamics', isSubcategory: true, queryValue: ['Addons', 'Integrated Dynamics'] },
+  { id: 'cf-addon-kubejs', label: 'KubeJS', isSubcategory: true, queryValue: ['Addons', 'KubeJS'] },
+  { id: 'cf-addon-refined-storage', label: 'Refined Storage', isSubcategory: true, queryValue: ['Addons', 'Refined Storage'] },
+  { id: 'cf-addon-skyblock', label: 'Skyblock', isSubcategory: true, queryValue: ['Addons', 'Skyblock'] },
+  { id: 'cf-addon-thaumcraft', label: 'Thaumcraft', isSubcategory: true, queryValue: ['Addons', 'Thaumcraft'] },
+  { id: 'cf-addon-thermal-expansion', label: 'Thermal Expansion', isSubcategory: true, queryValue: ['Addons', 'Thermal Expansion'] },
+  { id: 'cf-addon-tinkers-construct', label: "Tinker's Construct", isSubcategory: true, queryValue: ['Addons', "Tinker's Construct"] },
+  { id: 'cf-addon-twilight-forest', label: 'Twilight Forest', isSubcategory: true, queryValue: ['Addons', 'Twilight Forest'] },
+
+  { id: 'group-tech-sub', label: 'Technology Subcategories', isSection: true },
+  { id: 'cf-tech-automation', label: 'Automation', isSubcategory: true, queryValue: ['Technology', 'Automation'] },
+  { id: 'cf-tech-energy', label: 'Energy', isSubcategory: true, queryValue: ['Technology', 'Energy'] },
+  { id: 'cf-tech-energy-fluid-item-transport', label: 'Energy, Fluid, and Item Transport', isSubcategory: true, queryValue: ['Technology', 'Energy, Fluid, and Item Transport'] },
+  { id: 'cf-tech-farming', label: 'Farming', isSubcategory: true, queryValue: ['Technology', 'Farming'] },
+  { id: 'cf-tech-genetics', label: 'Genetics', isSubcategory: true, queryValue: ['Technology', 'Genetics'] },
+  { id: 'cf-tech-player-transport', label: 'Player Transport', isSubcategory: true, queryValue: ['Technology', 'Player Transport'] },
+  { id: 'cf-tech-processing', label: 'Processing', isSubcategory: true, queryValue: ['Technology', 'Processing'] },
+
+  { id: 'group-worldgen-sub', label: 'World Gen Subcategories', isSection: true },
+  { id: 'cf-worldgen-biomes', label: 'Biomes', isSubcategory: true, queryValue: ['World Gen', 'Biomes'] },
+  { id: 'cf-worldgen-dimensions', label: 'Dimensions', isSubcategory: true, queryValue: ['World Gen', 'Dimensions'] },
+  { id: 'cf-worldgen-mobs', label: 'Mobs', isSubcategory: true, queryValue: ['World Gen', 'Mobs'] },
+  { id: 'cf-worldgen-ores-resources', label: 'Ores and Resources', isSubcategory: true, queryValue: ['World Gen', 'Ores and Resources'] },
+  { id: 'cf-worldgen-structures', label: 'Structures', isSubcategory: true, queryValue: ['World Gen', 'Structures'] },
+];
+
+const resolveSelectedCategoryQueryValues = (options, selectedIds) => {
+  const values = [];
+  for (const id of selectedIds || []) {
+    const match = (options || []).find((option) => option.id === id);
+    const rawValue = match?.queryValue ?? id;
+    const entries = Array.isArray(rawValue) ? rawValue : [rawValue];
+    for (const entry of entries) {
+      const normalized = String(entry || '').trim();
+      if (!normalized || values.includes(normalized)) continue;
+      values.push(normalized);
+    }
+  }
+  return values;
+};
+
+const isCurseForgeProjectId = (value) => /^\d+$/.test(String(value || '').trim());
+
+const normalizeProviderLabel = (provider, projectId) => {
+  const normalized = String(provider || '').toLowerCase();
+  if (normalized === 'curseforge') return 'CurseForge';
+  if (normalized === 'modrinth') return 'Modrinth';
+  return isCurseForgeProjectId(projectId) ? 'CurseForge' : 'Modrinth';
+};
+
+const getUpdateRowLatestVersion = (row) => {
+  const provider = normalizeProviderLabel(row?.provider, row?.project_id).toLowerCase();
+  if (provider === 'curseforge') {
+    return row?.latest_curseforge_version || null;
+  }
+  return row?.latest_version || null;
+};
+
 function InstanceMods({
   instance,
   onShowConfirm,
@@ -44,12 +137,16 @@ function InstanceMods({
   const [activeSubTab, setActiveSubTab] = useState('installed');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategories, setSelectedCategories] = useState([]);
+  const [appliedFindQuery, setAppliedFindQuery] = useState('');
+  const [appliedFindCategories, setAppliedFindCategories] = useState([]);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [installedSearchQuery, setInstalledSearchQuery] = useState('');
   const [installedMods, setInstalledMods] = useState([]);
   const [installing, setInstalling] = useState(null);
   const [updatingMods, setUpdatingMods] = useState([]); // Array of IDs (filename/project_id) being updated
   const [loading, setLoading] = useState(true);
+  const [findProvider, setFindProvider] = useState('modrinth');
+  const [hasCurseForgeKey, setHasCurseForgeKey] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState({ show: false, mod: null });
   const [versionModal, setVersionModal] = useState({ show: false, project: null, updateMod: null });
   const [showAddModal, setShowAddModal] = useState(false);
@@ -58,13 +155,14 @@ function InstanceMods({
   const [applyProgress, setApplyProgress] = useState(0);
   const [applyStatus, setApplyStatus] = useState('');
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
-  const [updatesFound, setUpdatesFound] = useState({}); // { project_id: version_obj }
+  const [updatesFound, setUpdatesFound] = useState({}); // { project_id: update_row }
   const [selectedMods, setSelectedMods] = useState([]); // Array of filenames
   const [conflictScan, setConflictScan] = useState({ scanned: false, issues: [] });
   const [scanningConflicts, setScanningConflicts] = useState(false);
   const [fixingConflictId, setFixingConflictId] = useState(null);
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [isFixingAllConflicts, setIsFixingAllConflicts] = useState(false);
+  const [isResolvingManualMods, setIsResolvingManualMods] = useState(false);
 
   const installedSearchRef = useRef(null);
   const findSearchRef = useRef(null);
@@ -73,20 +171,40 @@ function InstanceMods({
     instance.mod_loader?.toLowerCase() !== 'vanilla'
       ? instance.mod_loader?.toLowerCase()
       : null;
+  const activeFilterCategories = useMemo(
+    () => (activeSubTab === 'find' && findProvider === 'curseforge' ? CURSEFORGE_MOD_CATEGORIES : MODRINTH_MOD_CATEGORIES),
+    [activeSubTab, findProvider]
+  );
+  const selectedCategoryQueryValues = useMemo(
+    () => resolveSelectedCategoryQueryValues(activeFilterCategories, selectedCategories),
+    [activeFilterCategories, selectedCategories]
+  );
+  const appliedCategoryQueryValues = useMemo(
+    () => resolveSelectedCategoryQueryValues(activeFilterCategories, appliedFindCategories),
+    [activeFilterCategories, appliedFindCategories]
+  );
+  const effectiveFindCategories = useMemo(
+    () => appliedCategoryQueryValues,
+    [appliedCategoryQueryValues]
+  );
 
   const {
     searchResults,
     searching,
     loadingMore,
+    canLoadMore,
     searchError,
     handleSearch,
-    lastElementRef,
+    loadMore,
+    setSearchResults,
+    setSearchError,
   } = useModrinthSearch({
+    provider: findProvider,
     projectType: 'mod',
     gameVersion: instance.version_id,
     loader: modLoaderForSearch,
-    categories: selectedCategories,
-    query: searchQuery,
+    categories: effectiveFindCategories,
+    query: appliedFindQuery,
     withPopular: false,
     searchEmptyQuery: true,
   });
@@ -101,32 +219,99 @@ function InstanceMods({
     setLoading(false);
   }, [instance.id]);
 
+  const handleResolveManualMetadata = useCallback(async (filenames = null) => {
+    if (isResolvingManualMods) return;
+    setIsResolvingManualMods(true);
+    try {
+      const result = await invoke('resolve_manual_modrinth_metadata', {
+        instanceId: instance.id,
+        fileType: 'mod',
+        filenames
+      });
+      await loadInstalledMods();
+      if (onShowNotification) {
+        if (result.updated > 0) {
+          onShowNotification(
+            `Matched ${result.updated}/${result.scanned} mod file${result.updated === 1 ? '' : 's'}.`,
+            'success'
+          );
+        } else if (result.scanned > 0) {
+          onShowNotification('No matches found for the selected files.', 'info');
+        } else {
+          onShowNotification('No manual mod files available to check.', 'info');
+        }
+      }
+    } catch (error) {
+      console.error('Failed to resolve metadata for manual mods:', error);
+      onShowNotification?.(`Failed to check manual mods: ${error}`, 'error');
+    } finally {
+      setIsResolvingManualMods(false);
+    }
+  }, [instance.id, isResolvingManualMods, loadInstalledMods, onShowNotification]);
+
+  const executeFindSearch = useCallback((queryOverride = searchQuery, categoriesOverride = selectedCategories) => {
+    if (findProvider === 'curseforge' && !hasCurseForgeKey) {
+      setSearchResults([]);
+      setSearchError('CurseForge key not configured.');
+      return;
+    }
+    const categoryQueryValues = Array.isArray(categoriesOverride)
+      ? resolveSelectedCategoryQueryValues(activeFilterCategories, categoriesOverride)
+      : selectedCategoryQueryValues;
+    setAppliedFindQuery(queryOverride);
+    setAppliedFindCategories(categoriesOverride);
+    setSearchError(null);
+    handleSearch(0, queryOverride, categoryQueryValues);
+  }, [searchQuery, selectedCategories, findProvider, hasCurseForgeKey, handleSearch, setSearchResults, setSearchError, activeFilterCategories, selectedCategoryQueryValues]);
+
   // Effects
   useEffect(() => {
     // Reset filters when switching between tabs
     setSelectedCategories([]);
     setSearchQuery('');
+    setAppliedFindQuery('');
+    setAppliedFindCategories([]);
   }, [activeSubTab]);
+
+  useEffect(() => {
+    if (activeSubTab !== 'find') return;
+    setSelectedCategories([]);
+    setSearchQuery('');
+    setAppliedFindQuery('');
+    setAppliedFindCategories([]);
+  }, [activeSubTab, findProvider]);
 
   useEffect(() => {
     loadInstalledMods();
   }, [loadInstalledMods]);
 
   useEffect(() => {
+    const loadCurseForgeKeyStatus = async () => {
+      try {
+        const hasKey = await invoke('has_curseforge_api_key');
+        setHasCurseForgeKey(Boolean(hasKey));
+      } catch (error) {
+        console.error('Failed to check CurseForge key status:', error);
+        setHasCurseForgeKey(false);
+      }
+    };
+    loadCurseForgeKeyStatus();
+  }, []);
+
+  useEffect(() => {
     setConflictScan({ scanned: false, issues: [] });
   }, [installedMods]);
 
   useEffect(() => {
-    // Debounce search when typing, but trigger immediately for initial load
     if (activeSubTab !== 'find') return;
-
-    const delay = (searchQuery.trim() === '' && selectedCategories.length === 0) ? 0 : 500;
-    const timer = setTimeout(() => {
-      handleSearch(0);
-    }, delay);
-
-    return () => clearTimeout(timer);
-  }, [instance.version_id, instance.mod_loader, selectedCategories, searchQuery, activeSubTab, handleSearch]);
+    if (findProvider === 'curseforge' && !hasCurseForgeKey) {
+      setSearchResults([]);
+      setSearchError('CurseForge key not configured.');
+      return;
+    }
+    if (appliedFindQuery.trim() !== '' || appliedFindCategories.length > 0) return;
+    handleSearch(0, '');
+  }, [activeSubTab, findProvider, hasCurseForgeKey, appliedFindQuery, appliedFindCategories.length, handleSearch, setSearchResults, setSearchError]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -154,19 +339,25 @@ function InstanceMods({
   }, [getInstalledMod]);
 
   const handleInstall = useCallback(async (project, selectedVersionMatch = null, skipDependencyCheck = false, updateMod = null) => {
-    const downloadId = project.project_id || project.id || project.slug;
+    const resolvedProjectId = String(project?.project_id || project?.id || project?.slug || updateMod?.project_id || '').trim();
+    const providerLabel = normalizeProviderLabel(
+      project?.provider_label || project?.provider || updateMod?.provider,
+      resolvedProjectId
+    );
+    const provider = providerLabel.toLowerCase();
+    const downloadId = resolvedProjectId || updateMod?.filename || project?.slug;
 
     // Add to global queue if not already there
     if (onQueueDownload) {
       onQueueDownload({
         id: downloadId,
-        name: project.title,
-        icon: project.icon_url,
+        name: project.title || project.name || updateMod?.name || resolvedProjectId,
+        icon: project.icon_url || updateMod?.icon_url,
         status: 'Preparing...'
       });
     }
 
-    setInstalling(project.slug);
+    setInstalling(resolvedProjectId || project?.slug);
     if (updateMod) {
       setUpdatingMods(prev => [...prev, updateMod.project_id || updateMod.filename]);
     }
@@ -178,24 +369,22 @@ function InstanceMods({
         onUpdateDownloadStatus(downloadId, 'Fetching version...');
       }
 
-      if (!version) {
+      if (provider === 'modrinth' && !version) {
         const versions = await invoke('get_modrinth_versions', {
-          projectId: project.slug,
+          projectId: project.slug || resolvedProjectId,
           gameVersion: instance.version_id,
           loader: instance.mod_loader?.toLowerCase() || null
         });
 
         if (versions.length === 0) {
-          alert('No compatible version found for this mod');
-          setInstalling(null);
-          return;
+          throw new Error('No compatible version found for this mod');
         }
 
         version = versions[0];
       }
 
       // Check for dependencies (recursive)
-      if (!skipDependencyCheck && version.dependencies && version.dependencies.length > 0) {
+      if (provider === 'modrinth' && !skipDependencyCheck && version.dependencies && version.dependencies.length > 0) {
         const dependencyInfo = [];
         let hasNewDependencies = false;
         const visitedIds = new Map(); // id -> type
@@ -396,28 +585,70 @@ function InstanceMods({
         }
       }
 
-      const file = version.files.find(f => f.primary) || version.files[0];
+      let installedFilename = '';
+      if (provider === 'curseforge') {
+        if (!resolvedProjectId) {
+          throw new Error('Missing CurseForge project ID');
+        }
 
-      if (onUpdateDownloadStatus) {
-        onUpdateDownloadStatus(downloadId, 'Downloading...');
+        if (!version) {
+          const cfVersions = await invoke('get_curseforge_modpack_versions', { projectId: resolvedProjectId });
+          if (!Array.isArray(cfVersions) || cfVersions.length === 0) {
+            throw new Error('No compatible CurseForge file found for this mod');
+          }
+          const sorted = [...cfVersions].sort((a, b) => new Date(b.date_published) - new Date(a.date_published));
+          version = sorted[0];
+        }
+
+        const file = version?.files?.find((f) => f.primary) || version?.files?.[0];
+        if (!file) {
+          throw new Error('Selected CurseForge version has no downloadable file');
+        }
+        installedFilename = file.filename || `${resolvedProjectId}-${version.id}.jar`;
+
+        if (onUpdateDownloadStatus) {
+          onUpdateDownloadStatus(downloadId, 'Downloading...');
+        }
+
+        await invoke('install_curseforge_file', {
+          instanceId: instance.id,
+          projectId: resolvedProjectId,
+          fileId: version.id,
+          fileType: 'mod',
+          filename: installedFilename,
+          fileUrl: file.url || null,
+          worldName: null,
+          name: project.title || project.name || updateMod?.name || null,
+          author: project.author || updateMod?.author || null,
+          iconUrl: project.icon_url || updateMod?.icon_url || null,
+          versionName: version.name || version.version_number || null,
+          categories: project.categories || project.display_categories || (updateMod ? updateMod.categories : null) || null
+        });
+      } else {
+        const file = version.files.find(f => f.primary) || version.files[0];
+        installedFilename = file.filename;
+
+        if (onUpdateDownloadStatus) {
+          onUpdateDownloadStatus(downloadId, 'Downloading...');
+        }
+
+        await invoke('install_modrinth_file', {
+          instanceId: instance.id,
+          fileUrl: file.url,
+          filename: file.filename,
+          fileType: 'mod',
+          projectId: resolvedProjectId || project.slug,
+          versionId: version.id,
+          name: project.title || project.name,
+          author: project.author,
+          iconUrl: project.icon_url,
+          versionName: version.version_number,
+          categories: project.categories || project.display_categories || (updateMod ? updateMod.categories : null) || null
+        });
       }
 
-      await invoke('install_modrinth_file', {
-        instanceId: instance.id,
-        fileUrl: file.url,
-        filename: file.filename,
-        fileType: 'mod',
-        projectId: project.project_id || project.slug,
-        versionId: version.id,
-        name: project.title,
-        author: project.author,
-        iconUrl: project.icon_url,
-        versionName: version.version_number,
-        categories: project.categories || project.display_categories || (updateMod ? updateMod.categories : null) || null
-      });
-
       // If this was an update and the new file name is different, delete the old one
-      if (updateMod && updateMod.filename !== file.filename) {
+      if (updateMod && updateMod.filename !== installedFilename) {
         try {
           await invoke('delete_instance_mod', {
             instanceId: instance.id,
@@ -431,7 +662,17 @@ function InstanceMods({
       await loadInstalledMods();
     } catch (error) {
       console.error('Failed to install mod:', error);
-      alert('Failed to install mod: ' + error);
+      const handledCurseForgeRestriction = await maybeShowCurseForgeBlockedDownloadModal({
+        error,
+        provider,
+        project,
+        projectId: resolvedProjectId,
+        onShowConfirm,
+        onShowNotification,
+      });
+      if (!handledCurseForgeRestriction) {
+        onShowNotification?.('Failed to install mod: ' + error, 'error');
+      }
     } finally {
       setInstalling(null);
       if (onDequeueDownload) {
@@ -442,7 +683,18 @@ function InstanceMods({
         setUpdatingMods(prev => prev.filter(f => f !== (updateMod.project_id || updateMod.filename)));
       }
     }
-  }, [instance.id, instance.version_id, instance.mod_loader, isModInstalled, loadInstalledMods, onShowConfirm]);
+  }, [
+    instance.id,
+    instance.version_id,
+    instance.mod_loader,
+    isModInstalled,
+    loadInstalledMods,
+    onShowConfirm,
+    onQueueDownload,
+    onUpdateDownloadStatus,
+    onDequeueDownload,
+    onShowNotification
+  ]);
 
   const handleToggle = useCallback(async (mod) => {
     try {
@@ -651,23 +903,27 @@ function InstanceMods({
       project: {
         title: mod.name,
         icon_url: mod.icon_url,
+        project_id: mod.project_id,
         slug: mod.project_id,
+        provider_label: normalizeProviderLabel(mod.provider, mod.project_id),
         categories: mod.categories
       }
     });
   }, []);
 
   const handleBulkCheckUpdates = useCallback(async () => {
-    const modrinthMods = installedMods.filter(m => m.enabled && m.provider === 'Modrinth' && m.project_id);
-    if (modrinthMods.length === 0) return;
+    const trackedMods = installedMods.filter(
+      (m) => m.enabled && m.project_id && (!m.provider || m.provider !== 'Manual')
+    );
+    if (trackedMods.length === 0) return;
 
     setIsCheckingUpdates(true);
     try {
-      const rows = await invoke('get_instance_mod_updates', { instanceId: instance.id });
+      const rows = await invoke('get_instance_mod_updates', { instanceId: instance.id, fileType: 'mod' });
       const updates = {};
       for (const row of Array.isArray(rows) ? rows : []) {
-        if (row?.project_id && row?.latest_version) {
-          updates[row.project_id] = row.latest_version;
+        if (row?.project_id && getUpdateRowLatestVersion(row)) {
+          updates[row.project_id] = row;
         }
       }
 
@@ -699,14 +955,23 @@ function InstanceMods({
       variant: 'primary',
       onConfirm: async () => {
         for (const mod of modsToUpdate) {
-          const latestVersion = updatesFound[mod.project_id];
+          const updateRow = updatesFound[mod.project_id];
+          const latestVersion = getUpdateRowLatestVersion(updateRow);
           if (!latestVersion) continue;
 
           try {
-            // Get project info for handleInstall
-            const project = await invoke('get_modrinth_project', { projectId: mod.project_id });
+            const provider = normalizeProviderLabel(updateRow?.provider || mod.provider, mod.project_id);
+            const project = provider === 'CurseForge'
+              ? await invoke('get_curseforge_modpack', { projectId: mod.project_id })
+              : await invoke('get_modrinth_project', { projectId: mod.project_id });
+            const normalizedProject = {
+              ...project,
+              project_id: mod.project_id,
+              slug: mod.project_id,
+              provider_label: provider
+            };
             // Use skipDependencyCheck = true for bulk updates to avoid multiple modals
-            await handleInstall(project, latestVersion, true, mod);
+            await handleInstall(normalizedProject, latestVersion, true, mod);
           } catch (error) {
             console.error(`Failed to update ${mod.name}:`, error);
           }
@@ -937,15 +1202,15 @@ function InstanceMods({
     });
   }, [installedMods, installedSearchQuery, selectedCategories]);
 
-  const modrinthMods = useMemo(() => {
+  const managedMods = useMemo(() => {
     return filteredInstalledMods
-      .filter(m => m.provider === 'Modrinth')
+      .filter((m) => m.project_id && (!m.provider || m.provider !== 'Manual'))
       .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename));
   }, [filteredInstalledMods]);
 
   const manualMods = useMemo(() => {
     return filteredInstalledMods
-      .filter(m => m.provider !== 'Modrinth')
+      .filter((m) => !m.project_id || !m.provider || m.provider === 'Manual')
       .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename));
   }, [filteredInstalledMods]);
 
@@ -1025,13 +1290,15 @@ function InstanceMods({
   }
 
   const matchesAllSelectedCategories = useCallback((project) => {
-    return matchesSelectedCategories(project, selectedCategories);
-  }, [selectedCategories]);
+    if (findProvider === 'curseforge') return true;
+    return matchesSelectedCategories(project, appliedFindCategories);
+  }, [findProvider, appliedFindCategories]);
 
   const displayMods = useMemo(
     () => searchResults.filter(matchesAllSelectedCategories),
     [searchResults, matchesAllSelectedCategories]
   );
+  const hasAppliedFindFilters = appliedFindQuery.trim().length > 0 || appliedFindCategories.length > 0;
 
   return (
     <div className="mods-tab">
@@ -1071,10 +1338,10 @@ function InstanceMods({
       <FilterModal
         isOpen={isFilterModalOpen}
         onClose={() => setIsFilterModalOpen(false)}
-        categories={MOD_CATEGORIES}
+        categories={activeFilterCategories}
         selectedCategories={selectedCategories}
         onApply={setSelectedCategories}
-        title="Mod Categories"
+        title={activeSubTab === 'find' && findProvider === 'curseforge' ? 'CurseForge Mod Categories' : 'Mod Categories'}
       />
 
       {activeSubTab === 'installed' ? (
@@ -1137,10 +1404,10 @@ function InstanceMods({
             </div>
           ) : (
             <div className="mods-container">
-              {modrinthMods.length > 0 && (
+              {managedMods.length > 0 && (
                 <div className="mod-group">
                   <div className="group-header">
-                    <h3 className="group-title">Modrinth</h3>
+                    <h3 className="group-title">Managed</h3>
                     <div className="group-header-line"></div>
                     <button className="select-all-btn-inline" onClick={handleSelectAll}>
                       <div className={`selection-checkbox mini ${selectedMods.length === filteredInstalledMods.length && filteredInstalledMods.length > 0 ? 'checked' : ''}`}>
@@ -1177,9 +1444,12 @@ function InstanceMods({
                     </button>
                   </div>
                   <div className="installed-list">
-                    {modrinthMods.map((mod) => {
+                    {managedMods.map((mod) => {
                       const isUpdating = updatingMods.includes(mod.project_id || mod.filename);
                       const isSelected = selectedMods.includes(mod.filename);
+                      const versionLabel = withVersionPrefix(
+                        formatInstalledVersionLabel(mod.version, mod.provider, mod.filename)
+                      );
                       return (
                         <div
                           key={mod.filename}
@@ -1225,7 +1495,7 @@ function InstanceMods({
                             >
                               <div className="item-title-row">
                                 <h4>{mod.name || mod.filename}</h4>
-                                {mod.version && <span className="mod-version-tag">v{mod.version}</span>}
+                                {versionLabel && <span className="mod-version-tag">{versionLabel}</span>}
                                 {updatesFound[mod.project_id] && (
                                   <span className="update-available-tag pulse">Update Available</span>
                                 )}
@@ -1267,6 +1537,15 @@ function InstanceMods({
                   <div className="group-header">
                     <h3 className="group-title">Other</h3>
                     <div className="group-header-line"></div>
+                    <button
+                      className={`resolve-modrinth-btn-inline ${isResolvingManualMods ? 'loading' : ''}`}
+                      onClick={() => handleResolveManualMetadata()}
+                      disabled={isResolvingManualMods}
+                      title="Find metadata for manual files"
+                    >
+                      {isResolvingManualMods ? <Loader2 size={12} className="spin" /> : <Wand2 size={12} />}
+                      <span>Find on Modrinth/CurseForge</span>
+                    </button>
                   </div>
                   <div className="installed-list">
                     {manualMods.map((mod) => {
@@ -1382,6 +1661,20 @@ function InstanceMods({
         <div className="find-mods-section">
           <div className="mods-container">
             <div className="search-controls-refined">
+              <div className="sub-tabs">
+                <button
+                  className={`sub-tab ${findProvider === 'modrinth' ? 'active' : ''}`}
+                  onClick={() => setFindProvider('modrinth')}
+                >
+                  Modrinth
+                </button>
+                <button
+                  className={`sub-tab ${findProvider === 'curseforge' ? 'active' : ''}`}
+                  onClick={() => setFindProvider('curseforge')}
+                >
+                  CurseForge
+                </button>
+              </div>
               <button
                 className={`filter-btn-modal ${selectedCategories.length > 0 ? 'active' : ''}`}
                 onClick={() => setIsFilterModalOpen(true)}
@@ -1399,10 +1692,10 @@ function InstanceMods({
                   <input
                     ref={findSearchRef}
                     type="text"
-                    placeholder="Search Modrinth for mods..."
+                    placeholder={findProvider === 'curseforge' ? 'Search CurseForge mods...' : 'Search Modrinth for mods...'}
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    onKeyDown={(e) => e.key === 'Enter' && executeFindSearch()}
                   />
                   {searchQuery && (
                     <button className="clear-search-btn" onClick={() => setSearchQuery('')} title="Clear search">
@@ -1413,25 +1706,32 @@ function InstanceMods({
               </div>
               <button
                 className="search-btn"
-                onClick={handleSearch}
-                disabled={searching}
+                onClick={() => executeFindSearch()}
+                disabled={searching || (findProvider === 'curseforge' && !hasCurseForgeKey)}
               >
                 {searching ? <Loader2 className="spin-icon" size={18} /> : 'Search'}
               </button>
             </div>
 
             <h3 className="section-title">
-              {searchQuery.trim() || selectedCategories.length > 0 ? 'Search Results' : 'Popular Mods'}
+              {hasAppliedFindFilters ? 'Search Results' : 'Popular Mods'}
             </h3>
 
-            {searching ? (
+            {findProvider === 'curseforge' && !hasCurseForgeKey ? (
+              <div className="empty-state error-state">
+                <p style={{ color: '#ef4444' }}>CurseForge key not configured</p>
+                <p style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
+                  Set `CURSEFORGE_API_KEY` for backend runtime.
+                </p>
+              </div>
+            ) : searching ? (
               <div className="loading-mods">Loading...</div>
             ) : searchError ? (
               <div className="empty-state error-state">
                 <p style={{ color: '#ef4444' }}>⚠️ Failed to fetch mods</p>
                 <p style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>{searchError}</p>
                 <button
-                  onClick={() => handleSearch(0)}
+                  onClick={() => executeFindSearch(appliedFindQuery, appliedFindCategories)}
                   style={{ marginTop: '12px', padding: '8px 16px', background: '#333', border: '1px solid #555', borderRadius: '6px', color: '#fff', cursor: 'pointer' }}
                 >
                   Retry
@@ -1439,73 +1739,97 @@ function InstanceMods({
               </div>
             ) : displayMods.length === 0 ? (
               <div className="empty-state">
-                <p>{searchQuery.trim() || selectedCategories.length > 0 ? `No mods found` : 'No popular mods available for this version.'}</p>
+                <p>{hasAppliedFindFilters ? 'No mods found' : 'No popular mods available for this version.'}</p>
               </div>
             ) : (
-              <div className="search-results">
-                {displayMods.map((project, index) => {
-                  const installedMod = getInstalledMod(project);
-                  const isDownloading = installing === project.slug;
+              <div className="search-results-viewport">
+                <div className="search-results">
+                  {displayMods.map((project, index) => {
+                    const installedMod = getInstalledMod(project);
+                    const isDownloading = installing === (project.slug || project.project_id || project.id);
 
-                  return (
-                    <div
-                      key={`${project.slug}-${index}`}
+                    return (
+                      <div
+                      key={`${project.project_id || project.slug || project.id || index}`}
                       className={`search-result-card ${isDownloading ? 'mod-updating' : ''}`}
-                      ref={index === displayMods.length - 1 ? lastElementRef : null}
                     >
-                      {isDownloading && (
-                        <div className="mod-updating-overlay">
-                          <RefreshCcw className="spin-icon" size={20} />
-                          <span>Downloading...</span>
-                        </div>
-                      )}
-                      <div className="result-header">
-                        {project.icon_url && (
-                          <img src={project.icon_url} alt="" className="result-icon" referrerPolicy="no-referrer" />
+                        {isDownloading && (
+                          <div className="mod-updating-overlay">
+                            <RefreshCcw className="spin-icon" size={20} />
+                            <span>Downloading...</span>
+                          </div>
                         )}
-                        <div className="result-info">
-                          <h4>{project.title}</h4>
-                          <span className="result-author">by {project.author}</span>
-                        </div>
-                      </div>
-                      <p className="result-description">{project.description}</p>
-                      <div className="result-footer">
-                        <div className="result-meta">
-                          <span className="result-downloads">{formatDownloads(project.downloads)} downloads</span>
-                          <div className="loader-badges">
-                            {getLoaderBadges(project.categories).map((loader) => (
-                              <span key={loader} className={`loader-badge loader-${loader.toLowerCase()}`}>
-                                {loader}
-                              </span>
-                            ))}
+                        <div className="result-header">
+                          {project.icon_url && (
+                            <img src={project.icon_url} alt="" className="result-icon" referrerPolicy="no-referrer" />
+                          )}
+                          <div className="result-info">
+                            <h4>{project.title}</h4>
+                            <span className="result-author">by {project.author}</span>
                           </div>
                         </div>
-                        {installedMod ? (
-                          <button
-                            className="install-btn reinstall"
-                            onClick={() => handleRequestInstall({ ...project, categories: project.categories || installedMod.categories }, installedMod)}
-                            disabled={isDownloading}
-                          >
-                            Reinstall
-                          </button>
-                        ) : (
-                          <button
-                            className="install-btn"
-                            onClick={() => handleRequestInstall(project)}
-                            disabled={isDownloading}
-                          >
-                            {isDownloading ? 'Downloading...' : 'Install'}
-                          </button>
-                        )}
+                        <p className="result-description">{project.description}</p>
+                        <div className="result-footer">
+                          <div className="result-meta">
+                            <span className="result-downloads">{formatDownloads(project.downloads)} downloads</span>
+                            <div className="loader-badges">
+                              {getLoaderBadges(project.categories).map((loader) => (
+                                <span key={loader} className={`loader-badge loader-${loader.toLowerCase()}`}>
+                                  {loader}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          {installedMod ? (
+                            <button
+                              className="install-btn reinstall"
+                              onClick={() => handleRequestInstall({
+                                ...project,
+                                provider_label: findProvider === 'curseforge' ? 'CurseForge' : 'Modrinth',
+                                project_type: 'mod',
+                                categories: project.categories || installedMod.categories
+                              }, installedMod)}
+                              disabled={isDownloading}
+                            >
+                              Reinstall
+                            </button>
+                          ) : (
+                            <button
+                              className="install-btn"
+                              onClick={() => handleRequestInstall({
+                                ...project,
+                                provider_label: findProvider === 'curseforge' ? 'CurseForge' : 'Modrinth',
+                                project_type: 'mod'
+                              })}
+                              disabled={isDownloading}
+                            >
+                              {isDownloading ? 'Downloading...' : 'Install'}
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}              {loadingMore && (
-                  <div className="loading-more">
-                    <Loader2 className="spin-icon" size={24} />
-                    <span>Loading more mods...</span>
+                    );
+                  })}
+                </div>
+                {canLoadMore && (
+                  <div className="search-load-more-actions">
+                    <button
+                      className="search-load-more-btn"
+                      onClick={loadMore}
+                      disabled={loadingMore || searching}
+                    >
+                      {loadingMore ? (
+                        <>
+                          <Loader2 className="search-load-more-spinner" size={16} />
+                          <span>Loading...</span>
+                        </>
+                      ) : (
+                        <span>Load More</span>
+                      )}
+                    </button>
                   </div>
-                )}            </div>
+                )}
+              </div>
             )}
           </div>
         </div>

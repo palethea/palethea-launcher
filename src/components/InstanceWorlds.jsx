@@ -7,6 +7,7 @@ import './ScreenshotContextMenu.css';
 function InstanceWorlds({
   instance,
   onShowNotification,
+  onShowConfirm,
   isScrolled,
   onQueueDownload,
   onDequeueDownload,
@@ -179,6 +180,7 @@ function InstanceWorlds({
         instance={instance}
         world={selectedWorld}
         onShowNotification={onShowNotification}
+        onShowConfirm={onShowConfirm}
         onBack={() => setSelectedWorld(null)}
         isScrolled={isScrolled}
         onQueueDownload={onQueueDownload}

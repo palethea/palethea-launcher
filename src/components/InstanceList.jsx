@@ -1,11 +1,13 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { Clock, Plus, Box, LayoutGrid, List, ChevronDown, Check, User, UserCheck, Tag, CalendarDays, Play, Square, MoreVertical, X, Boxes } from 'lucide-react';
+import { Clock, Plus, Box, LayoutGrid, List, ChevronDown, Check, User, UserRoundCheck, UsersRound, Tag, CalendarDays, Play, Square, MoreVertical, X, Boxes, Info } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { sep } from '@tauri-apps/api/path';
 import { clampProgress, formatBytes, formatSpeed } from '../utils/downloadTelemetry';
+import ModpackInfoModal from './ModpackInfoModal';
 import './InstanceList.css';
 
 const STEVE_HEAD_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAARklEQVQI12NgoAbghLD+I4kwBqOjo+O/f/8YGBj+MzD8Z2D4z8Dwnwmq7P9/BoYL5y8g0/8hHP7/x0b/Y2D4D5b5/58ZAME2EVcxlvGVAAAAAElFTkSuQmCC';
+const ACCOUNT_AVATAR_SIZE = 34;
 
 function SkinHead2D({ src, size = 28 }) {
   return (
@@ -54,8 +56,13 @@ function InstanceList({
   launchProgressByInstance = {},
   runningInstances = {},
   stoppingInstanceIds = [],
-  deletingInstanceId = null,
-  launcherSettings = null
+  deletingInstanceIds = [],
+  launcherSettings = null,
+  backgroundTasks = [],
+  setupProgressByInstance = {},
+  onQueueDownload = null,
+  onUpdateDownloadStatus = null,
+  onDequeueDownload = null
 }) {
   const [logoMap, setLogoMap] = useState({});
   const [sortBy, setSortBy] = useState(localStorage.getItem('instance_sort') || 'name');
@@ -66,7 +73,12 @@ function InstanceList({
   const [activeAccountUsername, setActiveAccountUsername] = useState('');
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [accountPickerInstance, setAccountPickerInstance] = useState(null);
+  const [showModpackInfoModal, setShowModpackInfoModal] = useState(false);
+  const [modpackInfoInstance, setModpackInfoInstance] = useState(null);
   const [updatingAccount, setUpdatingAccount] = useState(false);
+  const [failedImages, setFailedImages] = useState({});
+  const [openImportInfoByTask, setOpenImportInfoByTask] = useState({});
+  const [collapsedSetupTasks, setCollapsedSetupTasks] = useState({});
   const sortRef = useRef(null);
 
   const handleScroll = useCallback((e) => {
@@ -112,6 +124,22 @@ function InstanceList({
     window.addEventListener('keydown', handleEsc, true);
     return () => window.removeEventListener('keydown', handleEsc, true);
   }, [showAccountModal, updatingAccount]);
+
+  useEffect(() => {
+    if (!showModpackInfoModal) return undefined;
+
+    const handleEsc = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setShowModpackInfoModal(false);
+        setModpackInfoInstance(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleEsc, true);
+    return () => window.removeEventListener('keydown', handleEsc, true);
+  }, [showModpackInfoModal]);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -202,6 +230,7 @@ function InstanceList({
   const handleOpenAccountPicker = useCallback(async (event, instance) => {
     event.preventDefault();
     event.stopPropagation();
+    setFailedImages({});
     setAccountPickerInstance(instance);
     setShowAccountModal(true);
     await loadAccounts();
@@ -244,9 +273,11 @@ function InstanceList({
   );
 
   const getSkinUrl = useCallback((uuid, isMicrosoft) => {
-    if (!isMicrosoft || !uuid) return null;
-    return `https://crafatar.com/avatars/${uuid}?size=64&overlay=true`;
-  }, []);
+    if (!isMicrosoft || !uuid) return STEVE_HEAD_DATA;
+    if (failedImages[uuid]) return STEVE_HEAD_DATA;
+    const cleanUuid = uuid.replace(/-/g, '');
+    return `https://minotar.net/helm/${cleanUuid}/64.png`;
+  }, [failedImages]);
 
   const switchToListView = useCallback(() => {
     setViewMode('list');
@@ -256,6 +287,13 @@ function InstanceList({
   const switchToGridView = useCallback(() => {
     setViewMode('grid');
     localStorage.setItem('instance_view_mode', 'grid');
+  }, []);
+
+  const handleOpenModpackInfo = useCallback((event, instance) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setModpackInfoInstance(instance);
+    setShowModpackInfoModal(true);
   }, []);
 
   useEffect(() => {
@@ -391,6 +429,96 @@ function InstanceList({
         </>
       )}
 
+      {backgroundTasks.length > 0 && (
+        <div className="instance-setup-tasks">
+          {backgroundTasks.map((task) => {
+            const taskProgress = clampProgress(typeof task?.progress === 'number' ? task.progress : 0);
+            const taskStatus = task?.stageLabel || task?.status || 'Working...';
+            const hasMetrics = (task?.totalBytes > 0) || (task?.totalCount > 0) || (task?.speedBps > 0);
+            const isImportTask = typeof task?.name === 'string' && task.name.toLowerCase().startsWith('importing ');
+            const showImportInfo = Boolean(openImportInfoByTask[task.id]);
+            const isCollapsed = Boolean(collapsedSetupTasks[task.id]);
+            const taskActivity = Array.isArray(task?.activityLog) ? task.activityLog : [];
+
+            return (
+              <div key={task.id} className={`instance-setup-task-card ${isCollapsed ? 'collapsed' : ''}`}>
+                <div className="instance-setup-task-main">
+                  <div className="instance-setup-task-name-wrap">
+                    <span className="instance-setup-task-name">{task.name || 'Instance setup'}</span>
+                    {isImportTask && !isCollapsed && (
+                      <button
+                        type="button"
+                        className={`instance-setup-info-btn ${showImportInfo ? 'active' : ''}`}
+                        title="Why import can be slower"
+                        aria-label="Why import can be slower"
+                        onClick={() => {
+                          setOpenImportInfoByTask((prev) => ({
+                            ...prev,
+                            [task.id]: !prev[task.id]
+                          }));
+                        }}
+                      >
+                        <Info size={13} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="instance-setup-task-trailing">
+                    <span className="instance-setup-task-percent">{taskProgress.toFixed(1)}%</span>
+                    <button
+                      type="button"
+                      className={`instance-setup-collapse-btn ${isCollapsed ? 'collapsed' : ''}`}
+                      title={isCollapsed ? 'Expand details' : 'Collapse details'}
+                      aria-label={isCollapsed ? 'Expand details' : 'Collapse details'}
+                      onClick={() => {
+                        setCollapsedSetupTasks((prev) => ({
+                          ...prev,
+                          [task.id]: !prev[task.id]
+                        }));
+                      }}
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                  </div>
+                </div>
+                {!isCollapsed && (
+                  <>
+                    <div className="instance-setup-task-status">{taskStatus}</div>
+                    {isImportTask && showImportInfo && (
+                      <div className="instance-setup-task-note">
+                        Import can be slower on Windows because Palethea first extracts the archive to a temporary folder, then copies it into the instance directory for safer validation and rollback.
+                      </div>
+                    )}
+                    {task?.currentItem && (
+                      taskActivity.length > 0 ? (
+                        <div className="instance-setup-task-activity">
+                          {taskActivity.slice(0, 4).map((line, index) => (
+                            <div key={`${task.id}-activity-${index}`} className="instance-setup-task-activity-line">
+                              {line}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="instance-setup-task-item">{task.currentItem}</div>
+                      )
+                    )}
+                    <div className="instance-setup-task-progress">
+                      <div className="instance-setup-task-progress-fill" style={{ width: `${taskProgress}%` }} />
+                    </div>
+                    {hasMetrics && (
+                      <div className="instance-setup-task-metrics">
+                        {task.totalCount > 0 && <span>{task.currentCount || 0}/{task.totalCount} files</span>}
+                        {task.totalBytes > 0 && <span>{formatBytes(task.downloadedBytes || 0)} / {formatBytes(task.totalBytes)}</span>}
+                        {task.speedBps > 0 && <span>{formatSpeed(task.speedBps)}</span>}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {instances.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state-visual">
@@ -423,12 +551,22 @@ function InstanceList({
             const isGridView = viewMode === 'grid';
             const isLaunching = launchingInstanceIds.includes(instance.id) || instance.id === launchingInstanceId;
             const isStopping = stoppingInstanceIds.includes(instance.id);
+            const isDeleting = deletingInstanceIds.includes(instance.id);
+            const setupData = setupProgressByInstance[instance.id];
+            const isSettingUp = Boolean(setupData);
             const launchData = launchProgressByInstance[instance.id];
             const launchTelemetry = launchData?.telemetry || loadingTelemetry;
             const launchBytes = launchData?.bytes || loadingBytes;
             const launchCount = launchData?.count || loadingCount;
             const launchProgress = clampProgress(launchData?.progress ?? loadingProgress);
             const launchStageLabel = launchTelemetry.stageLabel || launchData?.status || loadingStatus || 'Launching...';
+            const launchButtonTitle = runningInstances[instance.id]
+              ? 'Stop instance'
+              : (isSettingUp ? 'Setting up files...' : 'Launch instance');
+            const hasModpackAttribution = Boolean(
+              instance.modpack_provider
+                && (instance.modpack_title || instance.modpack_project_id || instance.modpack_url)
+            );
             const accountButton = (
               <button
                 className={`instance-account-corner-btn ${hasPinnedAccount ? 'is-pinned' : ''} ${isGridView ? 'is-grid' : 'is-list'}`}
@@ -437,17 +575,17 @@ function InstanceList({
                 onClick={(event) => handleOpenAccountPicker(event, instance)}
                 disabled={isLaunching || isStopping}
               >
-                <UserCheck size={16} />
+                {hasPinnedAccount ? <UserRoundCheck size={16} /> : <UsersRound size={16} />}
               </button>
             );
             const instanceActions = (
               <>
                 <button
                   className={`instance-list-play-btn ${runningInstances[instance.id] ? 'is-running' : ''} ${isLaunching && !runningInstances[instance.id] ? 'is-launching' : ''} ${isStopping ? 'is-stopping' : ''}`}
-                  onClick={() => (runningInstances[instance.id] ? onStop(instance.id) : onLaunch(instance.id))}
-                  disabled={isLoading || isLaunching || isStopping}
-                  title={runningInstances[instance.id] ? 'Stop instance' : 'Launch instance'}
-                  aria-label={runningInstances[instance.id] ? 'Stop instance' : 'Launch instance'}
+                  onClick={() => (runningInstances[instance.id] ? onStop(instance.id) : (isSettingUp ? null : onLaunch(instance.id)))}
+                  disabled={isLoading || isLaunching || isStopping || isSettingUp}
+                  title={launchButtonTitle}
+                  aria-label={launchButtonTitle}
                 >
                   {runningInstances[instance.id] ? <Square size={15} /> : <Play size={15} />}
                   <span>{runningInstances[instance.id] ? (isStopping ? 'Stopping...' : 'Playing') : (isLaunching ? 'Launching...' : 'Play')}</span>
@@ -472,7 +610,7 @@ function InstanceList({
             return (
               <div
                 key={instance.id}
-                className={`instance-card ${runningInstances[instance.id] ? 'is-running' : ''} ${instance.id === deletingInstanceId ? 'deleting' : ''} ${isLaunching ? 'launching' : ''} ${isStopping ? 'stopping' : ''}`}
+                className={`instance-card ${runningInstances[instance.id] ? 'is-running' : ''} ${isDeleting ? 'deleting' : ''} ${isLaunching ? 'launching' : ''} ${isStopping ? 'stopping' : ''} ${isSettingUp ? 'setting-up' : ''}`}
                 style={{
                   '--instance-accent': instance.color_accent || 'var(--accent)',
                   '--instance-icon-accent': instance.color_accent || 'var(--border)'
@@ -483,7 +621,7 @@ function InstanceList({
                   onContextMenu(e, instance);
                 }}
               >
-                {instance.id === deletingInstanceId && (
+                {isDeleting && (
                   <div className="deleting-overlay">
                     <div className="deleting-spinner" />
                     <span className="deleting-text">Removing...</span>
@@ -577,6 +715,11 @@ function InstanceList({
                       )}
                     </div>
                   )
+                ) : isSettingUp ? (
+                  <div className={`instance-setup-simple-overlay ${isGridView ? 'grid' : 'list'}`}>
+                    <div className="launching-spinner" />
+                    <span className="instance-setup-simple-text">Setting up instance...</span>
+                  </div>
                 ) : null}
 
                 <div className={`instance-row-main ${isGridView ? 'instance-row-main-grid' : ''}`}>
@@ -613,7 +756,20 @@ function InstanceList({
                   </div>
                   <div className={`instance-info instance-info-list ${isGridView ? 'instance-info-grid' : ''}`}>
                     <div className="instance-row-title">
-                      <h3 className="instance-name">{instance.name}</h3>
+                      <div className="instance-name-line">
+                        {hasModpackAttribution && (
+                          <button
+                            className="instance-modpack-info-btn"
+                            type="button"
+                            title="View modpack attribution"
+                            aria-label="View modpack attribution"
+                            onClick={(event) => handleOpenModpackInfo(event, instance)}
+                          >
+                            <Info size={16} />
+                          </button>
+                        )}
+                        <h3 className="instance-name">{instance.name}</h3>
+                      </div>
                       {!isGridView && (
                         <span className="instance-title-version" title={`Minecraft version ${instance.version_id}`}>
                           <Tag className="meta-icon" size={12} />
@@ -681,6 +837,21 @@ function InstanceList({
           })}
         </div>
       )}
+      {showModpackInfoModal && modpackInfoInstance && (
+        <ModpackInfoModal
+          instance={modpackInfoInstance}
+          iconUrl={logoMap[modpackInfoInstance.id] || null}
+          onClose={() => {
+            setShowModpackInfoModal(false);
+            setModpackInfoInstance(null);
+          }}
+          onShowNotification={onShowNotification}
+          onInstancesRefresh={onInstancesRefresh}
+          onQueueDownload={onQueueDownload}
+          onUpdateDownloadStatus={onUpdateDownloadStatus}
+          onDequeueDownload={onDequeueDownload}
+        />
+      )}
       {showAccountModal && accountPickerInstance && (
         <div className="instance-account-modal-overlay" onClick={() => { if (!updatingAccount) { setShowAccountModal(false); setAccountPickerInstance(null); } }}>
           <div className="instance-account-modal" onClick={(e) => e.stopPropagation()}>
@@ -707,7 +878,7 @@ function InstanceList({
               >
                 <div className="instance-account-option-avatar">
                   {activeAccountForDefault?.uuid && skinCache[activeAccountForDefault.uuid] ? (
-                    <SkinHead2D src={skinCache[activeAccountForDefault.uuid]} size={28} />
+                    <SkinHead2D src={skinCache[activeAccountForDefault.uuid]} size={ACCOUNT_AVATAR_SIZE} />
                   ) : activeAccountForDefault?.is_microsoft ? (
                     <img
                       src={getSkinUrl(activeAccountForDefault.uuid, activeAccountForDefault.is_microsoft)}
@@ -715,6 +886,9 @@ function InstanceList({
                       className="instance-account-avatar-img"
                       onError={(e) => {
                         e.target.src = STEVE_HEAD_DATA;
+                        if (activeAccountForDefault?.uuid) {
+                          setFailedImages((prev) => ({ ...prev, [activeAccountForDefault.uuid]: true }));
+                        }
                       }}
                     />
                   ) : (
@@ -733,14 +907,14 @@ function InstanceList({
 
               {savedAccounts.map((account) => (
                 <button
-                  key={account.uuid}
+                  key={`${account.uuid || 'no-uuid'}-${account.username}`}
                   className={`instance-account-option ${accountPickerInstance.preferred_account === account.username ? 'selected' : ''}`}
                   onClick={() => handleSetPreferredAccount(account.username)}
                   disabled={updatingAccount}
                 >
                   <div className="instance-account-option-avatar">
                     {skinCache[account.uuid] ? (
-                      <SkinHead2D src={skinCache[account.uuid]} size={28} />
+                      <SkinHead2D src={skinCache[account.uuid]} size={ACCOUNT_AVATAR_SIZE} />
                     ) : account.is_microsoft ? (
                       <img
                         src={getSkinUrl(account.uuid, account.is_microsoft)}
@@ -748,6 +922,9 @@ function InstanceList({
                         className="instance-account-avatar-img"
                         onError={(e) => {
                           e.target.src = STEVE_HEAD_DATA;
+                          if (account?.uuid) {
+                            setFailedImages((prev) => ({ ...prev, [account.uuid]: true }));
+                          }
                         }}
                       />
                     ) : (
@@ -777,3 +954,4 @@ function InstanceList({
 }
 
 export default InstanceList;
+

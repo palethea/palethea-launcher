@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import './ContextMenu.css';
 
-function ContextMenu({ x, y, instance, onAction }) {
+function ContextMenu({ x, y, instance, isEditing = false, onAction }) {
   const menuRef = useRef(null);
   const [pos, setPos] = useState({ x, y });
   const [isReady, setIsReady] = useState(false);
@@ -50,8 +50,8 @@ function ContextMenu({ x, y, instance, onAction }) {
           <button className="context-menu-item" onClick={() => onAction('play')}>
             Play
           </button>
-          <button className="context-menu-item" onClick={() => onAction('edit')}>
-            Edit Instance
+          <button className="context-menu-item" onClick={() => onAction('edit')} disabled={isEditing}>
+            {isEditing ? 'Editing...' : 'Edit Instance'}
           </button>
           <button className="context-menu-item" onClick={() => onAction('clone')}>
             Clone Instance
@@ -64,6 +64,9 @@ function ContextMenu({ x, y, instance, onAction }) {
           </button>
           <button className="context-menu-item" onClick={() => onAction('shareCode')}>
             Copy Share Code
+          </button>
+          <button className="context-menu-item" onClick={() => onAction('createShortcut')}>
+            Create Desktop Shortcut
           </button>
           <div className="context-menu-divider" />
           <div className="context-menu-label">Set Color</div>

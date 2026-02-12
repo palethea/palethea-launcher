@@ -12,6 +12,8 @@ pub mod java;
 pub mod logger;
 pub mod ping;
 pub mod discord;
+pub mod secrets;
+pub mod curseforge;
 
 use std::sync::Mutex;
 use std::sync::LazyLock;

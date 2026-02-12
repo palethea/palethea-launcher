@@ -7,9 +7,11 @@ import ModVersionModal from './ModVersionModal';
 import FilterModal from './FilterModal';
 import useModrinthSearch from '../hooks/useModrinthSearch';
 import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
+import { maybeShowCurseForgeBlockedDownloadModal } from '../utils/curseforgeInstallError';
+import { formatInstalledVersionLabel, withVersionPrefix } from '../utils/versionDisplay';
 import './FilterModal.css';
 
-const RESOURCE_PACK_CATEGORIES = [
+const MODRINTH_RESOURCE_PACK_CATEGORIES = [
   { id: 'group-categories', label: 'Categories', isSection: true },
   { id: 'combat', label: 'Combat' },
   { id: 'cursed', label: 'Cursed' },
@@ -44,7 +46,7 @@ const RESOURCE_PACK_CATEGORIES = [
   { id: '512x', label: '512x or higher' },
 ];
 
-const SHADER_CATEGORIES = [
+const MODRINTH_SHADER_CATEGORIES = [
   { id: 'group-categories', label: 'Categories', isSection: true },
   { id: 'cartoon', label: 'Cartoon' },
   { id: 'cursed', label: 'Cursed' },
@@ -69,6 +71,70 @@ const SHADER_CATEGORIES = [
   { id: 'screenshot', label: 'Screenshot' },
 ];
 
+const CURSEFORGE_RESOURCE_PACK_CATEGORIES = [
+  { id: 'group-resolution', label: 'Resolution', isSection: true },
+  { id: 'cf-rp-16x', label: '16x', queryValue: '16x' },
+  { id: 'cf-rp-32x', label: '32x', queryValue: '32x' },
+  { id: 'cf-rp-64x', label: '64x', queryValue: '64x' },
+  { id: 'cf-rp-128x', label: '128x', queryValue: '128x' },
+  { id: 'cf-rp-256x', label: '256x', queryValue: '256x' },
+  { id: 'cf-rp-512x-higher', label: '512x and Higher', queryValue: '512x and Higher' },
+
+  { id: 'group-style', label: 'Style', isSection: true },
+  { id: 'cf-rp-animated', label: 'Animated', queryValue: 'Animated' },
+  { id: 'cf-rp-medieval', label: 'Medieval', queryValue: 'Medieval' },
+  { id: 'cf-rp-modern', label: 'Modern', queryValue: 'Modern' },
+  { id: 'cf-rp-photo-realistic', label: 'Photo Realistic', queryValue: 'Photo Realistic' },
+  { id: 'cf-rp-steampunk', label: 'Steampunk', queryValue: 'Steampunk' },
+  { id: 'cf-rp-traditional', label: 'Traditional', queryValue: 'Traditional' },
+
+  { id: 'group-extra', label: 'Extra', isSection: true },
+  { id: 'cf-rp-mod-support', label: 'Mod Support', queryValue: 'Mod Support' },
+  { id: 'cf-rp-data-packs', label: 'Data Packs', queryValue: 'Data Packs' },
+  { id: 'cf-rp-font-packs', label: 'Font Packs', queryValue: 'Font Packs' },
+  { id: 'cf-rp-misc', label: 'Miscellaneous', queryValue: 'Miscellaneous' },
+  { id: 'cf-rp-modjam-2025', label: 'ModJam 2025', queryValue: 'ModJam 2025' },
+];
+
+const CURSEFORGE_SHADER_CATEGORIES = [
+  { id: 'group-categories', label: 'Categories', isSection: true },
+  { id: 'cf-sh-fantasy', label: 'Fantasy', queryValue: 'Fantasy' },
+  { id: 'cf-sh-realistic', label: 'Realistic', queryValue: 'Realistic' },
+  { id: 'cf-sh-vanilla', label: 'Vanilla', queryValue: 'Vanilla' },
+];
+
+const resolveSelectedCategoryQueryValues = (options, selectedIds) => {
+  const values = [];
+  for (const id of selectedIds || []) {
+    const match = (options || []).find((option) => option.id === id);
+    const rawValue = match?.queryValue ?? id;
+    const entries = Array.isArray(rawValue) ? rawValue : [rawValue];
+    for (const entry of entries) {
+      const normalized = String(entry || '').trim();
+      if (!normalized || values.includes(normalized)) continue;
+      values.push(normalized);
+    }
+  }
+  return values;
+};
+
+const isCurseForgeProjectId = (value) => /^\d+$/.test(String(value || '').trim());
+
+const normalizeProviderLabel = (provider, projectId) => {
+  const normalized = String(provider || '').toLowerCase();
+  if (normalized === 'curseforge') return 'CurseForge';
+  if (normalized === 'modrinth') return 'Modrinth';
+  return isCurseForgeProjectId(projectId) ? 'CurseForge' : 'Modrinth';
+};
+
+const getUpdateRowLatestVersion = (row) => {
+  const provider = normalizeProviderLabel(row?.provider, row?.project_id).toLowerCase();
+  if (provider === 'curseforge') {
+    return row?.latest_curseforge_version || null;
+  }
+  return row?.latest_version || null;
+};
+
 function InstanceResources({
   instance,
   onShowConfirm,
@@ -82,18 +148,22 @@ function InstanceResources({
   const [resourcePacks, setResourcePacks] = useState([]);
   const [shaderPacks, setShaderPacks] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [findSearchQuery, setFindSearchQuery] = useState('');
   const [selectedCategories, setSelectedCategories] = useState([]);
+  const [appliedFindCategories, setAppliedFindCategories] = useState([]);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [installing, setInstalling] = useState(null);
   const [updatingItems, setUpdatingItems] = useState([]); // Array of filenames being updated
   const [loading, setLoading] = useState(true);
+  const [findProvider, setFindProvider] = useState('modrinth');
+  const [hasCurseForgeKey, setHasCurseForgeKey] = useState(false);
   const [error, setError] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState({ show: false, item: null, type: null });
   const [versionModal, setVersionModal] = useState({ show: false, project: null, updateItem: null });
   const [selectedItems, setSelectedItems] = useState([]); // Array of filenames
 
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
-  const [updatesFound, setUpdatesFound] = useState({}); // { project_id: version_obj }
+  const [updatesFound, setUpdatesFound] = useState({}); // { project_id: update_row }
   const [resolvingManualType, setResolvingManualType] = useState(null);
   const installedSearchRef = useRef();
   const findSearchRef = useRef();
@@ -118,6 +188,33 @@ function InstanceResources({
 
   const discoverProjectType =
     activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader';
+  const activeFilterCategories = useMemo(() => {
+    const isFindResourcepacks = activeSubTab === 'find-resourcepacks';
+    const isFindShaders = activeSubTab === 'find-shaders';
+
+    if (isFindResourcepacks && findProvider === 'curseforge') {
+      return CURSEFORGE_RESOURCE_PACK_CATEGORIES;
+    }
+    if (isFindShaders && findProvider === 'curseforge') {
+      return CURSEFORGE_SHADER_CATEGORIES;
+    }
+    if (isFindShaders || activeSubTab === 'shaders') {
+      return MODRINTH_SHADER_CATEGORIES;
+    }
+    return MODRINTH_RESOURCE_PACK_CATEGORIES;
+  }, [activeSubTab, findProvider]);
+  const selectedCategoryQueryValues = useMemo(
+    () => resolveSelectedCategoryQueryValues(activeFilterCategories, selectedCategories),
+    [activeFilterCategories, selectedCategories]
+  );
+  const appliedCategoryQueryValues = useMemo(
+    () => resolveSelectedCategoryQueryValues(activeFilterCategories, appliedFindCategories),
+    [activeFilterCategories, appliedFindCategories]
+  );
+  const effectiveFindCategories = useMemo(
+    () => appliedCategoryQueryValues,
+    [appliedCategoryQueryValues]
+  );
 
   const {
     searchResults,
@@ -125,20 +222,41 @@ function InstanceResources({
     searching,
     loadingPopular,
     loadingMore,
+    canLoadMore,
     searchError,
     handleSearch,
     loadPopularItems,
-    lastElementRef,
+    loadMore,
     resetFeed,
   } = useModrinthSearch({
+    provider: findProvider,
     projectType: discoverProjectType,
     gameVersion: instance.version_id,
     loader: null,
-    categories: selectedCategories,
-    query: searchQuery,
+    categories: effectiveFindCategories,
+    query: findSearchQuery,
     withPopular: true,
     searchEmptyQuery: false,
   });
+
+  const executeFindSearch = useCallback((queryOverride = searchQuery, categoriesOverride = selectedCategories) => {
+    if (findProvider === 'curseforge' && !hasCurseForgeKey) {
+      return;
+    }
+    const categoryQueryValues = Array.isArray(categoriesOverride)
+      ? resolveSelectedCategoryQueryValues(activeFilterCategories, categoriesOverride)
+      : selectedCategoryQueryValues;
+
+    setFindSearchQuery(queryOverride);
+    setAppliedFindCategories(categoriesOverride);
+
+    if (queryOverride.trim() === '' && categoriesOverride.length === 0) {
+      loadPopularItems();
+      return;
+    }
+
+    handleSearch(0, queryOverride, categoryQueryValues);
+  }, [searchQuery, selectedCategories, findProvider, hasCurseForgeKey, loadPopularItems, handleSearch, activeFilterCategories, selectedCategoryQueryValues]);
 
   // Effects
   useEffect(() => {
@@ -146,26 +264,45 @@ function InstanceResources({
   }, [loadResources]);
 
   useEffect(() => {
+    const loadCurseForgeKeyStatus = async () => {
+      try {
+        const hasKey = await invoke('has_curseforge_api_key');
+        setHasCurseForgeKey(Boolean(hasKey));
+      } catch (loadError) {
+        console.error('Failed to check CurseForge key status:', loadError);
+        setHasCurseForgeKey(false);
+      }
+    };
+    loadCurseForgeKeyStatus();
+  }, []);
+
+  useEffect(() => {
     // Reset filters when switching between tabs
     setSelectedCategories([]);
     setSearchQuery('');
+    setFindSearchQuery('');
+    setAppliedFindCategories([]);
     setSelectedItems([]);
     resetFeed();
   }, [activeSubTab, resetFeed]);
 
   useEffect(() => {
-    if (activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders') {
-      const delay = searchQuery.trim() === '' && selectedCategories.length === 0 ? 0 : 500;
-      const timer = setTimeout(() => {
-        if (searchQuery.trim() === '' && selectedCategories.length === 0) {
-          loadPopularItems();
-        } else {
-          handleSearch();
-        }
-      }, delay);
-      return () => clearTimeout(timer);
-    }
-  }, [activeSubTab, selectedCategories, searchQuery, loadPopularItems, handleSearch]);
+    const isFindTab = activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders';
+    if (!isFindTab) return;
+    setSelectedCategories([]);
+    setSearchQuery('');
+    setFindSearchQuery('');
+    setAppliedFindCategories([]);
+    resetFeed();
+  }, [activeSubTab, findProvider, resetFeed]);
+
+  useEffect(() => {
+    const isFindTab = activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders';
+    if (!isFindTab) return;
+    if (findProvider === 'curseforge' && !hasCurseForgeKey) return;
+    if (findSearchQuery.trim() !== '' || appliedFindCategories.length > 0) return;
+    loadPopularItems();
+  }, [activeSubTab, findProvider, hasCurseForgeKey, findSearchQuery, appliedFindCategories.length, loadPopularItems]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -245,7 +382,13 @@ function InstanceResources({
   }, []);
 
   const handleInstall = useCallback(async (project, selectedVersion = null, skipDependencyCheck = false, updateItem = null) => {
-    const downloadId = project.project_id || project.id || project.slug;
+    const resolvedProjectId = String(project?.project_id || project?.id || project?.slug || updateItem?.project_id || '').trim();
+    const providerLabel = normalizeProviderLabel(
+      project?.provider_label || project?.provider || updateItem?.provider,
+      resolvedProjectId
+    );
+    const provider = providerLabel.toLowerCase();
+    const downloadId = resolvedProjectId || updateItem?.filename || project?.slug;
 
     if (onQueueDownload) {
       onQueueDownload({
@@ -256,21 +399,21 @@ function InstanceResources({
       });
     }
 
-    setInstalling(project.slug || project.project_id || project.id);
+    setInstalling(resolvedProjectId || project.slug || project.project_id || project.id);
     if (updateItem) {
       setUpdatingItems(prev => [...prev, updateItem.filename]);
     }
     try {
-      const fileType = project.project_type || (activeSubTab.includes('resourcepack') ? 'resourcepack' : 'shader');
+      const fileType = project.project_type || updateItem?.item_type || (activeSubTab.includes('resourcepack') ? 'resourcepack' : 'shader');
       let version = selectedVersion;
 
       if (onUpdateDownloadStatus) {
         onUpdateDownloadStatus(downloadId, 'Fetching version...');
       }
 
-      if (!version) {
+      if (provider === 'modrinth' && !version) {
         const versions = await invoke('get_modrinth_versions', {
-          projectId: project.slug,
+          projectId: project.slug || resolvedProjectId,
           gameVersion: instance.version_id,
           loader: null
         });
@@ -292,32 +435,70 @@ function InstanceResources({
         version = versions[0];
       }
 
-      const file = version.files.find(f => f.primary) || version.files[0];
+      let installedFilename = '';
+      if (provider === 'curseforge') {
+        if (!resolvedProjectId) {
+          throw new Error('Missing CurseForge project ID');
+        }
 
-      if (onUpdateDownloadStatus) {
-        onUpdateDownloadStatus(downloadId, 'Downloading...');
+        if (!version) {
+          const cfVersions = await invoke('get_curseforge_modpack_versions', { projectId: resolvedProjectId });
+          if (!Array.isArray(cfVersions) || cfVersions.length === 0) {
+            throw new Error('No compatible CurseForge file found');
+          }
+          const sorted = [...cfVersions].sort((a, b) => new Date(b.date_published) - new Date(a.date_published));
+          version = sorted[0];
+        }
+
+        const file = version?.files?.find((f) => f.primary) || version?.files?.[0];
+        if (!file) {
+          throw new Error('Selected CurseForge version has no downloadable file');
+        }
+        installedFilename = file.filename || `${resolvedProjectId}-${version.id}.zip`;
+
+        if (onUpdateDownloadStatus) {
+          onUpdateDownloadStatus(downloadId, 'Downloading...');
+        }
+
+        await invoke('install_curseforge_file', {
+          instanceId: instance.id,
+          projectId: resolvedProjectId,
+          fileId: version.id,
+          fileType,
+          filename: installedFilename,
+          fileUrl: file.url || null,
+          worldName: null,
+          iconUrl: project.icon_url || project.thumbnail || updateItem?.icon_url || null,
+          name: project.title || project.name || updateItem?.name || null,
+          author: project.author || updateItem?.author || null,
+          versionName: version.name || version.version_number || null,
+          categories: project.categories || project.display_categories || (updateItem ? updateItem.categories : null) || null
+        });
+      } else {
+        const file = version.files.find(f => f.primary) || version.files[0];
+        installedFilename = file.filename;
+
+        if (onUpdateDownloadStatus) {
+          onUpdateDownloadStatus(downloadId, 'Downloading...');
+        }
+
+        await invoke('install_modrinth_file', {
+          instanceId: instance.id,
+          fileUrl: file.url,
+          filename: file.filename,
+          fileType: fileType,
+          projectId: resolvedProjectId || project.slug || project.id,
+          versionId: version.id,
+          iconUrl: project.icon_url || project.thumbnail,
+          name: project.title || project.name,
+          author: project.author,
+          versionName: version.version_number,
+          categories: project.categories || project.display_categories || (updateItem ? updateItem.categories : null) || null
+        });
       }
 
-      await invoke('install_modrinth_file', {
-        instanceId: instance.id,
-        fileUrl: file.url,
-        filename: file.filename,
-        fileType: fileType,
-        projectId: project.project_id || project.slug || project.id,
-        versionId: version.id,
-        iconUrl: project.icon_url || project.thumbnail,
-        name: project.title || project.name,
-        author: project.author,
-        versionName: version.version_number,
-        // ----------
-        // Categories
-        // Description: Pass Modrinth categories for filtering installed items
-        // ----------
-        categories: project.categories || project.display_categories || (updateItem ? updateItem.categories : null) || null
-      });
-
       // If updating, delete the old file
-      if (updateItem && updateItem.filename !== file.filename) {
+      if (updateItem && updateItem.filename !== installedFilename) {
         if (import.meta.env.DEV) {
           invoke('log_event', { level: 'info', message: `Deleting old file: ${updateItem.filename}` }).catch(() => { });
         }
@@ -340,7 +521,15 @@ function InstanceResources({
       }
     } catch (error) {
       console.error('Failed to install:', error);
-      if (onShowNotification) {
+      const handledCurseForgeRestriction = await maybeShowCurseForgeBlockedDownloadModal({
+        error,
+        provider,
+        project,
+        projectId: resolvedProjectId,
+        onShowConfirm,
+        onShowNotification,
+      });
+      if (!handledCurseForgeRestriction && onShowNotification) {
         onShowNotification(`Failed to install: ${error}`, 'error');
       }
     }
@@ -351,7 +540,7 @@ function InstanceResources({
     if (updateItem) {
       setUpdatingItems(prev => prev.filter(f => f !== updateItem.filename));
     }
-  }, [activeSubTab, instance.version_id, instance.id, loadResources, onShowNotification, onQueueDownload, onDequeueDownload, onUpdateDownloadStatus]);
+  }, [activeSubTab, instance.version_id, instance.id, loadResources, onShowConfirm, onShowNotification, onQueueDownload, onDequeueDownload, onUpdateDownloadStatus]);
 
   const handleDelete = useCallback(async (item, type) => {
     setDeleteConfirm({ show: true, item, type });
@@ -380,33 +569,22 @@ function InstanceResources({
   }, [deleteConfirm, instance.id, loadResources]);
 
   const handleBulkCheckUpdates = useCallback(async () => {
-    const modrinthRPs = resourcePacks.filter(p => p.provider === 'Modrinth' && p.project_id);
-    const modrinthSPs = shaderPacks.filter(p => p.provider === 'Modrinth' && p.project_id);
-    const modrinthItems = [...modrinthRPs, ...modrinthSPs];
-
-    if (modrinthItems.length === 0) return;
+    const trackedRPs = resourcePacks.filter((p) => p.project_id && (!p.provider || p.provider !== 'Manual'));
+    const trackedSPs = shaderPacks.filter((p) => p.project_id && (!p.provider || p.provider !== 'Manual'));
+    if (trackedRPs.length + trackedSPs.length === 0) return;
 
     setIsCheckingUpdates(true);
     const updates = {};
 
     try {
-      for (const item of modrinthItems) {
-        try {
-          // Shaders and resource packs don't usually need a loader, so we pass null or empty
-          const versions = await invoke('get_modrinth_versions', {
-            projectId: item.project_id,
-            gameVersion: instance.version_id,
-            loader: null
-          });
+      const [resourceRows, shaderRows] = await Promise.all([
+        invoke('get_instance_mod_updates', { instanceId: instance.id, fileType: 'resourcepack' }),
+        invoke('get_instance_mod_updates', { instanceId: instance.id, fileType: 'shader' })
+      ]);
 
-          if (versions.length > 0) {
-            const latest = versions[0];
-            if (latest.id !== item.version_id) {
-              updates[item.project_id] = latest;
-            }
-          }
-        } catch (e) {
-          console.warn(`Failed to check update for ${item.name}:`, e);
+      for (const row of [...(Array.isArray(resourceRows) ? resourceRows : []), ...(Array.isArray(shaderRows) ? shaderRows : [])]) {
+        if (row?.project_id && getUpdateRowLatestVersion(row)) {
+          updates[row.project_id] = row;
         }
       }
       setUpdatesFound(updates);
@@ -423,12 +601,16 @@ function InstanceResources({
     } finally {
       setIsCheckingUpdates(false);
     }
-  }, [resourcePacks, shaderPacks, instance.version_id, onShowNotification]);
+  }, [resourcePacks, shaderPacks, instance.id, onShowNotification]);
 
   const handleUpdateAll = useCallback(async () => {
-    const modrinthRPs = resourcePacks.filter(p => p.provider === 'Modrinth' && p.project_id);
-    const modrinthSPs = shaderPacks.filter(p => p.provider === 'Modrinth' && p.project_id);
-    const allItems = [...modrinthRPs, ...modrinthSPs];
+    const trackedRPs = resourcePacks
+      .filter((p) => p.project_id && (!p.provider || p.provider !== 'Manual'))
+      .map((item) => ({ ...item, item_type: 'resourcepack' }));
+    const trackedSPs = shaderPacks
+      .filter((p) => p.project_id && (!p.provider || p.provider !== 'Manual'))
+      .map((item) => ({ ...item, item_type: 'shader' }));
+    const allItems = [...trackedRPs, ...trackedSPs];
     const itemsToUpdate = allItems.filter(item => updatesFound[item.project_id]);
 
     if (itemsToUpdate.length === 0) return;
@@ -441,13 +623,22 @@ function InstanceResources({
       variant: 'primary',
       onConfirm: async () => {
         for (const item of itemsToUpdate) {
-          const latestVersion = updatesFound[item.project_id];
+          const updateRow = updatesFound[item.project_id];
+          const latestVersion = getUpdateRowLatestVersion(updateRow);
           if (!latestVersion) continue;
 
           try {
-            // Get project info for handleInstall
-            const project = await invoke('get_modrinth_project', { projectId: item.project_id });
-            await handleInstall(project, latestVersion, true, item);
+            const provider = normalizeProviderLabel(updateRow?.provider || item.provider, item.project_id);
+            const project = provider === 'CurseForge'
+              ? await invoke('get_curseforge_modpack', { projectId: item.project_id })
+              : await invoke('get_modrinth_project', { projectId: item.project_id });
+            await handleInstall({
+              ...project,
+              project_id: item.project_id,
+              slug: item.project_id,
+              provider_label: provider,
+              project_type: item.item_type
+            }, latestVersion, true, item);
           } catch (error) {
             console.error(`Failed to update ${item.name}:`, error);
           }
@@ -554,13 +745,15 @@ function InstanceResources({
   }, [instance.id, loadResources, onShowNotification, resolvingManualType]);
 
   const matchesAllSelectedCategories = useCallback((project) => {
-    return matchesSelectedCategories(project, selectedCategories);
-  }, [selectedCategories]);
+    if (findProvider === 'curseforge') return true;
+    return matchesSelectedCategories(project, appliedFindCategories);
+  }, [findProvider, appliedFindCategories]);
 
   const displayItems = useMemo(() => {
-    const base = (searchQuery.trim() || selectedCategories.length > 0) ? searchResults : popularItems;
+    const base = (findSearchQuery.trim() || appliedFindCategories.length > 0) ? searchResults : popularItems;
     return base.filter(matchesAllSelectedCategories);
-  }, [searchQuery, selectedCategories, searchResults, popularItems, matchesAllSelectedCategories]);
+  }, [findSearchQuery, appliedFindCategories, searchResults, popularItems, matchesAllSelectedCategories]);
+  const hasAppliedFindFilters = findSearchQuery.trim().length > 0 || appliedFindCategories.length > 0;
 
   const filteredResourcePacks = useMemo(() => {
     return resourcePacks.filter(p => {
@@ -689,10 +882,10 @@ function InstanceResources({
                 </button>
               </div>
 
-              {resourcePacks.filter(p => p.provider === 'Modrinth').length > 0 && (
+              {resourcePacks.filter(p => p.project_id && (!p.provider || p.provider !== 'Manual')).length > 0 && (
                 <div className="mod-group">
                   <div className="group-header">
-                    <h3 className="group-title">Modrinth</h3>
+                    <h3 className="group-title">Managed</h3>
                     <div className="group-header-line"></div>
                     <button className="select-all-btn-inline" onClick={handleSelectAll}>
                       <div className={`selection-checkbox mini ${selectedItems.length === resourcePacks.length && resourcePacks.length > 0 ? 'checked' : ''}`}>
@@ -726,11 +919,14 @@ function InstanceResources({
                   </div>
                   <div className="installed-list">
                     {filteredResourcePacks
-                      .filter(p => p.provider === 'Modrinth')
+                      .filter(p => p.project_id && (!p.provider || p.provider !== 'Manual'))
                       .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename))
                       .map((rp) => {
                         const isUpdating = updatingItems.includes(rp.filename) || (rp.project_id && installing === rp.project_id);
                         const isSelected = selectedItems.includes(rp.filename);
+                        const versionLabel = withVersionPrefix(
+                          formatInstalledVersionLabel(rp.version, rp.provider, rp.filename)
+                        );
                         return (
                           <div
                             key={rp.filename}
@@ -739,7 +935,15 @@ function InstanceResources({
                               if (selectedItems.length > 0) {
                                 handleToggleSelect(rp.filename);
                               } else {
-                                handleRequestInstall({ project_id: rp.project_id, title: rp.name, slug: rp.project_id, icon_url: rp.icon_url, project_type: 'resourcepack', categories: rp.categories }, rp);
+                                handleRequestInstall({
+                                  project_id: rp.project_id,
+                                  title: rp.name,
+                                  slug: rp.project_id,
+                                  icon_url: rp.icon_url,
+                                  project_type: 'resourcepack',
+                                  provider_label: normalizeProviderLabel(rp.provider, rp.project_id),
+                                  categories: rp.categories
+                                }, { ...rp, item_type: 'resourcepack' });
                               }
                             }}
                           >
@@ -766,7 +970,7 @@ function InstanceResources({
                               <div className="item-info">
                                 <div className="item-title-row">
                                   <h4>{rp.name}</h4>
-                                  {rp.version && <span className="mod-version-tag">v{rp.version}</span>}
+                                  {versionLabel && <span className="mod-version-tag">{versionLabel}</span>}
                                   {updatesFound[rp.project_id] && (
                                     <span className="update-available-tag pulse">Update Available</span>
                                   )}
@@ -788,7 +992,15 @@ function InstanceResources({
                                 title="Update Pack"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleRequestInstall({ project_id: rp.project_id, title: rp.name, slug: rp.project_id, icon_url: rp.icon_url, project_type: 'resourcepack', categories: rp.categories }, rp);
+                                  handleRequestInstall({
+                                    project_id: rp.project_id,
+                                    title: rp.name,
+                                    slug: rp.project_id,
+                                    icon_url: rp.icon_url,
+                                    project_type: 'resourcepack',
+                                    provider_label: normalizeProviderLabel(rp.provider, rp.project_id),
+                                    categories: rp.categories
+                                  }, { ...rp, item_type: 'resourcepack' });
                                 }}
                                 disabled={isUpdating}
                               >
@@ -812,7 +1024,7 @@ function InstanceResources({
                   </div>
                 </div>
               )}
-              {resourcePacks.filter(p => p.provider !== 'Modrinth').length > 0 && (
+              {resourcePacks.filter(p => !p.project_id || !p.provider || p.provider === 'Manual').length > 0 && (
                 <div className="mod-group">
                   <div className="group-header">
                     <h3 className="group-title">Manual</h3>
@@ -821,15 +1033,15 @@ function InstanceResources({
                       className={`resolve-modrinth-btn-inline ${resolvingManualType === 'resourcepack' ? 'loading' : ''}`}
                       onClick={() => handleResolveManualMetadata('resourcepack')}
                       disabled={resolvingManualType !== null}
-                      title="Check manual files on Modrinth and attach metadata"
+                      title="Find metadata for manual files"
                     >
                       {resolvingManualType === 'resourcepack' ? <Loader2 size={12} className="spin" /> : <Wand2 size={12} />}
-                      <span>Find on Modrinth</span>
+                      <span>Find on Modrinth/CurseForge</span>
                     </button>
                   </div>
                   <div className="installed-list">
                     {filteredResourcePacks
-                      .filter(p => !p.provider || p.provider === 'Manual')
+                      .filter(p => !p.project_id || !p.provider || p.provider === 'Manual')
                       .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename))
                       .map((rp) => {
                         const isSelected = selectedItems.includes(rp.filename);
@@ -934,10 +1146,10 @@ function InstanceResources({
                 </button>
               </div>
 
-              {shaderPacks.filter(p => p.provider === 'Modrinth').length > 0 && (
+              {shaderPacks.filter(p => p.project_id && (!p.provider || p.provider !== 'Manual')).length > 0 && (
                 <div className="mod-group">
                   <div className="group-header">
-                    <h3 className="group-title">Modrinth</h3>
+                    <h3 className="group-title">Managed</h3>
                     <div className="group-header-line"></div>
                     <button className="select-all-btn-inline" onClick={handleSelectAll}>
                       <div className={`selection-checkbox mini ${selectedItems.length === (activeSubTab === 'resourcepacks' ? resourcePacks.length : shaderPacks.length) && (activeSubTab === 'resourcepacks' ? resourcePacks.length : shaderPacks.length) > 0 ? 'checked' : ''}`}>
@@ -971,11 +1183,14 @@ function InstanceResources({
                   </div>
                   <div className="installed-list">
                     {filteredShaderPacks
-                      .filter(p => p.provider === 'Modrinth')
+                      .filter(p => p.project_id && (!p.provider || p.provider !== 'Manual'))
                       .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename))
                       .map((sp) => {
                         const isUpdating = updatingItems.includes(sp.filename) || (sp.project_id && installing === sp.project_id);
                         const isSelected = selectedItems.includes(sp.filename);
+                        const versionLabel = withVersionPrefix(
+                          formatInstalledVersionLabel(sp.version, sp.provider, sp.filename)
+                        );
                         return (
                           <div
                             key={sp.filename}
@@ -984,7 +1199,14 @@ function InstanceResources({
                               if (selectedItems.length > 0) {
                                 handleToggleSelect(sp.filename);
                               } else {
-                                handleRequestInstall({ project_id: sp.project_id, title: sp.name, slug: sp.project_id, icon_url: sp.icon_url, project_type: 'shader' }, sp);
+                                handleRequestInstall({
+                                  project_id: sp.project_id,
+                                  title: sp.name,
+                                  slug: sp.project_id,
+                                  icon_url: sp.icon_url,
+                                  project_type: 'shader',
+                                  provider_label: normalizeProviderLabel(sp.provider, sp.project_id)
+                                }, { ...sp, item_type: 'shader' });
                               }
                             }}
                           >
@@ -1011,7 +1233,7 @@ function InstanceResources({
                               <div className="item-info">
                                 <div className="item-title-row">
                                   <h4>{sp.name}</h4>
-                                  {sp.version && <span className="mod-version-tag">v{sp.version}</span>}
+                                  {versionLabel && <span className="mod-version-tag">{versionLabel}</span>}
                                   {updatesFound[sp.project_id] && (
                                     <span className="update-available-tag pulse">Update Available</span>
                                   )}
@@ -1034,7 +1256,14 @@ function InstanceResources({
                                   title="Update Shader"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleRequestInstall({ project_id: sp.project_id, title: sp.name, slug: sp.project_id, icon_url: sp.icon_url, project_type: 'shader' }, sp);
+                                    handleRequestInstall({
+                                      project_id: sp.project_id,
+                                      title: sp.name,
+                                      slug: sp.project_id,
+                                      icon_url: sp.icon_url,
+                                      project_type: 'shader',
+                                      provider_label: normalizeProviderLabel(sp.provider, sp.project_id)
+                                    }, { ...sp, item_type: 'shader' });
                                   }}
                                   disabled={isUpdating}
                                 >
@@ -1059,7 +1288,7 @@ function InstanceResources({
                   </div>
                 </div>
               )}
-              {shaderPacks.filter(p => p.provider !== 'Modrinth').length > 0 && (
+              {shaderPacks.filter(p => !p.project_id || !p.provider || p.provider === 'Manual').length > 0 && (
                 <div className="mod-group">
                   <div className="group-header">
                     <h3 className="group-title">Manual</h3>
@@ -1068,15 +1297,15 @@ function InstanceResources({
                       className={`resolve-modrinth-btn-inline ${resolvingManualType === 'shader' ? 'loading' : ''}`}
                       onClick={() => handleResolveManualMetadata('shader')}
                       disabled={resolvingManualType !== null}
-                      title="Check manual files on Modrinth and attach metadata"
+                      title="Find metadata for manual files"
                     >
                       {resolvingManualType === 'shader' ? <Loader2 size={12} className="spin" /> : <Wand2 size={12} />}
-                      <span>Find on Modrinth</span>
+                      <span>Find on Modrinth/CurseForge</span>
                     </button>
                   </div>
                   <div className="installed-list">
                     {filteredShaderPacks
-                      .filter(p => !p.provider || p.provider === 'Manual')
+                      .filter(p => !p.project_id || !p.provider || p.provider === 'Manual')
                       .sort((a, b) => (a.name || a.filename).localeCompare(b.name || b.filename))
                       .map((sp) => {
                         const isSelected = selectedItems.includes(sp.filename);
@@ -1142,6 +1371,20 @@ function InstanceResources({
         <div className="find-section">
           <div className="mods-container">
             <div className="search-controls-refined">
+              <div className="sub-tabs">
+                <button
+                  className={`sub-tab ${findProvider === 'modrinth' ? 'active' : ''}`}
+                  onClick={() => setFindProvider('modrinth')}
+                >
+                  Modrinth
+                </button>
+                <button
+                  className={`sub-tab ${findProvider === 'curseforge' ? 'active' : ''}`}
+                  onClick={() => setFindProvider('curseforge')}
+                >
+                  CurseForge
+                </button>
+              </div>
               <button
                 className={`filter-btn-modal ${selectedCategories.length > 0 ? 'active' : ''}`}
                 onClick={() => setIsFilterModalOpen(true)}
@@ -1158,10 +1401,10 @@ function InstanceResources({
                   <input
                     ref={findSearchRef}
                     type="text"
-                    placeholder={`Search Modrinth for ${activeSubTab === 'find-resourcepacks' ? 'packs' : 'shaders'}...`}
+                    placeholder={`${findProvider === 'curseforge' ? 'Search CurseForge' : 'Search Modrinth'} for ${activeSubTab === 'find-resourcepacks' ? 'packs' : 'shaders'}...`}
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    onKeyDown={(e) => e.key === 'Enter' && executeFindSearch()}
                   />
                   {searchQuery && (
                     <button className="clear-search-btn" onClick={() => setSearchQuery('')} title="Clear search">
@@ -1172,25 +1415,32 @@ function InstanceResources({
               </div>
               <button
                 className="search-btn"
-                onClick={handleSearch}
-                disabled={searching}
+                onClick={() => executeFindSearch()}
+                disabled={searching || (findProvider === 'curseforge' && !hasCurseForgeKey)}
               >
                 {searching ? <Loader2 className="spin-icon" size={18} /> : 'Search'}
               </button>
             </div>
 
             <h3 className="section-title">
-              {searchQuery.trim() || selectedCategories.length > 0 ? 'Search Results' : `Popular ${activeSubTab === 'find-resourcepacks' ? 'Resource Packs' : 'Shaders'}`}
+              {hasAppliedFindFilters ? 'Search Results' : `Popular ${activeSubTab === 'find-resourcepacks' ? 'Resource Packs' : 'Shaders'}`}
             </h3>
 
-            {(searching || loadingPopular) ? (
+            {findProvider === 'curseforge' && !hasCurseForgeKey ? (
+              <div className="empty-state error-state">
+                <p style={{ color: '#ef4444' }}>CurseForge key not configured</p>
+                <p style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
+                  Set `CURSEFORGE_API_KEY` for backend runtime.
+                </p>
+              </div>
+            ) : (searching || loadingPopular) ? (
               <div className="loading-mods">Loading...</div>
             ) : searchError ? (
               <div className="empty-state error-state">
                 <p style={{ color: '#ef4444' }}>⚠️ Failed to fetch items</p>
                 <p style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>{searchError}</p>
                 <button
-                  onClick={() => searchQuery.trim() ? handleSearch() : loadPopularItems()}
+                  onClick={() => hasAppliedFindFilters ? executeFindSearch(findSearchQuery, appliedFindCategories) : loadPopularItems()}
                   style={{ marginTop: '12px', padding: '8px 16px', background: '#333', border: '1px solid #555', borderRadius: '6px', color: '#fff', cursor: 'pointer' }}
                 >
                   Retry
@@ -1199,68 +1449,89 @@ function InstanceResources({
             ) : displayItems.length === 0 ? (
               <div className="empty-state">
                 <p>
-                  {searchQuery.trim() || selectedCategories.length > 0
+                  {hasAppliedFindFilters
                     ? `No results found for your search.`
                     : 'No popular items available for this version.'}
                 </p>
               </div>
             ) : (
-              <div className="search-results">
-                {displayItems.map((project, index) => {
-                  const installedItem = getInstalledItem(project);
-                  const isDownloading = installing === (project.slug || project.project_id || project.id);
+              <div className="search-results-viewport">
+                <div className="search-results">
+                  {displayItems.map((project, index) => {
+                    const installedItem = getInstalledItem(project);
+                    const isDownloading = installing === (project.slug || project.project_id || project.id);
 
-                  return (
-                    <div
-                      key={`${project.slug}-${index}`}
-                      className={`search-result-card ${isDownloading ? 'mod-updating' : ''}`}
-                      ref={index === displayItems.length - 1 ? lastElementRef : null}
+                    return (
+                      <div
+                      key={`${project.project_id || project.slug || project.id || index}`}
+                        className={`search-result-card ${isDownloading ? 'mod-updating' : ''}`}
+                      >
+                        {isDownloading && (
+                          <div className="mod-updating-overlay">
+                            <RefreshCcw className="spin-icon" size={20} />
+                            <span>Downloading...</span>
+                          </div>
+                        )}
+                        <div className="result-header">
+                          {project.icon_url && (
+                            <img src={project.icon_url} alt="" className="result-icon" />
+                          )}
+                          <div className="result-info">
+                            <h4>{project.title}</h4>
+                            <span className="result-author">by {project.author}</span>
+                          </div>
+                        </div>
+                        <p className="result-description">{project.description}</p>
+                        <div className="result-footer">
+                          <div className="result-meta">
+                            <span className="result-downloads">{formatDownloads(project.downloads)} downloads</span>
+                          </div>
+                          {installedItem ? (
+                            <button
+                              className="install-btn reinstall"
+                              onClick={() => handleRequestInstall({
+                                ...project,
+                                provider_label: findProvider === 'curseforge' ? 'CurseForge' : 'Modrinth',
+                                project_type: activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader'
+                              }, installedItem)}
+                              disabled={isDownloading}
+                            >
+                              Reinstall
+                            </button>
+                          ) : (
+                            <button
+                              className="install-btn"
+                              onClick={() => handleRequestInstall({
+                                ...project,
+                                provider_label: findProvider === 'curseforge' ? 'CurseForge' : 'Modrinth',
+                                project_type: activeSubTab === 'find-resourcepacks' ? 'resourcepack' : 'shader'
+                              })}
+                              disabled={isDownloading}
+                            >
+                              Install
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {canLoadMore && (
+                  <div className="search-load-more-actions">
+                    <button
+                      className="search-load-more-btn"
+                      onClick={loadMore}
+                      disabled={loadingMore || searching || loadingPopular}
                     >
-                      {isDownloading && (
-                        <div className="mod-updating-overlay">
-                          <RefreshCcw className="spin-icon" size={20} />
-                          <span>Downloading...</span>
-                        </div>
+                      {loadingMore ? (
+                        <>
+                          <Loader2 className="search-load-more-spinner" size={16} />
+                          <span>Loading...</span>
+                        </>
+                      ) : (
+                        <span>Load More</span>
                       )}
-                      <div className="result-header">
-                        {project.icon_url && (
-                          <img src={project.icon_url} alt="" className="result-icon" />
-                        )}
-                        <div className="result-info">
-                          <h4>{project.title}</h4>
-                          <span className="result-author">by {project.author}</span>
-                        </div>
-                      </div>
-                      <p className="result-description">{project.description}</p>
-                      <div className="result-footer">
-                        <div className="result-meta">
-                          <span className="result-downloads">{formatDownloads(project.downloads)} downloads</span>
-                        </div>
-                        {installedItem ? (
-                          <button
-                            className="install-btn reinstall"
-                            onClick={() => handleRequestInstall(project, installedItem)}
-                            disabled={isDownloading}
-                          >
-                            Reinstall
-                          </button>
-                        ) : (
-                          <button
-                            className="install-btn"
-                            onClick={() => handleRequestInstall(project)}
-                            disabled={isDownloading}
-                          >
-                            Install
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-                {loadingMore && (
-                  <div className="loading-more">
-                    <Loader2 className="spin-icon" size={24} />
-                    <span>Loading more items...</span>
+                    </button>
                   </div>
                 )}
               </div>
@@ -1272,10 +1543,14 @@ function InstanceResources({
       <FilterModal
         isOpen={isFilterModalOpen}
         onClose={() => setIsFilterModalOpen(false)}
-        categories={isShaderTab ? SHADER_CATEGORIES : RESOURCE_PACK_CATEGORIES}
+        categories={activeFilterCategories}
         selectedCategories={selectedCategories}
         onApply={setSelectedCategories}
-        title={isShaderTab ? "Shader Filters" : "Resource Pack Filters"}
+        title={
+          (activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders') && findProvider === 'curseforge'
+            ? (activeSubTab === 'find-shaders' ? 'CurseForge Shader Categories' : 'CurseForge Resource Pack Categories')
+            : (isShaderTab ? 'Shader Filters' : 'Resource Pack Filters')
+        }
       />
 
       {deleteConfirm.show && (

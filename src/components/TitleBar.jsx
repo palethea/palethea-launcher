@@ -1,10 +1,41 @@
-import { useState, useEffect, useCallback, memo, useRef } from 'react';
+import { useState, useEffect, useCallback, memo, useRef, useMemo } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { sep } from '@tauri-apps/api/path';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { X, Minus, Maximize, Minimize2, Terminal, ChevronDown, Square, List, Shirt, BarChart3, RefreshCcw, Wallpaper, Settings, Download, Trash2, Play } from 'lucide-react';
 import { clampProgress, formatBytes, formatSpeed } from '../utils/downloadTelemetry';
 import './TitleBar.css';
+
+function handleLogoImageError(event) {
+  const image = event.currentTarget;
+
+  if (image.dataset.fallbackTried !== '1') {
+    image.dataset.fallbackTried = '1';
+    image.src = '/minecraft_logo.png';
+    return;
+  }
+
+  image.style.display = 'none';
+  if (image.nextElementSibling) {
+    image.nextElementSibling.style.display = 'flex';
+  }
+}
+
+function getDownloadItemIcon(item) {
+  if (item?.icon) return item.icon;
+  if (item?.kind === 'instance-setup') return '/minecraft_logo.png';
+  return null;
+}
+
+function shallowEqualObject(a, b) {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
 
 function TitleBar({ 
   activeTab, 
@@ -22,17 +53,23 @@ function TitleBar({
   const [isMaximized, setIsMaximized] = useState(false);
   const [showRunningDropdown, setShowRunningDropdown] = useState(false);
   const [showDownloadDropdown, setShowDownloadDropdown] = useState(false);
-  const [currentTime, setCurrentTime] = useState(Math.floor(Date.now() / 1000));
+  const [currentTime, setCurrentTime] = useState(0);
   const [isClosing, setIsClosing] = useState(false);
   const [isDownloadClosing, setIsDownloadClosing] = useState(false);
   const [logoMap, setLogoMap] = useState({});
   const dropdownRef = useRef(null);
   const downloadRef = useRef(null);
-  const appWindow = getCurrentWindow();
+  const appWindow = useMemo(() => getCurrentWindow(), []);
 
-  const runningIds = Object.keys(runningInstances);
+  const runningIdsKey = useMemo(
+    () => Object.keys(runningInstances).sort().join(','),
+    [runningInstances]
+  );
+  const runningIds = useMemo(
+    () => (runningIdsKey ? runningIdsKey.split(',') : []),
+    [runningIdsKey]
+  );
   const hasRunning = runningIds.length > 0;
-  const hasDownloads = downloadQueue.length > 0;
 
   const TABS_CONFIG = {
     instances: { label: 'Instances', icon: List },
@@ -47,7 +84,17 @@ function TitleBar({
   const editingInstance = editingInstanceId ? instances.find(i => i.id === editingInstanceId) : null;
 
   // Create a stable key that only changes when logos actually change
-  const logoKey = instances.map(i => `${i.id}:${i.logo_filename || 'default'}`).join(',');
+  const logoKey = useMemo(
+    () => instances.map(i => `${i.id}:${i.logo_filename || 'default'}`).sort().join(','),
+    [instances]
+  );
+  const logoFilenameById = useMemo(() => {
+    const map = {};
+    for (const instance of instances) {
+      map[instance.id] = instance.logo_filename || 'minecraft_logo.png';
+    }
+    return map;
+  }, [logoKey]);
 
   const toggleDropdown = () => {
     if (showRunningDropdown) {
@@ -74,14 +121,22 @@ function TitleBar({
   };
 
   useEffect(() => {
-    const timer = setInterval(() => {
+    const updateCurrentTime = () => {
       setCurrentTime(Math.floor(Date.now() / 1000));
-    }, 1000);
+    };
+
+    updateCurrentTime();
+    const timer = setInterval(updateCurrentTime, 1000);
     return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
     const loadLogos = async () => {
+      if ((!hasRunning && !editingInstanceId) || instances.length === 0) {
+        setLogoMap(prev => (Object.keys(prev).length === 0 ? prev : {}));
+        return;
+      }
+
       try {
         const baseDir = await invoke('get_data_directory');
         const s = await sep();
@@ -95,25 +150,20 @@ function TitleBar({
         if (editingInstanceId) idsToLoad.add(editingInstanceId);
 
         for (const id of idsToLoad) {
-          const instance = instances.find(i => i.id === id);
-          if (instance) {
-            const filename = instance.logo_filename || 'minecraft_logo.png';
+          const filename = logoFilenameById[id];
+          if (filename) {
             const logoPath = `${logosDir}${s}${filename}`;
             newLogoMap[id] = convertFileSrc(logoPath);
           }
         }
-        setLogoMap(newLogoMap);
+        setLogoMap(prev => (shallowEqualObject(prev, newLogoMap) ? prev : newLogoMap));
       } catch (err) {
         console.error("Failed to load titlebar logos:", err);
       }
     };
 
-    if ((hasRunning || editingInstanceId) && instances.length > 0) {
-      loadLogos();
-    } else if (!hasRunning && !editingInstanceId) {
-      setLogoMap({});
-    }
-  }, [hasRunning, runningIds.join(','), logoKey, editingInstanceId]);
+    loadLogos();
+  }, [hasRunning, runningIdsKey, logoKey, editingInstanceId, logoFilenameById, instances.length]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -141,7 +191,7 @@ function TitleBar({
     const updateMaximized = async () => {
       try {
         const maximized = await appWindow.isMaximized();
-        setIsMaximized(maximized);
+        setIsMaximized(prev => (prev === maximized ? prev : maximized));
       } catch (e) {
         console.warn('Failed to check maximized state:', e);
       }
@@ -215,7 +265,17 @@ function TitleBar({
           <div className="titlebar-center-tab titlebar-editing-info">
             <div className="editing-logo">
               {logoMap[editingInstanceId] ? (
-                <img src={logoMap[editingInstanceId]} alt="" />
+                <>
+                  <img
+                    key={logoMap[editingInstanceId]}
+                    src={logoMap[editingInstanceId]}
+                    alt=""
+                    onError={handleLogoImageError}
+                  />
+                  <div className="editing-logo-fallback" style={{ display: 'none' }}>
+                    {editingInstance.name.charAt(0)}
+                  </div>
+                </>
               ) : (
                 <div className="editing-logo-fallback">{editingInstance.name.charAt(0)}</div>
               )}
@@ -261,12 +321,10 @@ function TitleBar({
                           <div className="running-item-logo">
                             {logoMap[id] ? (
                               <img 
+                                key={logoMap[id]}
                                 src={logoMap[id]} 
                                 alt="" 
-                                onError={(e) => {
-                                  e.target.style.display = 'none';
-                                  e.target.nextSibling.style.display = 'flex';
-                                }}
+                                onError={handleLogoImageError}
                               />
                             ) : null}
                             <div 
@@ -338,8 +396,8 @@ function TitleBar({
                       <div key={`active-${item.id || index}`} className="running-item download-item">
                         <div className="running-item-left">
                           <div className="running-item-logo">
-                            {item.icon ? (
-                              <img src={item.icon} alt="" referrerPolicy="no-referrer" />
+                            {getDownloadItemIcon(item) ? (
+                              <img src={getDownloadItemIcon(item)} alt="" referrerPolicy="no-referrer" />
                             ) : (
                               <div className="logo-fallback">📦</div>
                             )}
@@ -379,8 +437,8 @@ function TitleBar({
                       <div key={`history-${item.id || index}`} className="running-item items-history">
                         <div className="running-item-left">
                           <div className="running-item-logo">
-                            {item.icon ? (
-                              <img src={item.icon} alt="" referrerPolicy="no-referrer" style={{ opacity: 0.6 }} />
+                            {getDownloadItemIcon(item) ? (
+                              <img src={getDownloadItemIcon(item)} alt="" referrerPolicy="no-referrer" style={{ opacity: 0.6 }} />
                             ) : (
                               <div className="logo-fallback" style={{ opacity: 0.6 }}>📦</div>
                             )}
@@ -416,3 +474,4 @@ function TitleBar({
 }
 
 export default memo(TitleBar);
+

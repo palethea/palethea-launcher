@@ -405,6 +405,9 @@
 .running-item-logo {
   width: 36px;
   height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  flex: 0 0 36px;
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -415,6 +418,7 @@
 }
 
 .running-item-logo img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;

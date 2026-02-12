@@ -7,7 +7,7 @@ import VersionSelector from './VersionSelector';
 import FilterModal from './FilterModal';
 import { clampProgress, formatBytes, formatSpeed } from '../utils/downloadTelemetry';
 
-const MODPACK_CATEGORIES = [
+const MODRINTH_MODPACK_CATEGORIES = [
   { id: 'all', label: 'All Categories' },
   { id: 'adventure', label: 'Adventure' },
   { id: 'challenging', label: 'Challenging' },
@@ -20,6 +20,49 @@ const MODPACK_CATEGORIES = [
   { id: 'quests', label: 'Quests' },
   { id: 'technology', label: 'Technology' },
 ];
+
+const CURSEFORGE_MODPACK_CATEGORIES = [
+  { id: 'Adventure and RPG', label: 'Adventure and RPG' },
+  { id: 'Combat / PvP', label: 'Combat / PvP' },
+  { id: 'Expert', label: 'Expert' },
+  { id: 'Exploration', label: 'Exploration' },
+  { id: 'Extra Large', label: 'Extra Large' },
+  { id: 'FTB Official Pack', label: 'FTB Official Pack' },
+  { id: 'Hardcore', label: 'Hardcore' },
+  { id: 'Horror', label: 'Horror' },
+  { id: 'Magic', label: 'Magic' },
+  { id: 'Map Based', label: 'Map Based' },
+  { id: 'Mini Game', label: 'Mini Game' },
+  { id: 'Multiplayer', label: 'Multiplayer' },
+  { id: 'Quests', label: 'Quests' },
+  { id: 'Sci-Fi', label: 'Sci-Fi' },
+  { id: 'Skyblock', label: 'Skyblock' },
+  { id: 'Small / Light', label: 'Small / Light' },
+  { id: 'Tech', label: 'Tech' },
+  { id: 'Vanilla+', label: 'Vanilla+' },
+];
+
+function sortModpacksByPopularity(items) {
+  return [...items].sort((a, b) => {
+    const aDownloads = Number(a?.downloads || 0);
+    const bDownloads = Number(b?.downloads || 0);
+    return bDownloads - aDownloads;
+  });
+}
+
+function mergeUniqueModpacks(existing, incoming) {
+  const seen = new Set(existing.map(item => item.project_id));
+  const merged = [...existing];
+  for (const item of incoming) {
+    if (!seen.has(item.project_id)) {
+      seen.add(item.project_id);
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
+const MODPACK_LOAD_MORE_MIN_SPINNER_MS = 1200;
 
 function CreateInstance({
   onClose,
@@ -46,6 +89,7 @@ function CreateInstance({
 
   // Modpack state
   const [modpackSearch, setModpackSearch] = useState('');
+  const [appliedModpackSearch, setAppliedModpackSearch] = useState('');
   const [modpacks, setModpacks] = useState([]);
   const [modpacksLoading, setModpacksLoading] = useState(false);
   const [selectedModpack, setSelectedModpack] = useState(null);
@@ -54,8 +98,12 @@ function CreateInstance({
   const [modpackVersionsLoading, setModpackVersionsLoading] = useState(false);
   const [modpackTotalSize, setModpackTotalSize] = useState(null);
   const [sizeLoading, setSizeLoading] = useState(false);
-  const [selectedModpackCategories, setSelectedModpackCategories] = useState([]);
+  const [selectedModrinthCategories, setSelectedModrinthCategories] = useState([]);
+  const [selectedCurseForgeCategories, setSelectedCurseForgeCategories] = useState([]);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
+  const [modpackProvider, setModpackProvider] = useState('modrinth');
+  const [hasCurseForgeKey, setHasCurseForgeKey] = useState(false);
+  const [modpackSearchError, setModpackSearchError] = useState('');
 
   // Import state
   const [importZipPath, setImportZipPath] = useState('');
@@ -83,7 +131,27 @@ function CreateInstance({
   const [loadingVersions, setLoadingVersions] = useState(true);
 
   // 2. Ref Hooks
-  const modpackObserver = useRef();
+  const modpackLoadLockRef = useRef(false);
+  const modpackSearchSessionRef = useRef(0);
+  const didInitialModpackLoadRef = useRef(false);
+
+  const activeModpackCategories = useMemo(
+    () => (modpackProvider === 'curseforge' ? selectedCurseForgeCategories : selectedModrinthCategories),
+    [modpackProvider, selectedCurseForgeCategories, selectedModrinthCategories]
+  );
+
+  const activeModpackCategoryOptions = useMemo(
+    () => (modpackProvider === 'curseforge' ? CURSEFORGE_MODPACK_CATEGORIES : MODRINTH_MODPACK_CATEGORIES),
+    [modpackProvider]
+  );
+
+  const applyActiveModpackCategories = useCallback((categories) => {
+    if (modpackProvider === 'curseforge') {
+      setSelectedCurseForgeCategories(categories);
+      return;
+    }
+    setSelectedModrinthCategories(categories);
+  }, [modpackProvider]);
 
   // 3. useMemo hooks
   const canNextFromName = useMemo(() => (creationMode === 'import' || creationMode === 'share-code') ? true : name.trim().length > 0, [creationMode, name]);
@@ -128,51 +196,129 @@ function CreateInstance({
     setLoadingVersions(false);
   }, [selectedVersion]);
 
-  const handleSearchModpacks = useCallback(async (queryOverride) => {
-    const query = queryOverride !== undefined ? queryOverride : modpackSearch;
+  const handleSearchModpacks = useCallback(async (query = '') => {
+    const sessionId = modpackSearchSessionRef.current + 1;
+    modpackSearchSessionRef.current = sessionId;
+    modpackLoadLockRef.current = false;
+
     setModpacksLoading(true);
+    setLoadingMoreModpacks(false);
+    setModpackSearchError('');
+    setSelectedModpack(null);
+    setSelectedModpackVersion(null);
+    setModpackVersions([]);
     setModpacks([]); // Clear results immediately to show loading state
     setModpackOffset(0);
     setHasMoreModpacks(true);
     try {
-      const result = await invoke('search_modrinth', {
-        query: query,
-        projectType: 'modpack',
-        categories: selectedModpackCategories.length > 0 ? selectedModpackCategories : null,
-        limit: 20,
-        offset: 0
-      });
-      setModpacks(result.hits || []);
-      setHasMoreModpacks((result.hits || []).length === 20 && result.total_hits > 20);
-      setModpackOffset((result.hits || []).length);
+      if (modpackProvider === 'curseforge') {
+        if (!hasCurseForgeKey) {
+          setModpacks([]);
+          setHasMoreModpacks(false);
+          setModpackOffset(0);
+          setModpackSearchError('CurseForge key not configured. Set CURSEFORGE_API_KEY and restart dev server.');
+          setModpacksLoading(false);
+          return;
+        }
+
+        const result = await invoke('search_curseforge_modpacks', {
+          query,
+          categories: selectedCurseForgeCategories.length > 0 ? selectedCurseForgeCategories : null,
+          limit: 20,
+          offset: 0
+        });
+        if (modpackSearchSessionRef.current !== sessionId) return;
+        const hits = result.hits || [];
+        const nextOffset = hits.length;
+        const totalHits = Number(result.total_hits || 0);
+        setModpacks(sortModpacksByPopularity(hits));
+        setModpackOffset(nextOffset);
+        setHasMoreModpacks(totalHits > 0 ? nextOffset < totalHits : hits.length >= 20);
+      } else {
+        const result = await invoke('search_modrinth', {
+          query: query,
+          projectType: 'modpack',
+          categories: selectedModrinthCategories.length > 0 ? selectedModrinthCategories : null,
+          limit: 20,
+          offset: 0,
+          index: 'downloads'
+        });
+        if (modpackSearchSessionRef.current !== sessionId) return;
+        const hits = result.hits || [];
+        const nextOffset = hits.length;
+        const totalHits = Number(result.total_hits || 0);
+        setModpacks(sortModpacksByPopularity(hits));
+        setModpackOffset(nextOffset);
+        setHasMoreModpacks(totalHits > 0 ? nextOffset < totalHits : hits.length >= 20);
+      }
     } catch (error) {
       console.error('Failed to search modpacks:', error);
+      if (modpackSearchSessionRef.current === sessionId) {
+        setModpackSearchError(String(error));
+      }
+    } finally {
+      if (modpackSearchSessionRef.current === sessionId) {
+        setModpacksLoading(false);
+      }
     }
-    setModpacksLoading(false);
-  }, [modpackSearch, selectedModpackCategories]);
+  }, [modpackProvider, hasCurseForgeKey, selectedCurseForgeCategories, selectedModrinthCategories]);
+
+  const executeModpackSearch = useCallback(() => {
+    const query = modpackSearch;
+    setAppliedModpackSearch(query);
+    handleSearchModpacks(query);
+  }, [modpackSearch, handleSearchModpacks]);
 
   const handleLoadMoreModpacks = useCallback(async () => {
-    if (loadingMoreModpacks || !hasMoreModpacks) return;
+    if (modpackLoadLockRef.current || modpacksLoading || !hasMoreModpacks) return;
+    modpackLoadLockRef.current = true;
+
+    const requestSessionId = modpackSearchSessionRef.current;
+    const requestOffset = modpackOffset;
+    const requestStart = Date.now();
     setLoadingMoreModpacks(true);
+
     try {
-      const result = await invoke('search_modrinth', {
-        query: modpackSearch,
-        projectType: 'modpack',
-        categories: selectedModpackCategories.length > 0 ? selectedModpackCategories : null,
-        limit: 20,
-        offset: modpackOffset
-      });
+      const result = modpackProvider === 'curseforge'
+        ? await invoke('search_curseforge_modpacks', {
+          query: appliedModpackSearch,
+          categories: selectedCurseForgeCategories.length > 0 ? selectedCurseForgeCategories : null,
+          limit: 20,
+          offset: requestOffset
+        })
+        : await invoke('search_modrinth', {
+          query: appliedModpackSearch,
+          projectType: 'modpack',
+          categories: selectedModrinthCategories.length > 0 ? selectedModrinthCategories : null,
+          limit: 20,
+          offset: requestOffset,
+          index: 'downloads'
+        });
+
+      if (modpackSearchSessionRef.current !== requestSessionId) {
+        return;
+      }
+
       const newHits = result.hits || [];
       if (newHits.length > 0) {
-        setModpacks(prev => [...prev, ...newHits]);
-        setModpackOffset(prev => prev + newHits.length);
+        setModpacks(prev => sortModpacksByPopularity(mergeUniqueModpacks(prev, newHits)));
       }
-      setHasMoreModpacks(newHits.length === 20 && (modpackOffset + newHits.length) < result.total_hits);
+
+      const nextOffset = requestOffset + newHits.length;
+      const totalHits = Number(result.total_hits || 0);
+      setModpackOffset(nextOffset);
+      setHasMoreModpacks(totalHits > 0 ? nextOffset < totalHits : newHits.length >= 20);
     } catch (error) {
       console.error('Failed to load more modpacks:', error);
+    } finally {
+      const elapsed = Date.now() - requestStart;
+      if (elapsed < MODPACK_LOAD_MORE_MIN_SPINNER_MS) {
+        await new Promise(resolve => setTimeout(resolve, MODPACK_LOAD_MORE_MIN_SPINNER_MS - elapsed));
+      }
+      modpackLoadLockRef.current = false;
+      setLoadingMoreModpacks(false);
     }
-    setLoadingMoreModpacks(false);
-  }, [loadingMoreModpacks, hasMoreModpacks, modpackSearch, modpackOffset, selectedModpackCategories]);
+  }, [hasMoreModpacks, modpacksLoading, appliedModpackSearch, modpackOffset, modpackProvider, selectedCurseForgeCategories, selectedModrinthCategories]);
 
   const loadLoaderVersions = useCallback(async () => {
     if (modLoader === 'vanilla' || !selectedVersion) {
@@ -203,30 +349,23 @@ function CreateInstance({
     setLoaderLoading(false);
   }, [modLoader, selectedVersion]);
 
-  const calculateTotalSize = useCallback(async (versionId) => {
+  const calculateTotalSize = useCallback(async (modpack, version) => {
+    if (!modpack || !version) return;
     setSizeLoading(true);
     try {
-      const size = await invoke('get_modpack_total_size', { versionId });
+      const size = modpackProvider === 'curseforge'
+        ? await invoke('get_curseforge_modpack_total_size', {
+          projectId: modpack.project_id,
+          fileId: version.id
+        })
+        : await invoke('get_modpack_total_size', { versionId: version.id });
       setModpackTotalSize(size);
     } catch (error) {
       console.error('Failed to calculate modpack size:', error);
       setModpackTotalSize(null);
     }
     setSizeLoading(false);
-  }, []);
-
-  const lastModpackRef = useCallback(node => {
-    if (modpacksLoading || loadingMoreModpacks) return;
-    if (modpackObserver.current) modpackObserver.current.disconnect();
-    
-    modpackObserver.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasMoreModpacks) {
-        handleLoadMoreModpacks();
-      }
-    });
-    
-    if (node) modpackObserver.current.observe(node);
-  }, [modpacksLoading, loadingMoreModpacks, hasMoreModpacks, handleLoadMoreModpacks]);
+  }, [modpackProvider]);
 
   const getRecommendedJava = useCallback((mcVersion) => {
     if (!mcVersion) return 21;
@@ -248,7 +387,7 @@ function CreateInstance({
       if (minor >= 18) return 17;
       if (minor === 17) return 16;
       return 8;
-    } catch (e) {
+    } catch {
       return 17;
     }
   }, []);
@@ -257,7 +396,9 @@ function CreateInstance({
     setSelectedModpack(mp);
     setModpackVersionsLoading(true);
     try {
-      const versions = await invoke('get_modrinth_versions', { projectId: mp.project_id });
+      const versions = modpackProvider === 'curseforge'
+        ? await invoke('get_curseforge_modpack_versions', { projectId: mp.project_id })
+        : await invoke('get_modrinth_versions', { projectId: mp.project_id });
       setModpackVersions(versions);
       if (versions.length > 0) {
         setSelectedModpackVersion(versions[0]);
@@ -266,7 +407,7 @@ function CreateInstance({
       console.error('Failed to load modpack versions:', error);
     }
     setModpackVersionsLoading(false);
-  }, []);
+  }, [modpackProvider]);
 
   const applyImportSourceSelection = useCallback(async (selectedPath, fallbackName = 'Imported Instance') => {
     setImportZipPath(selectedPath);
@@ -348,10 +489,17 @@ function CreateInstance({
       if (name.trim() && selectedModpack && selectedModpackVersion) {
         // Pass specialized data for modpack creation
         onCreate(name.trim(), 'modpack', 'modpack', {
+          provider: modpackProvider,
           modpackId: selectedModpack.project_id,
           versionId: selectedModpackVersion.id,
           modpackName: selectedModpack.title,
-          modpackIcon: selectedModpack.icon_url
+          modpackIcon: selectedModpack.icon_url,
+          modpackAuthor: selectedModpack.author || null,
+          modpackSlug: selectedModpack.slug || null,
+          modpackWebsiteUrl: selectedModpack.website_url
+            || (modpackProvider === 'modrinth'
+              ? `https://modrinth.com/modpack/${selectedModpack.slug || selectedModpack.project_id}`
+              : null)
         }, selectedJava);
       }
     } else if (creationMode === 'import') {
@@ -368,19 +516,48 @@ function CreateInstance({
         }, selectedJava);
       }
     }
-  }, [isJavaInstalled, selectedJava, creationMode, name, selectedVersion, modLoader, selectedLoaderVersion, selectedModpack, selectedModpackVersion, importZipPath, decodedShareData, onCreate]);
+  }, [isJavaInstalled, selectedJava, creationMode, name, selectedVersion, modLoader, selectedLoaderVersion, selectedModpack, selectedModpackVersion, importZipPath, decodedShareData, onCreate, modpackProvider]);
 
   // 5. useEffect hooks
   useEffect(() => {
+    const loadCurseForgeKeyStatus = async () => {
+      try {
+        const hasKey = await invoke('has_curseforge_api_key');
+        setHasCurseForgeKey(Boolean(hasKey));
+      } catch (error) {
+        console.error('Failed to check CurseForge key status:', error);
+        setHasCurseForgeKey(false);
+      }
+    };
+
+    loadCurseForgeKeyStatus();
+  }, []);
+
+  useEffect(() => {
+    setSelectedModpack(null);
+    setSelectedModpackVersion(null);
+    setModpackVersions([]);
+    setModpackTotalSize(null);
+    setModpackSearchError('');
+    setModpackSearch('');
+    setAppliedModpackSearch('');
+    setModpacks([]);
+    setModpackOffset(0);
+    setHasMoreModpacks(true);
     if (creationMode === 'modpack') {
-      handleSearchModpacks();
+      handleSearchModpacks('');
     }
-  }, [selectedModpackCategories, handleSearchModpacks, creationMode]);
+  }, [modpackProvider, creationMode, hasCurseForgeKey]);
 
   useEffect(() => {
     loadVersions();
-    handleSearchModpacks(""); // Load popular modpacks by default
-  }, [loadVersions, handleSearchModpacks]);
+  }, [loadVersions]);
+
+  useEffect(() => {
+    if (didInitialModpackLoadRef.current) return;
+    didInitialModpackLoadRef.current = true;
+    handleSearchModpacks(''); // Load popular modpacks by default once
+  }, [handleSearchModpacks]);
 
   useEffect(() => {
     if (selectedVersion && modLoader !== 'vanilla') {
@@ -390,11 +567,11 @@ function CreateInstance({
 
   useEffect(() => {
     if (selectedModpackVersion) {
-      calculateTotalSize(selectedModpackVersion.id);
+      calculateTotalSize(selectedModpack, selectedModpackVersion);
     } else {
       setModpackTotalSize(null);
     }
-  }, [selectedModpackVersion, calculateTotalSize]);
+  }, [selectedModpack, selectedModpackVersion, calculateTotalSize]);
 
   useEffect(() => {
     const checkJava = async () => {
@@ -408,7 +585,7 @@ function CreateInstance({
       setIsJavaChecking(false);
     };
 
-    const javaStep = creationMode === 'import' ? 2 : 3;
+    const javaStep = (creationMode === 'import' || creationMode === 'share-code') ? 2 : 3;
     if (step === javaStep) {
       checkJava();
     }
@@ -439,25 +616,37 @@ function CreateInstance({
       <FilterModal 
         isOpen={isFilterModalOpen}
         onClose={() => setIsFilterModalOpen(false)}
-        categories={MODPACK_CATEGORIES}
-        selectedCategories={selectedModpackCategories}
-        onApply={setSelectedModpackCategories}
+        categories={activeModpackCategoryOptions}
+        selectedCategories={activeModpackCategories}
+        onApply={applyActiveModpackCategories}
         title="Modpack Filters"
       />
       <div className={isPage ? 'create-header' : 'modal-header'}>
         <h2>{creationMode === 'import'
           ? (step === 0 ? 'Instance Identity' : step === 1 ? 'Select Source' : 'Java Environment')
-          : (step === 0 ? 'Instance Identity' : step === 1 ? 'Minecraft Version' : step === 2 ? 'Modifications' : 'Java Environment')
+          : creationMode === 'share-code'
+            ? (step === 0 ? 'Instance Identity' : step === 1 ? 'Share Code' : 'Java Environment')
+            : creationMode === 'modpack'
+              ? (step === 0 ? 'Instance Identity' : step === 1 ? 'Select Modpack' : step === 2 ? 'Version' : 'Java Environment')
+              : (step === 0 ? 'Instance Identity' : step === 1 ? 'Minecraft Version' : step === 2 ? 'Modifications' : 'Java Environment')
         }</h2>
         {!isPage && <button className="close-btn" onClick={onClose}>×</button>}
       </div>
 
         <div className="create-steps">
         <div className={`create-step ${step === 0 ? 'active' : ''}`}>Setup</div>
-        {creationMode === 'import' ? (
+        {(creationMode === 'import' || creationMode === 'share-code') ? (
           <>
-            <div className={`create-step ${step === 1 ? 'active' : ''}`}>Select Source</div>
+            <div className={`create-step ${step === 1 ? 'active' : ''}`}>
+              {creationMode === 'import' ? 'Select Source' : 'Share Code'}
+            </div>
             <div className={`create-step ${step === 2 ? 'active' : ''}`}>Java</div>
+          </>
+        ) : creationMode === 'modpack' ? (
+          <>
+            <div className={`create-step ${step === 1 ? 'active' : ''}`}>Modpack</div>
+            <div className={`create-step ${step === 2 ? 'active' : ''}`}>Version</div>
+            <div className={`create-step ${step === 3 ? 'active' : ''}`}>Java</div>
           </>
         ) : (
           <>
@@ -512,12 +701,12 @@ function CreateInstance({
                   onClick={() => setCreationMode('modpack')}
                 >
                   <div className="mode-icon">⚡</div>
-                  <div className="mode-details">
-                    <div className="mode-title">Preconfigured Modpack</div>
-                    <div className="mode-description">
-                      Browse Modrinth and install thousands of community-made modpacks with all mods pre-configured.
+                    <div className="mode-details">
+                      <div className="mode-title">Preconfigured Modpack</div>
+                      <div className="mode-description">
+                      Browse Modrinth or CurseForge and install community-made modpacks.
+                      </div>
                     </div>
-                  </div>
                   <div className="mode-check">
                     <div className="check-inner" />
                   </div>
@@ -687,17 +876,31 @@ function CreateInstance({
 
         {step === 1 && creationMode === 'modpack' && (
           <div className="modpack-step">
+            <div className="provider-toggle">
+              <button
+                className={`provider-pill ${modpackProvider === 'modrinth' ? 'active' : ''}`}
+                onClick={() => setModpackProvider('modrinth')}
+              >
+                Modrinth
+              </button>
+              <button
+                className={`provider-pill ${modpackProvider === 'curseforge' ? 'active' : ''}`}
+                onClick={() => setModpackProvider('curseforge')}
+              >
+                CurseForge
+              </button>
+            </div>
             <div className="modpack-search-container">
               <div className="search-bar">
-                <button 
-                  className={`filter-btn-modal ${selectedModpackCategories.length > 0 ? 'active' : ''}`}
+                <button
+                  className={`filter-btn-modal ${activeModpackCategories.length > 0 ? 'active' : ''}`}
                   onClick={() => setIsFilterModalOpen(true)}
                   title="Filter by Categories"
                 >
                   <ListFilterPlus size={18} />
                   <span>Filters</span>
-                  {selectedModpackCategories.length > 0 && (
-                    <span className="filter-count">{selectedModpackCategories.length}</span>
+                  {activeModpackCategories.length > 0 && (
+                    <span className="filter-count">{activeModpackCategories.length}</span>
                   )}
                 </button>
 
@@ -707,41 +910,44 @@ function CreateInstance({
                       type="text"
                       value={modpackSearch}
                       onChange={(e) => setModpackSearch(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleSearchModpacks()}
-                      placeholder="Search Modrinth modpacks..."
+                      onKeyDown={(e) => e.key === 'Enter' && executeModpackSearch()}
+                      placeholder={modpackProvider === 'curseforge' ? 'Search CurseForge modpacks...' : 'Search Modrinth modpacks...'}
                     />
                   </div>
                 </div>
 
                 <button
                   className="search-btn"
-                  onClick={() => handleSearchModpacks()}
+                  onClick={executeModpackSearch}
                   disabled={modpacksLoading}
                 >
                   {modpacksLoading ? <Loader2 className="spin" size={18} /> : 'Search'}
                 </button>
               </div>
             </div>
+            {modpackSearchError && (
+              <div className="modpack-search-error">{modpackSearchError}</div>
+            )}
 
-            <div className="version-list" style={{ flex: 1, minHeight: 0 }}>
+            <div className="modpack-results-viewport" style={{ flex: 1, minHeight: 0 }}>
               {modpacks.length === 0 ? (
                 <div className="empty-state">
                   <p>
                     {modpacksLoading 
-                      ? 'Searching Modrinth...' 
-                      : (modpackSearch.trim() || selectedModpackCategories.length > 0 
+                      ? (modpackProvider === 'curseforge' ? 'Searching CurseForge...' : 'Searching Modrinth...') 
+                      : (appliedModpackSearch.trim() || activeModpackCategories.length > 0
                           ? `No modpacks found for your search.` 
                           : 'Enter a search term to find modpacks.')}
                   </p>
                 </div>
               ) : (
-                <div className="modpack-grid">
+                <>
+                  <div className="modpack-grid">
                   {modpacks.map((mp, index) => (
                     <div
                       key={`${mp.project_id}-${index}`}
                       className={`modpack-card ${selectedModpack?.project_id === mp.project_id ? 'selected' : ''}`}
                       onClick={() => handleSelectModpack(mp)}
-                      ref={index === modpacks.length - 1 ? lastModpackRef : null}
                     >
                       <div className="modpack-card-icon">
                         {mp.icon_url ? (
@@ -751,24 +957,35 @@ function CreateInstance({
                         )}
                       </div>
                       <div className="modpack-card-info">
-                        <div className="modpack-title">{mp.title}</div>
-                        <div className="modpack-author">by {mp.author}</div>
+                        <div className="modpack-title">{mp.title || mp.name || 'Unnamed modpack'}</div>
+                        <div className="modpack-author">by {mp.author || 'Unknown author'}</div>
                         <div className="modpack-meta">
                           <span className="modpack-downloads">⬇ {mp.downloads.toLocaleString()}</span>
-                          <span className="modpack-tag">Modpack</span>
+                          <span className="modpack-tag">{modpackProvider === 'curseforge' ? 'CURSEFORGE' : 'MODRINTH'}</span>
                         </div>
                       </div>
                     </div>
                   ))}
-                  {loadingMoreModpacks && (
-                    <div className="modpack-card loading-card">
-                      <div className="loading-more-container">
-                        <Loader2 className="spin-icon" size={20} />
-                        <span>Loading more...</span>
-                      </div>
+                  </div>
+                  {hasMoreModpacks && (
+                    <div className="modpack-load-more-actions">
+                      <button
+                        className="modpack-load-more-btn"
+                        onClick={handleLoadMoreModpacks}
+                        disabled={loadingMoreModpacks || modpacksLoading}
+                      >
+                        {loadingMoreModpacks ? (
+                          <>
+                            <Loader2 className="modpack-spinner-icon" size={16} />
+                            <span>Loading...</span>
+                          </>
+                        ) : (
+                          <span>Load More</span>
+                        )}
+                      </button>
                     </div>
                   )}
-                </div>
+                </>
               )}
             </div>
           </div>
@@ -933,7 +1150,7 @@ function CreateInstance({
             </div>
 
             <div className="java-selector-grid">
-              {[8, 16, 17, 21].map(v => {
+              {[8, 16, 17, 21, 25].map(v => {
                 const isRecommended = v === getRecommendedJava(
                   creationMode === 'version' ? selectedVersion : 
                   creationMode === 'modpack' ? selectedModpackVersion?.game_versions[0] : 
@@ -949,9 +1166,9 @@ function CreateInstance({
                     {isRecommended && <div className="recommended-badge">Recommended</div>}
                     <div className="java-version-info">
                       <span className="java-version-name">Java {v}</span>
-                      <span className="java-vendor"> {' '}LTS OpenJDK</span>
-                    </div>
-                    <div className="java-status">
+                  <span className="java-vendor"> {' '}LTS OpenJDK</span>
+                </div>
+                <div className="java-status">
                       {isJavaChecking && selectedJava === v ? (
                         <div className="mini-spinner"></div>
                       ) : (

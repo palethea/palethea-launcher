@@ -343,6 +343,7 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
                 <option value="16">Java 16</option>
                 <option value="17">Java 17</option>
                 <option value="21">Java 21 (Recommended)</option>
+                <option value="25">Java 25</option>
               </select>
               <button
                 className="btn btn-secondary"
@@ -359,7 +360,7 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
               Automatically download and set the selected Java version.
             </p>
             <p className="setting-hint" style={{ marginTop: '8px', color: 'var(--text-secondary)', fontSize: '11px', lineHeight: '1.4' }}>
-              <strong>Requirements:</strong> Java 21 for 1.20.5+ (including 1.21), Java 17 for 1.18–1.20.4, Java 16 for 1.17, and Java 8 for 1.16.5 and older.
+              <strong>Requirements:</strong> Java 21 for 1.20.5+ (including 1.21), Java 17 for 1.18–1.20.4, Java 16 for 1.17, and Java 8 for 1.16.5 and older. Java 25 is available for newer modded setups that require it.
             </p>
           </div>
 

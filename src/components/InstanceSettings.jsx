@@ -8,6 +8,7 @@ import IconPicker from './IconPicker';
 import OptionsEditorModal from './OptionsEditorModal';
 
 const STEVE_HEAD_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAARklEQVQI12NgoAbghLD+I4kwBqOjo+O/f/8YGBj+MzD8Z2D4z8Dwnwmq7P9/BoYL5y8g0/8hHP7/x0b/Y2D4D5b5/58ZAME2EVcxlvGVAAAAAElFTkSuQmCC';
+const ACCOUNT_AVATAR_SIZE = 34;
 
 function SkinHead2D({ src, size = 28 }) {
   return (
@@ -656,7 +657,7 @@ function InstanceSettings({
 
                 {showJavaDropdown && (
                   <div className="p-dropdown-menu">
-                    {[8, 16, 17, 21].map((v) => {
+                    {[8, 16, 17, 21, 25].map((v) => {
                       const verStr = v.toString();
                       const isRecommended = verStr === getRecommendedJava(versionId).toString();
                       return (
@@ -686,7 +687,7 @@ function InstanceSettings({
             </div>
           </div>
           <p className="setting-hint" style={{ marginTop: '-12px', marginBottom: '12px', color: 'var(--text-secondary)', fontSize: '11px', lineHeight: '1.4' }}>
-            <strong>Note:</strong> Java 21 for 1.20.5+ (including 1.21), Java 17 for 1.18–1.20.4, Java 16 for 1.17, and Java 8 for 1.16.5 and older.
+            <strong>Note:</strong> Java 21 for 1.20.5+ (including 1.21), Java 17 for 1.18–1.20.4, Java 16 for 1.17, and Java 8 for 1.16.5 and older. Java 25 is also available for newer modded setups that require it.
           </p>
           {javaDownloadError && (
             <div className="java-download-error">{javaDownloadError}</div>
@@ -797,7 +798,7 @@ function InstanceSettings({
               >
                 <div className="instance-account-option-avatar">
                   {activeAccountForDefault?.uuid && skinCache[activeAccountForDefault.uuid] ? (
-                    <SkinHead2D src={skinCache[activeAccountForDefault.uuid]} size={28} />
+                    <SkinHead2D src={skinCache[activeAccountForDefault.uuid]} size={ACCOUNT_AVATAR_SIZE} />
                   ) : activeAccountForDefault?.is_microsoft ? (
                     <img
                       src={getSkinUrl(activeAccountForDefault.uuid, activeAccountForDefault.is_microsoft)}
@@ -833,7 +834,7 @@ function InstanceSettings({
                 >
                   <div className="instance-account-option-avatar">
                     {skinCache[account.uuid] ? (
-                      <SkinHead2D src={skinCache[account.uuid]} size={28} />
+                      <SkinHead2D src={skinCache[account.uuid]} size={ACCOUNT_AVATAR_SIZE} />
                     ) : account.is_microsoft ? (
                       <img
                         src={getSkinUrl(account.uuid, account.is_microsoft)}

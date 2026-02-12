@@ -1,667 +1,715 @@
-import { useState, useEffect, useCallback, memo, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Download, User, Info, Image as ImageIcon, List, ExternalLink, X, Copy, Save, Trash2, Box } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
+import { ExternalLink, Trash2 } from 'lucide-react';
+import ProjectDetailsEntityModal from './ProjectDetailsEntityModal';
+import { stripMinecraftVersionFromNumber, stripMinecraftVersionFromTitle } from '../utils/versionDisplay';
 import './ModVersionModal.css';
 
-// Get high-resolution URL - prefer raw_url from API, fallback to removing size suffix
 const getFullSizeUrl = (img) => {
-    // If we have raw_url from the API, use it (this is the original upload)
-    if (img.raw_url) {
-        return img.raw_url;
-    }
-    // Fallback: remove the size suffix (e.g., _350) from the URL
-    const url = img.url || img;
-    if (!url) return '';
-    const clean = url.split('?')[0];
-    // Remove size suffix like _350, _512, etc.
-    return clean.replace(/_\d+\.(webp|png|jpg|jpeg|gif)$/i, '.$1');
+  if (img?.raw_url) {
+    return img.raw_url;
+  }
+  const url = img?.url || img?.thumbnailUrl || '';
+  if (!url) return '';
+  const clean = url.split('?')[0];
+  return clean.replace(/_\d+\.(webp|png|jpg|jpeg|gif)$/i, '.$1');
 };
 
-const LOADER_CATEGORIES = ['fabric', 'forge', 'neoforge', 'quilt', 'bukkit', 'folia', 'paper', 'spigot', 'sponge', 'bungeecord', 'velocity', 'waterfall', 'purpur', 'rift', 'liteloader', 'modloader', 'risugamis-modloader'];
+const LOADER_CATEGORIES = [
+  'fabric',
+  'forge',
+  'neoforge',
+  'quilt',
+  'bukkit',
+  'folia',
+  'paper',
+  'spigot',
+  'sponge',
+  'bungeecord',
+  'velocity',
+  'waterfall',
+  'purpur',
+  'rift',
+  'liteloader',
+  'modloader',
+  'risugamis-modloader'
+];
 
 const formatCategory = (cat) => {
-    if (!cat) return '';
-    // Handle common abbreviations or special cases from Modrinth slugs to human labels
-    const specialCases = {
-        'worldgen': 'World Generation',
-        'vanilla-like': 'Vanilla-like',
-        'core-shaders': 'Core Shaders',
-        'game-mechanics': 'Game Mechanics',
-    };
-    if (specialCases[cat.toLowerCase()]) return specialCases[cat.toLowerCase()];
-
-    return cat.split(/[_-]/)
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-        .join(' ');
+  if (!cat) return '';
+  const specialCases = {
+    worldgen: 'World Generation',
+    'vanilla-like': 'Vanilla-like',
+    'core-shaders': 'Core Shaders',
+    'game-mechanics': 'Game Mechanics'
+  };
+  if (specialCases[String(cat).toLowerCase()]) return specialCases[String(cat).toLowerCase()];
+  return String(cat)
+    .split(/[_-]/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
 };
 
 const filterContentCategories = (categories) => {
-    if (!categories) return [];
-    return categories.filter(cat => !LOADER_CATEGORIES.includes(cat.toLowerCase()));
+  if (!categories) return [];
+  return categories.filter((cat) => !LOADER_CATEGORIES.includes(String(cat).toLowerCase()));
+};
+
+const isCurseForgeProjectId = (value) => /^\d+$/.test(String(value || '').trim());
+
+const getCurseForgeSectionForType = (projectType) => {
+  const normalized = String(projectType || '').toLowerCase();
+  if (normalized === 'modpack') return 'modpacks';
+  if (normalized === 'resourcepack') return 'texture-packs';
+  if (normalized === 'shader') return 'shaders';
+  if (normalized === 'datapack') return 'data-packs';
+  return 'mc-mods';
+};
+
+const normalizeLoaderToken = (value) => {
+  const input = String(value || '').trim().toLowerCase();
+  if (!input) return '';
+  const compact = input.replace(/[^a-z0-9]/g, '');
+  if (compact.includes('neoforge')) return 'neoforge';
+  if (compact.includes('fabric')) return 'fabric';
+  if (compact.includes('quilt')) return 'quilt';
+  if (compact.includes('forge')) return 'forge';
+  if (compact.includes('vanilla')) return 'vanilla';
+  return compact;
+};
+
+const normalizeGameVersionToken = (value) => String(value || '').trim().toLowerCase().replace(/^v/, '');
+
+const parseVersionParts = (value) => {
+  const match = String(value || '').match(/\d+(?:\.\d+){1,3}/);
+  if (!match) return null;
+  return match[0].split('.').map((part) => Number(part));
+};
+
+const compareVersionParts = (left, right) => {
+  const maxLength = Math.max(left.length, right.length);
+  for (let i = 0; i < maxLength; i += 1) {
+    const leftPart = left[i] ?? 0;
+    const rightPart = right[i] ?? 0;
+    if (leftPart > rightPart) return 1;
+    if (leftPart < rightPart) return -1;
+  }
+  return 0;
+};
+
+const sameVersionPrefix = (left, right, depth) => {
+  for (let i = 0; i < depth; i += 1) {
+    if ((left[i] ?? null) !== (right[i] ?? null)) return false;
+  }
+  return true;
+};
+
+const getPatchPart = (parts) => (Array.isArray(parts) ? (parts[2] ?? 0) : 0);
+
+const compareParsedVersionParts = (leftParts, rightParts) => {
+  if (!leftParts && !rightParts) return 0;
+  if (!leftParts) return -1;
+  if (!rightParts) return 1;
+  return compareVersionParts(leftParts, rightParts);
+};
+
+const getTokenCompatibilityScore = (entry, requestedGameVersion) => {
+  const token = normalizeGameVersionToken(entry);
+  if (!token) return 0;
+
+  const targetParts = parseVersionParts(requestedGameVersion);
+  if (!targetParts) {
+    return token === requestedGameVersion ? 1000 : 0;
+  }
+
+  const rangeMatch = token.match(/(\d+(?:\.\d+){1,3})\s*[-–—]\s*(\d+(?:\.\d+){1,3})/);
+  if (rangeMatch) {
+    const startParts = parseVersionParts(rangeMatch[1]);
+    const endParts = parseVersionParts(rangeMatch[2]);
+    if (startParts && endParts) {
+      const inRange = compareVersionParts(targetParts, startParts) >= 0 && compareVersionParts(targetParts, endParts) <= 0;
+      if (inRange) {
+        return 5000 + getPatchPart(endParts);
+      }
+      if (sameVersionPrefix(targetParts, endParts, 2) && compareVersionParts(targetParts, endParts) > 0) {
+        return 4000 + getPatchPart(endParts);
+      }
+      return 0;
+    }
+  }
+
+  const tokenParts = parseVersionParts(token);
+  if (!tokenParts) return 0;
+
+  if (compareVersionParts(targetParts, tokenParts) === 0) {
+    return 4900 + getPatchPart(tokenParts);
+  }
+
+  if (tokenParts.length <= 2 && sameVersionPrefix(targetParts, tokenParts, tokenParts.length)) {
+    return 3500;
+  }
+
+  if (sameVersionPrefix(targetParts, tokenParts, 2)) {
+    if (compareVersionParts(targetParts, tokenParts) > 0) {
+      return 4000 + getPatchPart(tokenParts);
+    }
+    return 3000 + getPatchPart(tokenParts);
+  }
+
+  if (sameVersionPrefix(targetParts, tokenParts, 1)) {
+    return 1000;
+  }
+
+  return 0;
+};
+
+const getVersionCompatibilityScore = (versionGameVersions, requestedGameVersion) => {
+  const target = normalizeGameVersionToken(requestedGameVersion);
+  if (!target) return Number.MAX_SAFE_INTEGER;
+  if (!Array.isArray(versionGameVersions) || versionGameVersions.length === 0) return 1;
+  return versionGameVersions.reduce((best, entry) => {
+    const score = getTokenCompatibilityScore(entry, target);
+    return Math.max(best, score);
+  }, 0);
+};
+
+const hasDirectVersionMatch = (versionGameVersions, requestedGameVersion) => {
+  const target = normalizeGameVersionToken(requestedGameVersion);
+  if (!target) return false;
+  if (!Array.isArray(versionGameVersions) || versionGameVersions.length === 0) return false;
+  return versionGameVersions.some((entry) => getTokenCompatibilityScore(entry, target) >= 4900);
+};
+
+const isLoaderSensitiveProjectType = (projectType) => {
+  const normalized = String(projectType || '').toLowerCase();
+  return normalized === 'mod' || normalized === 'modpack';
+};
+
+const matchesRequestedGameVersion = (versionGameVersions, requestedGameVersion) => {
+  return getVersionCompatibilityScore(versionGameVersions, requestedGameVersion) > 0;
+};
+
+const matchesRequestedLoader = (versionLoaders, requestedLoader, projectType) => {
+  if (!isLoaderSensitiveProjectType(projectType)) return true;
+  const target = normalizeLoaderToken(requestedLoader);
+  if (!target || target === 'vanilla') return true;
+  if (!Array.isArray(versionLoaders) || versionLoaders.length === 0) return true;
+  const normalized = versionLoaders.map((entry) => normalizeLoaderToken(entry)).filter(Boolean);
+  return normalized.includes(target);
+};
+
+const getPrimaryGameVersionLabel = (version, fallbackGameVersion) => {
+  const entries = (version?.game_versions || []).filter((entry) => /\d+\.\d+/.test(String(entry || '')));
+  if (entries.length === 0) return fallbackGameVersion || null;
+
+  const target = normalizeGameVersionToken(fallbackGameVersion);
+  const best = entries.reduce((currentBest, entry) => {
+    const score = getTokenCompatibilityScore(entry, target);
+    const parts = parseVersionParts(entry);
+    if (!currentBest) {
+      return { entry, score, parts };
+    }
+    if (score > currentBest.score) {
+      return { entry, score, parts };
+    }
+    if (score === currentBest.score && compareParsedVersionParts(parts, currentBest.parts) > 0) {
+      return { entry, score, parts };
+    }
+    return currentBest;
+  }, null);
+
+  return best?.entry || entries[0] || fallbackGameVersion || null;
+};
+
+const getLoaderSummaryLabel = (version, fallbackLoader) => {
+  const loaders = Array.from(new Set((version?.loaders || []).filter(Boolean)));
+  if (loaders.length === 0) return fallbackLoader || null;
+  if (loaders.length <= 2) return loaders.join(' + ');
+  return `${loaders.slice(0, 2).join(' + ')} +${loaders.length - 2}`;
+};
+
+const extractSemanticVersion = (value) => {
+  const input = String(value || '');
+  const match = input.match(/\d+\.\d+(?:\.\d+){0,2}(?:[-+._][0-9a-z]+)*/i);
+  return match ? match[0] : null;
+};
+
+const resolveDisplayVersionNumber = ({ rawVersion, cleanVersion, cleanTitle, rawTitle }) => {
+  const normalizedClean = String(cleanVersion || '').trim();
+  const fallbackFromTitle = extractSemanticVersion(cleanTitle) || extractSemanticVersion(rawTitle);
+
+  if (!normalizedClean) {
+    return fallbackFromTitle || String(rawVersion || '').trim();
+  }
+
+  if (/^\d+$/.test(normalizedClean) && fallbackFromTitle) {
+    return fallbackFromTitle;
+  }
+
+  return normalizedClean;
+};
+
+const sanitizeDisplayTitle = (value, fallbackValue = '') => {
+  const fallback = String(fallbackValue || '').trim();
+  let text = String(value || '').trim();
+  if (!text) return fallback;
+
+  text = text.replace(/[\s\-–—:|]+$/g, '').trim();
+  text = text.replace(/\b(?:for|on|with|mc|minecraft)\s*$/i, '').trim();
+  text = text.replace(/[\s\-–—:|]+$/g, '').trim();
+
+  return text || fallback;
+};
+
+const buildVersionSubtitle = ({
+  rawVersion,
+  rawTitle,
+  cleanTitle,
+  displayVersionNumber,
+  gameVersionLabel
+}) => {
+  const rawVersionText = String(rawVersion || '').trim();
+  const titleText = String(cleanTitle || rawTitle || '').trim();
+  const baseVersionText = String(displayVersionNumber || '').trim();
+  const hasGameVersion = Boolean(gameVersionLabel && String(gameVersionLabel).trim());
+  const gamePrefix = hasGameVersion ? `[${String(gameVersionLabel).trim()}] ` : '';
+
+  if (/^\d+$/.test(rawVersionText) && titleText) {
+    return `${gamePrefix}${titleText}`.trim();
+  }
+
+  if (!baseVersionText && titleText) {
+    return `${gamePrefix}${titleText}`.trim();
+  }
+
+  const normalizedGame = normalizeGameVersionToken(gameVersionLabel);
+  const alreadyContainsGame = normalizedGame && normalizeGameVersionToken(baseVersionText).includes(normalizedGame);
+  if (hasGameVersion && !alreadyContainsGame) {
+    return `${gamePrefix}${baseVersionText}`.trim();
+  }
+
+  return baseVersionText || titleText;
 };
 
 function ModVersionModal({ project: initialProject, projectId, gameVersion, loader, onSelect, onClose, installedMod, onUninstall }) {
-    const [project, setProject] = useState(initialProject);
-    const [versions, setVersions] = useState([]);
-    const [dependencies, setDependencies] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [loadingDeps, setLoadingDeps] = useState(false);
-    const [error, setError] = useState(null);
-    const [activeTab, setActiveTab] = useState('description');
-    const [showAllCompatibility, setShowAllCompatibility] = useState(false);
-    const [selectedGalleryImage, setSelectedGalleryImage] = useState(null);
-    const [galleryContextMenu, setGalleryContextMenu] = useState(null);
-    const [copying, setCopying] = useState(false);
+  const [project, setProject] = useState(initialProject);
+  const [versions, setVersions] = useState([]);
+  const [showAllVersions, setShowAllVersions] = useState(false);
+  const [dependencies, setDependencies] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingDeps, setLoadingDeps] = useState(false);
+  const [error, setError] = useState(null);
 
-    useEffect(() => {
-        const handleClick = () => {
-            setGalleryContextMenu(null);
-        };
-        window.addEventListener('click', handleClick);
-        return () => window.removeEventListener('click', handleClick);
-    }, []);
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const targetId = projectId || initialProject?.project_id || initialProject?.slug;
+      const preferredProvider = String(
+        initialProject?.provider_label
+        || initialProject?.provider
+        || installedMod?.provider
+        || ''
+      ).toLowerCase();
+      const useCurseForge = preferredProvider.includes('curseforge') || isCurseForgeProjectId(targetId);
 
-    const loadData = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const targetId = projectId || initialProject?.project_id || initialProject?.slug;
+      if (useCurseForge) {
+        const [cfProject, cfVersions] = await Promise.all([
+          invoke('get_curseforge_modpack', { projectId: String(targetId) }),
+          invoke('get_curseforge_modpack_versions', { projectId: String(targetId) })
+        ]);
 
-            // Always fetch full project info to get body and gallery
-            const fullProject = await invoke('get_modrinth_project', { projectId: targetId });
-            
-            setProject(prev => {
-                // Modrinth /project/{id} API doesn't return author, so it will be empty in fullProject.
-                // We want to preserve the author from our initial search hit if possible.
-                // We check if the existing author is better than what we just got.
-                const currentAuthor = prev?.author || initialProject?.author;
-                const newAuthor = (fullProject.author && fullProject.author !== "" && fullProject.author !== "Unknown" && fullProject.author !== "Unknown Creator")
-                    ? fullProject.author 
-                    : (currentAuthor && currentAuthor !== "Unknown Creator" ? currentAuthor : "Unknown Creator");
-                
-                // Preserve the full categories array from the search result (which includes all categories)
-                // The full project API sometimes only returns display_categories
-                const allCategories = prev?.categories || initialProject?.categories || fullProject.categories || [];
-                
-                return {
-                    ...initialProject,
-                    ...prev,
-                    ...fullProject,
-                    author: newAuthor,
-                    categories: allCategories.length > 0 ? allCategories : (fullProject.categories || [])
-                };
-            });
-
-            // Don't filter by loader for resource packs, shaders, or datapacks
-            let loaderFilter = loader?.toLowerCase() || null;
-            const projectType = (fullProject.project_type || '').toLowerCase();
-            if (projectType === 'resourcepack' || projectType === 'shader' || projectType === 'datapack') {
-                loaderFilter = null;
-            }
-
-            const results = await invoke('get_modrinth_versions', {
-                projectId: targetId,
-                gameVersion: gameVersion,
-                loader: loaderFilter
-            });
-            // Sort: release > beta > alpha, then by date desc
-            const sortedResults = results.sort((a, b) => {
-                const typeOrder = { release: 0, beta: 1, alpha: 2 };
-                if (typeOrder[a.version_type] !== typeOrder[b.version_type]) {
-                    return typeOrder[a.version_type] - typeOrder[b.version_type];
-                }
-                return new Date(b.date_published) - new Date(a.date_published);
-            });
-            setVersions(sortedResults);
-
-            // Fetch dependencies for the latest version if they exist
-            if (sortedResults.length > 0) {
-                const latestVersion = sortedResults[0];
-                if (latestVersion.dependencies && latestVersion.dependencies.length > 0) {
-                    setLoadingDeps(true);
-                    try {
-                        const projectIds = latestVersion.dependencies
-                            .map(d => d.project_id)
-                            .filter(Boolean);
-                        
-                        if (projectIds.length > 0) {
-                            const depProjects = await invoke('get_modrinth_projects', { projectIds });
-                            // Merge dependency type info from version into project info
-                            const enrichedDeps = depProjects.map(p => {
-                                const depInfo = latestVersion.dependencies.find(d => d.project_id === (p.project_id || p.id));
-                                return { ...p, dependency_type: depInfo?.dependency_type };
-                            });
-                            setDependencies(enrichedDeps);
-                        }
-                    } catch (depErr) {
-                        console.error('Failed to load dependencies:', depErr);
-                    } finally {
-                        setLoadingDeps(false);
-                    }
-                } else {
-                    setDependencies([]);
-                }
-            } else {
-                setDependencies([]);
-            }
-        } catch (err) {
-            console.error('Failed to load mod data:', err);
-            setError('Failed to fetch project data');
-        }
-        setLoading(false);
-    }, [projectId, initialProject, gameVersion, loader]);
-
-    useEffect(() => {
-        loadData();
-    }, [loadData]);
-
-    const formatDate = useCallback((dateStr) => {
-        const date = new Date(dateStr);
-        return date.toLocaleDateString(undefined, {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric'
+        const sortedResults = [...(cfVersions || [])].sort((a, b) => {
+          const typeOrder = { release: 0, beta: 1, alpha: 2 };
+          const left = typeOrder[String(a?.version_type || 'release').toLowerCase()] ?? 99;
+          const right = typeOrder[String(b?.version_type || 'release').toLowerCase()] ?? 99;
+          if (left !== right) return left - right;
+          return new Date(b.date_published) - new Date(a.date_published);
         });
-    }, []);
 
-    const handleCopyImage = useCallback(async (galleryImg) => {
-        setCopying(true);
-        try {
-            const fullUrl = getFullSizeUrl(galleryImg);
-            
-            let response = await fetch(fullUrl, { referrerPolicy: 'no-referrer' });
-            
-            const blob = await response.blob();
-            
-            if (window.ClipboardItem) {
-                const item = new ClipboardItem({ [blob.type]: blob });
-                await navigator.clipboard.write([item]);
-                if (import.meta.env.DEV) {
-                    invoke('log_event', { level: 'info', message: 'High-res image copied to clipboard' }).catch(() => {});
-                }
-            } else {
-                throw new Error('ClipboardItem not supported');
+        const resolvedProjectType = String(
+          initialProject?.project_type || cfProject?.project_type || 'mod'
+        ).toLowerCase();
+        const compatibleResults = sortedResults.filter((version) => (
+          matchesRequestedGameVersion(version?.game_versions, gameVersion)
+          && matchesRequestedLoader(version?.loaders, loader, resolvedProjectType)
+        ));
+
+        const derivedLoaders = Array.from(new Set(
+          compatibleResults.flatMap((version) => Array.isArray(version.loaders) ? version.loaders : [])
+        ));
+        const derivedGameVersions = Array.from(new Set(
+          compatibleResults
+            .flatMap((version) => Array.isArray(version.game_versions) ? version.game_versions : [])
+            .filter((entry) => /\d+\.\d+/.test(String(entry)))
+        ));
+
+        setProject((prev) => ({
+          ...initialProject,
+          ...prev,
+          ...cfProject,
+          provider_label: 'CurseForge',
+          project_type: resolvedProjectType,
+          loaders: derivedLoaders,
+          game_versions: derivedGameVersions
+        }));
+        setVersions(sortedResults);
+        setDependencies([]);
+        setLoadingDeps(false);
+      } else {
+        const fullProject = await invoke('get_modrinth_project', { projectId: targetId });
+
+        setProject((prev) => {
+          const currentAuthor = prev?.author || initialProject?.author;
+          const newAuthor = (fullProject.author && fullProject.author !== '' && fullProject.author !== 'Unknown' && fullProject.author !== 'Unknown Creator')
+            ? fullProject.author
+            : (currentAuthor && currentAuthor !== 'Unknown Creator' ? currentAuthor : 'Unknown Creator');
+
+          const allCategories = prev?.categories || initialProject?.categories || fullProject.categories || [];
+          return {
+            ...initialProject,
+            ...prev,
+            ...fullProject,
+            author: newAuthor,
+            provider_label: 'Modrinth',
+            categories: allCategories.length > 0 ? allCategories : (fullProject.categories || [])
+          };
+        });
+
+        let loaderFilter = loader?.toLowerCase() || null;
+        const projectType = (fullProject.project_type || '').toLowerCase();
+        if (projectType === 'resourcepack' || projectType === 'shader' || projectType === 'datapack') {
+          loaderFilter = null;
+        }
+
+        const results = await invoke('get_modrinth_versions', {
+          projectId: targetId,
+          gameVersion,
+          loader: loaderFilter
+        });
+
+        const sortedResults = results.sort((a, b) => {
+          const typeOrder = { release: 0, beta: 1, alpha: 2 };
+          if (typeOrder[a.version_type] !== typeOrder[b.version_type]) {
+            return typeOrder[a.version_type] - typeOrder[b.version_type];
+          }
+          return new Date(b.date_published) - new Date(a.date_published);
+        });
+        setVersions(sortedResults);
+
+        if (sortedResults.length > 0) {
+          const latestVersion = sortedResults[0];
+          if (latestVersion.dependencies && latestVersion.dependencies.length > 0) {
+            setLoadingDeps(true);
+            try {
+              const projectIds = latestVersion.dependencies
+                .map((dep) => dep.project_id)
+                .filter(Boolean);
+
+              if (projectIds.length > 0) {
+                const depProjects = await invoke('get_modrinth_projects', { projectIds });
+                const enrichedDeps = depProjects.map((depProject) => {
+                  const depInfo = latestVersion.dependencies.find((dep) => dep.project_id === (depProject.project_id || depProject.id));
+                  return { ...depProject, dependency_type: depInfo?.dependency_type };
+                });
+                setDependencies(enrichedDeps);
+              } else {
+                setDependencies([]);
+              }
+            } catch (depErr) {
+              console.error('Failed to load dependencies:', depErr);
+            } finally {
+              setLoadingDeps(false);
             }
-        } catch (err) {
-            console.error('Failed to copy image:', err);
-        } finally {
-            setCopying(false);
-            setGalleryContextMenu(null);
+          } else {
+            setDependencies([]);
+          }
+        } else {
+          setDependencies([]);
         }
-    }, []);
+      }
+    } catch (err) {
+      console.error('Failed to load mod data:', err);
+      setError('Failed to fetch project data');
+    }
+    setLoading(false);
+  }, [projectId, initialProject, gameVersion, loader, installedMod]);
 
-    const handleSaveImage = useCallback(async (galleryImg) => {
-        try {
-            const fullUrl = getFullSizeUrl(galleryImg);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
-            const url = new URL(fullUrl);
-            const originalFilename = url.pathname.split('/').pop() || 'image.png';
-            
-            const filePath = await save({
-                defaultPath: originalFilename,
-                filters: [{
-                    name: 'Image',
-                    extensions: ['png', 'jpg', 'jpeg', 'webp']
-                }]
-            });
+  useEffect(() => {
+    setShowAllVersions(false);
+  }, [projectId, gameVersion, loader, initialProject?.project_id, initialProject?.slug]);
 
-            if (filePath) {
-                await invoke('save_remote_file', { url: fullUrl, path: filePath });
-                if (import.meta.env.DEV) {
-                    invoke('log_event', { level: 'info', message: `Image saved to ${filePath}` }).catch(() => {});
-                }
-            }
-        } catch (err) {
-            if (import.meta.env.DEV) {
-                invoke('log_event', { level: 'error', message: `Failed to save image: ${err}` }).catch(() => {});
-            }
-        } finally {
-            setGalleryContextMenu(null);
-        }
-    }, []);
+  const formatDate = useCallback((dateStr) => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  }, []);
 
-    const formatNumber = useCallback((num) => {
-        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-        if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-        return num.toString();
-    }, []);
+  const formatNumber = useCallback((num) => {
+    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+    return `${num}`;
+  }, []);
 
-    const handleOpenModrinth = useCallback(() => {
-        const type = project?.project_type || 'mod';
-        const slug = project?.slug || project?.project_id || projectId;
-        if (slug) {
-            invoke('open_url', { url: `https://modrinth.com/${type}/${slug}` });
-        }
-    }, [project, projectId]);
+  const handleCopyImage = useCallback(async (galleryImg) => {
+    try {
+      const fullUrl = getFullSizeUrl(galleryImg);
+      const response = await fetch(fullUrl, { referrerPolicy: 'no-referrer' });
+      const blob = await response.blob();
 
-    const renderTabContent = useCallback(() => {
-        if (loading) {
-            return (
-                <div className="loading-state">
-                    <div className="spinner"></div>
-                    <span>Loading details...</span>
-                </div>
-            );
-        }
+      if (!window.ClipboardItem) {
+        throw new Error('ClipboardItem not supported');
+      }
 
-        switch (activeTab) {
-            case 'description':
-                return (
-                    <div className="tab-pane description-content">
-                        {project?.body ? (
-                            <ReactMarkdown 
-                                remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[rehypeRaw]}
-                                components={{
-                                    a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-                                    img: ({ node, ...props }) => <img {...props} referrerPolicy="no-referrer" style={{ maxWidth: '100%', height: 'auto', borderRadius: '8px' }} />,
-                                    // Handle non-standard tags found in Modrinth descriptions to avoid React warnings
-                                    version: ({ node, ...props }) => <span {...props} />,
-                                    minecraft: ({ node, ...props }) => <span {...props} />,
-                                    center: ({ node, ...props }) => <div style={{ textAlign: 'center' }} {...props} />,
-                                    important: ({ node, ...props }) => <span {...props} />
-                                }}
-                            >
-                                {project.body}
-                            </ReactMarkdown>
-                        ) : (
-                            <div className="empty-state">No description provided.</div>
-                        )}
-                    </div>
-                );
-            case 'gallery':
-                return (
-                    <div className="tab-pane gallery-pane">
-                        {project?.gallery && project.gallery.length > 0 ? (
-                            <div className="gallery-grid">
-                                {project.gallery.map((img, idx) => (
-                                    <div 
-                                        key={idx} 
-                                        className="gallery-item"
-                                        onClick={() => setSelectedGalleryImage(img)}
-                                        onContextMenu={(e) => {
-                                            e.preventDefault();
-                                            setGalleryContextMenu({
-                                                x: e.clientX,
-                                                y: e.clientY,
-                                                url: img.url
-                                            });
-                                        }}
-                                    >
-                                        <div className="gallery-image-container">
-                                            <img src={img.url} alt={img.title || ''} referrerPolicy="no-referrer" />
-                                            <div className="gallery-item-overlay">
-                                                <ImageIcon size={24} />
-                                            </div>
-                                        </div>
-                                        {img.title && <div className="gallery-caption">{img.title}</div>}
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <div className="empty-state">No gallery images available.</div>
-                        )}
-                    </div>
-                );
-            case 'dependencies':
-                return (
-                    <div className="tab-pane dependencies-pane">
-                        {loadingDeps ? (
-                            <div className="loading-state">
-                                <div className="spinner"></div>
-                                <span>Loading dependencies...</span>
-                            </div>
-                        ) : dependencies.length > 0 ? (
-                            <div className="dependencies-list">
-                                {dependencies.map((dep) => (
-                                    <div 
-                                        key={dep.project_id || dep.id} 
-                                        className="dependency-card"
-                                        onClick={() => {
-                                            // Handle clicking a dependency - maybe switch to that mod view?
-                                            // For now we'll just show info
-                                        }}
-                                    >
-                                        <div className="dep-icon">
-                                            {dep.icon_url ? (
-                                                <img src={dep.icon_url} alt="" referrerPolicy="no-referrer" />
-                                            ) : (
-                                                <div className="dep-icon-placeholder">📦</div>
-                                            )}
-                                        </div>
-                                        <div className="dep-info">
-                                            <div className="dep-title-row">
-                                                <h4>{dep.title}</h4>
-                                                <span className={`dep-type-tag ${dep.dependency_type}`}>
-                                                    {dep.dependency_type || 'required'}
-                                                </span>
-                                            </div>
-                                            <p className="dep-description">{dep.description}</p>
-                                            <div className="dep-meta">
-                                                <span>by {dep.author || 'Unknown'}</span>
-                                                <span className="dot">•</span>
-                                                <span>{formatNumber(dep.downloads || 0)} downloads</span>
-                                            </div>
-                                        </div>
-                                        <ExternalLink 
-                                            size={16} 
-                                            className="dep-external" 
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                const type = dep.project_type || 'mod';
-                                                const slug = dep.slug || dep.project_id || dep.id;
-                                                invoke('open_url', { url: `https://modrinth.com/${type}/${slug}` });
-                                            }}
-                                        />
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <div className="empty-state">No dependencies listed for the latest version.</div>
-                        )}
-                    </div>
-                );
-            default:
-                return null;
-        }
-    }, [loading, loadingDeps, activeTab, project, dependencies, formatNumber]);
+      const item = new ClipboardItem({ [blob.type]: blob });
+      await navigator.clipboard.write([item]);
+    } catch (err) {
+      console.error('Failed to copy image:', err);
+    }
+  }, []);
 
-    const compatibilityInfo = useMemo(() => {
-        if (!project?.game_versions) return null;
-        const versionsList = [...project.game_versions].reverse();
-        const displayVersions = showAllCompatibility ? versionsList : versionsList.slice(0, 5);
-        const hasMore = versionsList.length > 5;
-        
-        return {
-            displayVersions,
-            hasMore,
-            moreCount: versionsList.length - 5
-        };
-    }, [project?.game_versions, showAllCompatibility]);
+  const handleSaveImage = useCallback(async (galleryImg) => {
+    try {
+      const fullUrl = getFullSizeUrl(galleryImg);
+      const url = new URL(fullUrl);
+      const originalFilename = url.pathname.split('/').pop() || 'image.png';
+      const filePath = await save({
+        defaultPath: originalFilename,
+        filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]
+      });
+      if (filePath) {
+        await invoke('save_remote_file', { url: fullUrl, path: filePath });
+      }
+    } catch (err) {
+      console.error('Failed to save image:', err);
+    }
+  }, []);
 
-    return (
-        <div className="version-modal-overlay" onClick={onClose}>
-            <div className="version-modal rich-modal" onClick={(e) => e.stopPropagation()}>
-                <div className="version-modal-header">
-                    <div className="header-info">
-                        {project?.icon_url ? (
-                            <img src={project.icon_url} alt="" className="project-icon-large" referrerPolicy="no-referrer" />
-                        ) : (
-                            <div className="project-icon-large project-icon-placeholder">📦</div>
-                        )}
-                        <div className="header-text">
-                            <h3>{project?.title || 'Loading...'}</h3>
-                            <div className="header-meta-row">
-                                <span className="header-author">by {project?.author || initialProject?.author || 'Unknown Creator'}</span>
-                                <span className="header-separator">•</span>
-                                <span className="header-downloads">{formatNumber(project?.downloads || 0)} downloads</span>
-                            </div>
-                            {project?.description && <p className="header-description">{project.description}</p>}
-                        </div>
-                    </div>
-                    <button className="close-btn" onClick={onClose}>&times;</button>
-                </div>
+  const handleOpenProjectPage = useCallback(() => {
+    const slug = project?.slug || project?.project_id || projectId;
+    if (!slug) return;
+    const provider = String(project?.provider_label || '').toLowerCase();
+    if (provider === 'curseforge') {
+      const section = getCurseForgeSectionForType(project?.project_type);
+      const url = project?.website_url || `https://www.curseforge.com/minecraft/${section}/${slug}`;
+      invoke('open_url', { url });
+    } else {
+      const type = project?.project_type || 'mod';
+      invoke('open_url', { url: `https://modrinth.com/${type}/${slug}` });
+    }
+  }, [project, projectId]);
 
-                <div className="rich-modal-content">
-                    <div className="rich-modal-sidebar">
-                        {installedMod && (
-                            <div className="sidebar-section">
-                                <label>Status</label>
-                                <div className="sidebar-status-box">
-                                    <div className="status-header">
-                                        <div className="status-indicator"></div>
-                                        <span>Installed</span>
-                                    </div>
-                                    <div className="status-version-link" onClick={() => {
-                                        // Scroll to version in list if possible, or just show it
-                                    }}>
-                                        {installedMod.version || installedMod.versionName || installedMod.version_name || 'Unknown version'}
-                                    </div>
-                                    {installedMod.filename && (
-                                        <div className="status-filename">{installedMod.filename}</div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
+  const compatibilityVersions = (
+    (project?.game_versions && project.game_versions.length > 0)
+      ? project.game_versions
+      : Array.from(new Set(versions.flatMap((version) => version?.game_versions || []).filter((value) => /\d+\.\d+/.test(String(value))))
+      )
+  ).slice().reverse();
+  const providerLabel = project?.provider_label || 'Modrinth';
+  const resolvedProjectType = String(project?.project_type || initialProject?.project_type || 'mod').toLowerCase();
+  const compatibilityMeta = useMemo(() => {
+    const loaderFiltered = versions.filter((version) => (
+      matchesRequestedLoader(version?.loaders, loader, resolvedProjectType)
+    ));
+    const scored = loaderFiltered
+      .map((version) => ({
+        version,
+        score: getVersionCompatibilityScore(version?.game_versions, gameVersion)
+      }))
+      .filter((item) => item.score > 0);
 
-                        <div className="sidebar-section">
-                            <label>Details</label>
-                            <div className="sidebar-stats">
-                                <div className="stat-item" title="Project Author">
-                                    <User size={14} />
-                                    <span>{project?.author || initialProject?.author || 'Unknown Creator'}</span>
-                                </div>
-                                <div className="stat-item" title="Total Downloads">
-                                    <Download size={14} />
-                                    <span>{formatNumber(project?.downloads || 0)} downloads</span>
-                                </div>
-                                <div className="stat-item" title="Project ID">
-                                    <Info size={14} />
-                                    <span className="monospace">{project?.project_id || projectId}</span>
-                                </div>
-                            </div>
-                        </div>
+    if (scored.length === 0) {
+      return {
+        bestScore: 0,
+        bestVersions: [],
+        hasAnyDirectMatch: false
+      };
+    }
 
-                        {project?.loaders && project.loaders.length > 0 && (
-                            <div className="sidebar-section">
-                                <label>Platforms</label>
-                                <div className="platform-tags">
-                                    {project.loaders.map(loader => (
-                                        <span key={loader} className={`platform-tag loader-${loader.toLowerCase()}`}>
-                                            {loader.charAt(0).toUpperCase() + loader.slice(1)}
-                                        </span>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
+    const bestScore = scored.reduce((best, item) => Math.max(best, item.score), 0);
+    const bestVersions = scored.filter((item) => item.score === bestScore).map((item) => item.version);
+    const hasAnyDirectMatch = scored.some((item) => hasDirectVersionMatch(item.version?.game_versions, gameVersion));
 
-                        {project?.game_versions && project.game_versions.length > 0 && (
-                            <div className="sidebar-section">
-                                <label>Compatibility</label>
-                                <div className="compatibility-info">
-                                    <span className="compatibility-sublabel">Minecraft: Java Edition</span>
-                                    <div className="compatibility-tags">
-                                        {compatibilityInfo?.displayVersions.map(v => (
-                                            <span key={v} className="compatibility-tag">{v}</span>
-                                        ))}
-                                        {!showAllCompatibility && compatibilityInfo?.hasMore && (
-                                            <span 
-                                                className="compatibility-tag more clickable"
-                                                onClick={() => setShowAllCompatibility(true)}
-                                            >
-                                                +{compatibilityInfo.moreCount} more
-                                            </span>
-                                        )}
-                                        {showAllCompatibility && (
-                                            <span 
-                                                className="compatibility-tag more clickable"
-                                                onClick={() => setShowAllCompatibility(false)}
-                                            >
-                                                show less
-                                            </span>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-                        )}
+    return {
+      bestScore,
+      bestVersions,
+      hasAnyDirectMatch
+    };
+  }, [versions, gameVersion, loader, resolvedProjectType]);
+  const filteredVersions = useMemo(() => {
+    if (showAllVersions) return versions;
+    return compatibilityMeta.bestVersions;
+  }, [versions, showAllVersions, compatibilityMeta]);
+  const showFallbackNotice = !showAllVersions
+    && filteredVersions.length > 0
+    && compatibilityMeta.bestScore > 0
+    && compatibilityMeta.bestScore < 4900
+    && !compatibilityMeta.hasAnyDirectMatch;
+  const hiddenVersionCount = Math.max(0, versions.length - filteredVersions.length);
+  const categories = filterContentCategories(project?.categories || []);
+  const loaders = (project?.loaders && project.loaders.length > 0)
+    ? project.loaders
+    : Array.from(new Set(versions.flatMap((version) => version?.loaders || [])));
+  const galleryItems = (project?.gallery || []).map((img) => ({
+    type: 'image',
+    url: img?.url || '',
+    thumbnailUrl: img?.url || '',
+    raw_url: img?.raw_url || null,
+    title: img?.title || '',
+    description: img?.description || ''
+  }));
 
-                        {project?.categories && project.categories.length > 0 && (
-                            <div className="sidebar-section">
-                                <label>Categories</label>
-                                <div className="category-tags">
-                                    {filterContentCategories(project.categories).map(cat => (
-                                        <span key={cat} className="category-tag">{formatCategory(cat)}</span>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="rich-modal-main">
-                        <div className="modal-tabs">
-                            <button 
-                                className={`modal-tab ${activeTab === 'description' ? 'active' : ''}`}
-                                onClick={() => setActiveTab('description')}
-                            >
-                                <Info size={16} />
-                                Description
-                            </button>
-                            <button 
-                                className={`modal-tab ${activeTab === 'gallery' ? 'active' : ''}`}
-                                onClick={() => setActiveTab('gallery')}
-                            >
-                                <ImageIcon size={16} />
-                                Gallery
-                            </button>
-                            <button 
-                                className={`modal-tab ${activeTab === 'dependencies' ? 'active' : ''}`}
-                                onClick={() => setActiveTab('dependencies')}
-                            >
-                                <Box size={16} />
-                                Dependencies
-                                {dependencies.length > 0 && <span className="tab-count">{dependencies.length}</span>}
-                            </button>
-                        </div>
-
-                        <div className="modal-tab-content">
-                            {error ? <div className="error-state">{error}</div> : renderTabContent()}
-                        </div>
-                    </div>
-
-                    <div className="rich-modal-versions">
-                        <div className="versions-header">
-                            <label>Compatible Versions</label>
-                            <span className="version-info-tag">{gameVersion}</span>
-                        </div>
-                        <div className="versions-scroll">
-                            {loading ? (
-                                <div className="versions-loading">
-                                    <div className="spinner small"></div>
-                                </div>
-                            ) : versions.length === 0 ? (
-                                <div className="empty-state mini">No versions found</div>
-                            ) : (
-                                <div className="versions-small-list">
-                                    {versions.map((v) => {
-                                        const isInstalled = installedMod?.version_id === v.id;
-                                        return (
-                                            <div 
-                                                key={v.id} 
-                                                className={`version-mini-item ${isInstalled ? 'installed' : ''}`} 
-                                                onClick={() => onSelect(v)}
-                                            >
-                                                <div className="mini-item-top">
-                                                    <span className="mini-name" title={v.name}>{v.name}</span>
-                                                    <div className="mini-item-tags">
-                                                        {isInstalled && <span className="installed-label">INSTALLED</span>}
-                                                        <span className={`version-tag-mini ${v.version_type}`}></span>
-                                                    </div>
-                                                </div>
-                                                <div className="mini-item-bottom">
-                                                    <span className="mini-number">{v.version_number}</span>
-                                                    <span className="mini-date">{formatDate(v.date_published)}</span>
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-
-                <div className="version-modal-footer">
-                    <button 
-                        className="modrinth-link-btn"
-                        onClick={handleOpenModrinth}
-                    >
-                        <ExternalLink size={14} />
-                        <span>View on Modrinth</span>
-                    </button>
-                    {installedMod && (
-                        <button 
-                            className="uninstall-btn"
-                            onClick={() => onUninstall(installedMod)}
-                        >
-                            <Trash2 size={14} />
-                            <span>Uninstall</span>
-                        </button>
-                    )}
-                    <button className="btn-secondary" onClick={onClose}>Cancel</button>
-                </div>
-            </div>
-
-            {selectedGalleryImage && (
-                <div className="gallery-modal-overlay" onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedGalleryImage(null);
-                }}>
-                    <div className="gallery-modal-content" onClick={e => e.stopPropagation()}>
-                        {selectedGalleryImage.title && (
-                            <div className="gallery-modal-caption">
-                                <h3>{selectedGalleryImage.title}</h3>
-                            </div>
-                        )}
-                        <div className="gallery-modal-image-wrapper">
-                            <img src={getFullSizeUrl(selectedGalleryImage)} alt={selectedGalleryImage.title || ''} referrerPolicy="no-referrer" />
-                            <button className="gallery-modal-close" onClick={() => setSelectedGalleryImage(null)}>
-                                <X size={20} />
-                            </button>
-                        </div>
-                        <div className="gallery-modal-actions">
-                            <button onClick={() => handleCopyImage(selectedGalleryImage)}>
-                                <Copy size={18} />
-                                Copy
-                            </button>
-                            <button onClick={() => handleSaveImage(selectedGalleryImage)}>
-                                <Save size={18} />
-                                Save
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {galleryContextMenu && (
-                <div 
-                    className="gallery-context-menu"
-                    style={{ 
-                        left: Math.min(galleryContextMenu.x, window.innerWidth - 160), 
-                        top: Math.min(galleryContextMenu.y, window.innerHeight - 100) 
-                    }}
-                    onClick={e => e.stopPropagation()}
-                >
-                    <button onClick={() => {
-                        const img = project.gallery.find(g => g.url === galleryContextMenu.url);
-                        setSelectedGalleryImage(img);
-                        setGalleryContextMenu(null);
-                    }}>
-                        <ImageIcon size={14} />
-                        View Large
-                    </button>
-                    <button onClick={() => {
-                        const img = project.gallery.find(g => g.url === galleryContextMenu.url);
-                        handleCopyImage(img);
-                    }}>
-                        <Copy size={14} />
-                        Copy Image
-                    </button>
-                    <button onClick={() => {
-                        const img = project.gallery.find(g => g.url === galleryContextMenu.url);
-                        handleSaveImage(img);
-                    }}>
-                        <Save size={14} />
-                        Save Image As...
-                    </button>
-                </div>
-            )}
+  const versionsContent = loading ? (
+    <div className="versions-loading">
+      <div className="spinner small"></div>
+    </div>
+  ) : versions.length === 0 ? (
+    <div className="empty-state mini">No versions found</div>
+  ) : (
+    <div className="versions-small-list-wrap">
+      {versions.length > 0 && (
+        <div className="versions-filter-toggle-row">
+          <button
+            type="button"
+            className="versions-filter-toggle"
+            onClick={() => setShowAllVersions((prev) => !prev)}
+          >
+            {showAllVersions
+              ? 'Show compatible only'
+              : (hiddenVersionCount > 0 ? `Show all versions (+${hiddenVersionCount})` : 'Show all versions')}
+          </button>
         </div>
-    );
+      )}
+      {showFallbackNotice && (
+        <div className="versions-compat-note" role="status">
+          No version is marked specifically for Minecraft {gameVersion}. Showing the newest likely-compatible version instead.
+        </div>
+      )}
+      {filteredVersions.length === 0 ? (
+        <div className="empty-state mini">No versions found for this Minecraft/loader combo</div>
+      ) : (
+      <div className="versions-small-list">
+      {filteredVersions.map((version) => {
+        const isInstalled = installedMod?.version_id === version.id;
+        const versionType = String(version?.version_type || 'release').toLowerCase();
+        const gameVersionLabel = getPrimaryGameVersionLabel(version, gameVersion);
+        const loaderLabel = getLoaderSummaryLabel(version, loader);
+        const rawTitle = version.name || version.version_number || version.id;
+        const strippedTitle = stripMinecraftVersionFromTitle(rawTitle, gameVersionLabel || gameVersion) || rawTitle;
+        const cleanTitle = sanitizeDisplayTitle(strippedTitle, rawTitle);
+        const rawVersion = version.version_number || version.id;
+        const cleanVersion = stripMinecraftVersionFromNumber(rawVersion, gameVersionLabel || gameVersion) || rawVersion;
+        const displayVersionNumber = resolveDisplayVersionNumber({
+          rawVersion,
+          cleanVersion,
+          cleanTitle,
+          rawTitle
+        });
+        const displaySubtitle = buildVersionSubtitle({
+          rawVersion,
+          rawTitle,
+          cleanTitle,
+          displayVersionNumber,
+          gameVersionLabel
+        });
+        return (
+          <div
+            key={version.id}
+            className={`version-mini-item ${isInstalled ? 'installed' : ''}`}
+            onClick={() => onSelect(version)}
+          >
+            <div className="mini-item-top">
+              <div className="mini-title-block">
+                <span className="mini-name" title={rawTitle}>{cleanTitle}</span>
+                <span className="mini-number" title={displaySubtitle}>{displaySubtitle}</span>
+              </div>
+              <div className="mini-item-tags">
+                <span className={`version-type-pill ${versionType}`}>{versionType}</span>
+              </div>
+            </div>
+            <div className="mini-item-bottom">
+              <div className="mini-meta-row">
+                {gameVersionLabel && <span className="mini-meta-chip">{gameVersionLabel}</span>}
+                {loaderLabel && <span className="mini-meta-chip">{loaderLabel}</span>}
+              </div>
+              <span className="mini-date">{formatDate(version.date_published)}</span>
+            </div>
+          </div>
+        );
+      })}
+      </div>
+      )}
+    </div>
+  );
+
+  return (
+    <ProjectDetailsEntityModal
+      onClose={onClose}
+      loading={loading}
+      error={error}
+      header={{
+        iconUrl: project?.icon_url || null,
+        fallback: 'PK',
+        title: project?.title || 'Loading...',
+        author: project?.author || initialProject?.author || 'Unknown Creator',
+        downloadsText: `${formatNumber(project?.downloads || 0)} downloads`,
+        description: project?.description || ''
+      }}
+      platformLabel={providerLabel}
+      details={{
+        author: project?.author || initialProject?.author || 'Unknown Creator',
+        downloadsText: `${formatNumber(project?.downloads || 0)} downloads`,
+        projectId: project?.project_id || projectId || 'unknown'
+      }}
+      loaders={loaders}
+      compatibilityVersions={compatibilityVersions}
+      categories={categories}
+      mapCategoryLabel={formatCategory}
+      descriptionMarkdown={project?.body || ''}
+      descriptionEmptyText="No description provided."
+      galleryItems={galleryItems}
+      galleryEmptyText="No gallery images available."
+      dependencies={dependencies}
+      dependenciesLoading={loadingDeps}
+      dependenciesEmptyText="No dependencies listed for the latest version."
+      showDependenciesTab={providerLabel === 'Modrinth'}
+      onOpenDependencyExternal={(dep) => {
+        const type = dep.project_type || 'mod';
+        const slug = dep.slug || dep.project_id || dep.id;
+        invoke('open_url', { url: `https://modrinth.com/${type}/${slug}` });
+      }}
+      versionsLabel="Compatible Versions"
+      versionsTag={gameVersion}
+      versionsContent={versionsContent}
+      footerContent={(
+        <>
+          <button className="modrinth-link-btn" onClick={handleOpenProjectPage}>
+            <ExternalLink size={14} />
+            <span>{providerLabel === 'CurseForge' ? 'View on CurseForge' : 'View on Modrinth'}</span>
+          </button>
+          {installedMod && (
+            <button className="uninstall-btn" onClick={() => onUninstall(installedMod)}>
+              <Trash2 size={14} />
+              <span>Uninstall</span>
+            </button>
+          )}
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+        </>
+      )}
+      galleryActions={{
+        onCopy: handleCopyImage,
+        onSave: handleSaveImage
+      }}
+    />
+  );
 }
 
 export default memo(ModVersionModal);
-

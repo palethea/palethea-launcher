@@ -256,19 +256,189 @@ fn find_java_by_version(required_major: u32) -> Option<PathBuf> {
     None
 }
 
+fn class_major_to_java_major(class_major: u16) -> Option<u32> {
+    if class_major < 45 {
+        return None;
+    }
+    Some(class_major as u32 - 44)
+}
+
+fn should_scan_mod_jar_for_loader(loader: &ModLoader, archive: &mut ZipArchive<File>) -> bool {
+    let mut has_fabric_manifest = false;
+    let mut has_quilt_manifest = false;
+    let mut has_forge_manifest = false;
+    let mut has_neoforge_manifest = false;
+    let mut has_modlauncher_service = false;
+
+    for i in 0..archive.len() {
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
+        let name = entry.name().to_ascii_lowercase();
+
+        if name == "fabric.mod.json" {
+            has_fabric_manifest = true;
+        } else if name == "quilt.mod.json" {
+            has_quilt_manifest = true;
+        } else if name == "meta-inf/mods.toml" {
+            has_forge_manifest = true;
+        } else if name == "meta-inf/neoforge.mods.toml" {
+            has_neoforge_manifest = true;
+        } else if name == "meta-inf/services/cpw.mods.modlauncher.api.itransformationservice" {
+            has_modlauncher_service = true;
+        }
+    }
+
+    match loader {
+        ModLoader::Forge | ModLoader::NeoForge => {
+            // Ignore clearly Fabric/Quilt-only jars for Java-requirement detection.
+            if (has_fabric_manifest || has_quilt_manifest)
+                && !has_forge_manifest
+                && !has_neoforge_manifest
+                && !has_modlauncher_service
+            {
+                return false;
+            }
+            true
+        }
+        ModLoader::Fabric => {
+            // Ignore clearly Forge/NeoForge-only jars for Java-requirement detection.
+            if (has_forge_manifest || has_neoforge_manifest || has_modlauncher_service)
+                && !has_fabric_manifest
+                && !has_quilt_manifest
+            {
+                return false;
+            }
+            true
+        }
+        ModLoader::Vanilla => false,
+    }
+}
+
+fn detect_mods_min_java_major(instance: &Instance) -> Option<u32> {
+    if instance.mod_loader == ModLoader::Vanilla {
+        return None;
+    }
+
+    let mods_dir = instance.get_game_directory().join("mods");
+    let entries = fs::read_dir(&mods_dir).ok()?;
+
+    let mut max_required_major = 0u32;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let is_jar = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("jar"))
+            .unwrap_or(false);
+        if !is_jar {
+            continue;
+        }
+
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
+        let Ok(mut archive) = ZipArchive::new(file) else {
+            continue;
+        };
+
+        if !should_scan_mod_jar_for_loader(&instance.mod_loader, &mut archive) {
+            continue;
+        }
+
+        for i in 0..archive.len() {
+            let Ok(mut zipped) = archive.by_index(i) else {
+                continue;
+            };
+            if !zipped.name().ends_with(".class") {
+                continue;
+            }
+
+            let mut header = [0u8; 8];
+            if zipped.read_exact(&mut header).is_err() {
+                break;
+            }
+
+            if header[0] != 0xCA || header[1] != 0xFE || header[2] != 0xBA || header[3] != 0xBE {
+                break;
+            }
+
+            let class_major = u16::from_be_bytes([header[6], header[7]]);
+            if let Some(java_major) = class_major_to_java_major(class_major) {
+                if java_major > max_required_major {
+                    max_required_major = java_major;
+                }
+            }
+            break;
+        }
+    }
+
+    if max_required_major == 0 {
+        None
+    } else {
+        Some(max_required_major)
+    }
+}
+
 fn select_java_for_launch(instance: &Instance, version_details: &VersionDetails) -> Result<PathBuf, String> {
-    // If instance has a specific Java path set, use that
+    let mut required_major = version_details
+        .java_version
+        .as_ref()
+        .map(|java_version| java_version.major_version as u32);
+
+    if let Some(mods_required_major) = detect_mods_min_java_major(instance) {
+        match required_major {
+            Some(current_required) if mods_required_major > current_required => {
+                log::warn!(
+                    "Detected installed mods requiring Java {}, raising launch requirement above version requirement Java {}",
+                    mods_required_major,
+                    current_required
+                );
+                required_major = Some(mods_required_major);
+            }
+            None => {
+                log::warn!(
+                    "Detected installed mods requiring Java {}, applying that as launch requirement",
+                    mods_required_major
+                );
+                required_major = Some(mods_required_major);
+            }
+            _ => {}
+        }
+    }
+
+    // If instance has a specific Java path set, use it only if it satisfies the required major.
     if let Some(java_path) = &instance.java_path {
         let path = PathBuf::from(java_path);
         if path.exists() {
-            return Ok(path);
+            if let Some(required) = required_major {
+                if let Some(major) = get_java_major(&path) {
+                    if major >= required {
+                        return Ok(path);
+                    }
+                    log::warn!(
+                        "Instance Java {} is version {}, but launch requires Java {} or newer. Falling back to auto selection.",
+                        path.to_string_lossy(),
+                        major,
+                        required
+                    );
+                } else {
+                    // If we cannot detect major, keep existing behavior and trust the configured path.
+                    return Ok(path);
+                }
+            } else {
+                return Ok(path);
+            }
         }
     }
-    
-    // Check if version requires a specific Java version
-    if let Some(java_version) = &version_details.java_version {
-        let required_major = java_version.major_version as u32;
-        
+
+    // If we know a required Java major, enforce it through global/auto detection.
+    if let Some(required_major) = required_major {
         // First check global settings Java
         if let Some(settings_java) = settings::get_java_path() {
             let settings_path = PathBuf::from(&settings_java);
@@ -278,17 +448,22 @@ fn select_java_for_launch(instance: &Instance, version_details: &VersionDetails)
                         return Ok(settings_path);
                     }
                     // Settings Java exists but wrong version, try to find correct one
-                    log::info!("Settings Java is version {}, but {} requires Java {}", major, version_details.id, required_major);
+                    log::info!(
+                        "Settings Java is version {}, but {} requires Java {}",
+                        major,
+                        version_details.id,
+                        required_major
+                    );
                 }
             }
         }
-        
+
         // Try to find a Java that meets the requirement
         if let Some(java_path) = find_java_by_version(required_major) {
             log::info!("Found Java {} for Minecraft {}", required_major, version_details.id);
             return Ok(java_path);
         }
-        
+
         // Fall back to any Java if we can't find the right version
         if let Some(java_path) = find_java() {
             if let Some(major) = get_java_major(&java_path) {
@@ -301,7 +476,7 @@ fn select_java_for_launch(instance: &Instance, version_details: &VersionDetails)
             }
             return Ok(java_path);
         }
-        
+
         return Err(format!(
             "Java {} not found. Minecraft {} requires Java {} or newer. Please install it.",
             required_major, version_details.id, required_major
@@ -327,6 +502,38 @@ fn select_java_for_launch(instance: &Instance, version_details: &VersionDetails)
     }
 
     Ok(requested)
+}
+
+#[cfg(target_os = "windows")]
+fn select_windows_launch_java(java_path: &PathBuf) -> PathBuf {
+    let is_javaw = java_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case("javaw.exe"))
+        .unwrap_or(false);
+    if is_javaw {
+        return java_path.clone();
+    }
+
+    let javaw_path = java_path.with_file_name("javaw.exe");
+    if javaw_path.exists() {
+        let msg = format!(
+            "[ShortcutDebug] Switching Windows launch binary from {} to {}",
+            java_path.to_string_lossy(),
+            javaw_path.to_string_lossy()
+        );
+        log::info!("{}", msg);
+        crate::minecraft::logger::append_shortcut_debug(&msg);
+        return javaw_path;
+    }
+
+    let msg = format!(
+        "[ShortcutDebug] javaw.exe not found next to {}, using original binary",
+        java_path.to_string_lossy()
+    );
+    log::info!("{}", msg);
+    crate::minecraft::logger::append_shortcut_debug(&msg);
+    java_path.clone()
 }
 
 /// Extract identity (group:artifact[:classifier]) from maven name for deduplication
@@ -505,6 +712,8 @@ fn process_arg_string(
     natives_dir: Option<&str>,
     library_dir: Option<&str>,
 ) -> String {
+    let classpath_separator = if cfg!(target_os = "windows") { ";" } else { ":" };
+
     let mut res = s.replace("${auth_player_name}", username)
         .replace("${version_name}", version_id)
         .replace("${game_directory}", &game_dir.to_string_lossy())
@@ -519,7 +728,8 @@ fn process_arg_string(
         .replace("${resolution_width}", resolution_width)
         .replace("${resolution_height}", resolution_height)
         .replace("${launcher_name}", "PaletheaLauncher")
-        .replace("${launcher_version}", "0.1.0");
+        .replace("${launcher_version}", "0.1.0")
+        .replace("${classpath_separator}", classpath_separator);
 
     if let Some(cp) = classpath {
         res = res.replace("${classpath}", cp);
@@ -660,7 +870,6 @@ pub fn build_jvm_args(
 fn deduplicate_jvm_args(args: Vec<String>) -> Vec<String> {
     let mut unique_args = Vec::new();
     let mut properties = std::collections::HashMap::new();
-    let mut seen_others = std::collections::HashSet::new();
     let mut xmx = None;
     let mut xms = None;
     let mut others = Vec::new();
@@ -680,10 +889,10 @@ fn deduplicate_jvm_args(args: Vec<String>) -> Vec<String> {
             properties.insert("-cp_val".to_string(), arg);
             cp = None;
         } else {
-            if !seen_others.contains(&arg) {
-                seen_others.insert(arg.clone());
-                others.push(arg);
-            }
+            // Preserve ordering and duplicates for non-property arguments.
+            // Some module flags (e.g. --add-opens / --add-exports) are expected
+            // to appear multiple times and removing duplicates breaks launch.
+            others.push(arg);
         }
     }
 
@@ -929,6 +1138,24 @@ pub async fn launch_game(
 
     // Find Java: instance setting > global setting > auto-detect (with legacy Forge handling)
     let java_path = select_java_for_launch(instance, &actual_version_details)?;
+    let selected_java_msg = format!(
+        "[ShortcutDebug] Selected Java candidate path for {}: {}",
+        instance.name,
+        java_path.to_string_lossy()
+    );
+    log::info!("{}", selected_java_msg);
+    crate::minecraft::logger::append_shortcut_debug(&selected_java_msg);
+    #[cfg(target_os = "windows")]
+    let launch_java_path = select_windows_launch_java(&java_path);
+    #[cfg(not(target_os = "windows"))]
+    let launch_java_path = java_path.clone();
+    let launch_java_msg = format!(
+        "[ShortcutDebug] Final Java launch binary for {}: {}",
+        instance.name,
+        launch_java_path.to_string_lossy()
+    );
+    log::info!("{}", launch_java_msg);
+    crate::minecraft::logger::append_shortcut_debug(&launch_java_msg);
     
     // Build classpath - handle deduplication to avoid "duplicate ASM classes" error
     crate::minecraft::downloader::emit_download_progress(app_handle, DownloadProgress {
@@ -1065,7 +1292,7 @@ pub async fn launch_game(
     // Build the full command string for verbose logging
     let full_command = format!(
         "\"{}\" {} {} {}",
-        java_path.display(),
+        launch_java_path.display(),
         jvm_args.join(" "),
         main_class,
         redacted_game_args.join(" ")
@@ -1074,7 +1301,7 @@ pub async fn launch_game(
     log::info!("Full launch command: {}", full_command);
     
     // Build command
-    let mut command = Command::new(&java_path);
+    let mut command = Command::new(&launch_java_path);
     command.current_dir(&game_dir);
 
     #[cfg(target_os = "windows")]
@@ -1127,7 +1354,7 @@ pub async fn launch_game(
     // Log the full command line for debugging in dev mode
     #[cfg(debug_assertions)]
     {
-        let mut full_cmd = format!("\"{}\"", java_path.to_string_lossy());
+        let mut full_cmd = format!("\"{}\"", launch_java_path.to_string_lossy());
         for arg in &jvm_args {
             full_cmd.push_str(&format!(" \"{}\"", arg));
         }
@@ -1139,6 +1366,13 @@ pub async fn launch_game(
     }
     
     // Launch the game
+    let spawn_msg = format!(
+        "[ShortcutDebug] Spawning game process executable={} instance={}",
+        launch_java_path.to_string_lossy(),
+        instance.name
+    );
+    log::info!("{}", spawn_msg);
+    crate::minecraft::logger::append_shortcut_debug(&spawn_msg);
     let child = command.spawn()
         .map_err(|e| format!("Failed to launch Minecraft: {}", e))?;
     

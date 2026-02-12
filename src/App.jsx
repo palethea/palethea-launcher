@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -61,6 +61,7 @@ const devError = (...args) => {
 };
 
 const SUPPORTED_LOADER_KEYS = new Set(['fabric', 'forge', 'neoforge']);
+const DEFAULT_INSTANCE_ICON = '/minecraft_logo.png';
 
 const compareLooseVersions = (left, right) => {
   const leftParts = String(left || '').match(/\d+/g)?.map(Number) || [];
@@ -125,6 +126,7 @@ function App() {
   const [accounts, setAccounts] = useState([]);
   const [activeAccount, setActiveAccount] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCreateTaskRunning, setIsCreateTaskRunning] = useState(false);
   const [launchingInstanceId, setLaunchingInstanceId] = useState(null);
   const [launchingInstanceIds, setLaunchingInstanceIds] = useState([]);
   const [launchProgressByInstance, setLaunchProgressByInstance] = useState({});
@@ -136,7 +138,7 @@ function App() {
   const [loadingTelemetry, setLoadingTelemetry] = useState(EMPTY_DOWNLOAD_TELEMETRY);
   const [notification, setNotification] = useState(null);
   const [editingInstanceId, setEditingInstanceId] = useState(null);
-  const [deletingInstanceId, setDeletingInstanceId] = useState(null);
+  const [deletingInstanceIds, setDeletingInstanceIds] = useState([]);
   const [contextMenu, setContextMenu] = useState(null);
   const [showLoginPrompt, setShowLoginPrompt] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
@@ -163,6 +165,9 @@ function App() {
   const handleLaunchInstanceRef = useRef(null);
   const activeLaunchingInstanceIdRef = useRef(null);
   const stoppingInstanceIdsRef = useRef([]);
+  const deletingInstanceIdsRef = useRef(new Set());
+  const deleteQueueRef = useRef(Promise.resolve());
+  const instanceSetupByInstanceRef = useRef({});
 
   const handleQueueDownload = useCallback((item) => {
     setDownloadQueue(prev => {
@@ -251,6 +256,21 @@ function App() {
     emit('sync-download-history', []).catch(console.error);
   }, []);
 
+  const instanceSetupTasks = useMemo(
+    () => downloadQueue.filter((item) => item?.kind === 'instance-setup'),
+    [downloadQueue]
+  );
+
+  const instanceSetupByInstance = useMemo(() => {
+    const map = {};
+    instanceSetupTasks.forEach((task) => {
+      if (task?.instanceId) {
+        map[task.instanceId] = task;
+      }
+    });
+    return map;
+  }, [instanceSetupTasks]);
+
   useEffect(() => {
     launchingInstanceIdsRef.current = launchingInstanceIds;
   }, [launchingInstanceIds]);
@@ -258,6 +278,10 @@ function App() {
   useEffect(() => {
     stoppingInstanceIdsRef.current = stoppingInstanceIds;
   }, [stoppingInstanceIds]);
+
+  useEffect(() => {
+    instanceSetupByInstanceRef.current = instanceSetupByInstance;
+  }, [instanceSetupByInstance]);
 
   useEffect(() => {
     return () => {
@@ -302,7 +326,12 @@ function App() {
         type: 'mod',
         name: item.installed_name || item.project_id || `Mod ${index + 1}`,
         currentLabel: item.installed_version_name || item.installed_version_id || 'Installed',
-        latestLabel: item.latest_version?.version_number || item.latest_version?.name || 'Latest'
+        latestLabel:
+          item.latest_version?.version_number
+          || item.latest_version?.name
+          || item.latest_curseforge_version?.version_number
+          || item.latest_curseforge_version?.name
+          || 'Latest'
       }))
     ];
 
@@ -605,6 +634,68 @@ function App() {
         message,
         timestamp: timestamp || new Date().toISOString()
       }]);
+
+      const activeId = activeQueueDownloadIdRef.current;
+      if (!activeId || typeof message !== 'string') {
+        return;
+      }
+
+      const normalizedMessage = message
+        .replace(/^\[[^\]]+\](?:\[[^\]]+\]){0,5}\s*/g, '')
+        .trim();
+      if (!normalizedMessage) {
+        return;
+      }
+
+      const lower = normalizedMessage.toLowerCase();
+      const importLogRelevant = (
+        lower.includes('imported metadata for') ||
+        lower.includes('resolved modrinth metadata for') ||
+        lower.includes('installing fabric') ||
+        lower.includes('installing forge') ||
+        lower.includes('installing neoforge') ||
+        lower.includes('successfully imported prism instance')
+      );
+      if (!importLogRelevant) {
+        return;
+      }
+
+      setDownloadQueue((prev) => {
+        const index = prev.findIndex(
+          (item) => item?.id === activeId && item?.kind === 'instance-setup'
+        );
+        if (index === -1) {
+          return prev;
+        }
+
+        const target = prev[index];
+        const existingActivity = Array.isArray(target.activityLog) ? target.activityLog : [];
+        const nextActivity = [normalizedMessage, ...existingActivity]
+          .filter((entry, idx, list) => list.indexOf(entry) === idx)
+          .slice(0, 6);
+
+        const next = [...prev];
+        next[index] = {
+          ...target,
+          currentItem: normalizedMessage,
+          activityLog: nextActivity
+        };
+
+        if (lower.includes('installing fabric') || lower.includes('installing forge') || lower.includes('installing neoforge')) {
+          next[index].status = normalizedMessage;
+          next[index].stageLabel = normalizedMessage;
+        }
+
+        if (lower.includes('successfully imported prism instance')) {
+          const boosted = Math.max(clampProgress(next[index].progress ?? 0), 99);
+          next[index].progress = boosted;
+          next[index].status = 'Import completed, finalizing...';
+          next[index].stageLabel = 'Import completed, finalizing...';
+        }
+
+        emit('sync-download-queue', next).catch(console.error);
+        return next;
+      });
     });
 
     // Listen for download progress events
@@ -812,11 +903,13 @@ function App() {
       });
     });
 
-    // Tray quick-launch event from backend menu
-    const unlistenTrayLaunch = listen('tray-launch-instance', async (event) => {
-      const instanceId = typeof event.payload === 'string' ? event.payload : null;
+    const launchFromExternalSource = async (instanceId, source = 'unknown') => {
       if (!instanceId) return;
       try {
+        invoke('log_event', {
+          level: 'info',
+          message: `[ShortcutDebug] External launch request source=${source} instanceId=${instanceId}`
+        }).catch(() => {});
         setActiveTab('instances');
         const launchHandler = handleLaunchInstanceRef.current;
         if (launchHandler) {
@@ -829,7 +922,34 @@ function App() {
       } catch (error) {
         showNotification(`Failed to launch: ${error}`, 'error');
       }
+    };
+
+    // Tray quick-launch event from backend menu
+    const unlistenTrayLaunch = listen('tray-launch-instance', async (event) => {
+      const instanceId = typeof event.payload === 'string' ? event.payload : null;
+      await launchFromExternalSource(instanceId, 'tray');
     });
+
+    const unlistenTrayOpenSettings = listen('tray-open-settings', () => {
+      setActiveTab('settings');
+    });
+
+    // Desktop shortcut launch event from backend
+    const unlistenShortcutLaunch = listen('shortcut-launch-instance', async (event) => {
+      const instanceId = typeof event.payload === 'string' ? event.payload : null;
+      await launchFromExternalSource(instanceId, 'shortcut-event');
+    });
+
+    // Consume startup launch request (when app was opened directly via shortcut)
+    invoke('take_pending_shortcut_launch')
+      .then(async (instanceId) => {
+        if (typeof instanceId === 'string' && instanceId) {
+          await launchFromExternalSource(instanceId, 'startup-pending');
+        }
+      })
+      .catch((error) => {
+        console.warn('Failed to read pending shortcut launch:', error);
+      });
 
     return () => {
       clearInterval(runningPoll);
@@ -841,16 +961,18 @@ function App() {
       unlistenHistorySync.then(fn => fn());
       unlistenExit.then(fn => fn());
       unlistenTrayLaunch.then(fn => fn());
+      unlistenTrayOpenSettings.then(fn => fn());
+      unlistenShortcutLaunch.then(fn => fn());
       document.removeEventListener('contextmenu', handleContextMenu);
     };
   }, [loadInstances, loadRunningInstances, isLoading, showNotification]);
 
   useEffect(() => {
-    if (!isLoading) {
+    if (!isLoading && !isCreateTaskRunning) {
       setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
       transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
     }
-  }, [isLoading]);
+  }, [isLoading, isCreateTaskRunning]);
 
   // Navigation Guard: Redirect from specialized pages if state changes (eg. logout)
   useEffect(() => {
@@ -911,25 +1033,92 @@ function App() {
   }, [loadInstances, showNotification]);
 
   const handleCreateInstance = useCallback(async (name, versionId, modLoader = 'vanilla', modLoaderVersion = null, javaVersion = null) => {
-    setIsLoading(true);
+    if (isCreateTaskRunning) {
+      setActiveTab('instances');
+      showNotification('An instance setup task is already running.', 'info');
+      return;
+    }
+
+    const taskLabel = (
+      modLoader === 'import' ? `Importing ${name || 'Prism instance'}` :
+        modLoader === 'share-code' ? `Creating ${name || 'shared instance'}` :
+          modLoader === 'modpack' ? `Installing ${modLoaderVersion?.modpackName || name || 'modpack'}` :
+            `Creating ${name || 'instance'}`
+    );
+    const taskIcon = (modLoader === 'modpack' && modLoaderVersion?.modpackIcon)
+      ? modLoaderVersion.modpackIcon
+      : DEFAULT_INSTANCE_ICON;
+    const createTaskId = `instance-setup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let setupInstanceId = null;
+
+    const setTaskInstanceId = (instanceId) => {
+      if (!instanceId) return;
+      setupInstanceId = instanceId;
+      handleUpdateDownloadStatus(createTaskId, {
+        instanceId,
+        kind: 'instance-setup'
+      });
+    };
+
+    const setTaskStatus = (status, progress = null, extra = {}) => {
+      if (typeof status === 'string') {
+        setLoadingStatus(status);
+      }
+      const update = {
+        status,
+        stageLabel: (typeof status === 'string' ? splitDownloadStage(status).stageLabel : undefined) || status,
+        ...extra
+      };
+      if (setupInstanceId) {
+        update.instanceId = setupInstanceId;
+      }
+      if (typeof progress === 'number') {
+        const normalized = clampProgress(progress);
+        setLoadingProgress(normalized);
+        update.progress = normalized;
+      }
+      handleUpdateDownloadStatus(createTaskId, update);
+    };
+
+    setIsCreateTaskRunning(true);
     setLoadingProgress(0);
     setLoadingCount({ current: 0, total: 0 });
     setLoadingBytes({ current: 0, total: 0 });
     setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
     transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
+
+    handleQueueDownload({
+      id: createTaskId,
+      name: taskLabel,
+      icon: taskIcon,
+      status: 'Queued',
+      progress: 0,
+      kind: 'instance-setup',
+      trackBackendProgress: true
+    });
+    activeQueueDownloadIdRef.current = createTaskId;
+    setTaskStatus('Preparing instance setup...', 0, { trackBackendProgress: true });
+
+    // Immediately free the user from the create page. Progress continues in queue + instance list.
+    setActiveTab('instances');
+    showNotification(`${taskLabel} started in background.`, 'info');
+
     try {
       // Helper to set Java version for the new instance
       const setupJava = async (instanceId, version) => {
         if (!version) return;
         try {
-          const javaPath = await invoke('download_java_global', { version: parseInt(version) });
+          setTaskStatus(`Preparing Java ${version}...`);
+          const javaPath = await invoke('download_java_global', { version: parseInt(version, 10) });
           const instance = await invoke('get_instance_details', { instanceId });
           instance.java_path = javaPath;
           await invoke('update_instance', { instance });
         } catch (e) {
-          console.error("Failed to setup Java for instance:", e);
+          console.error('Failed to setup Java for instance:', e);
         }
       };
+
+      let successMessage = `Created instance "${name}"!`;
 
       // ----------
       // Import from source handler
@@ -937,32 +1126,24 @@ function App() {
       // ----------
       if (modLoader === 'import') {
         const { sourcePath } = modLoaderVersion;
-        setLoadingStatus('Importing instance...');
-        setLoadingProgress(20);
+        setTaskStatus('Importing instance...', 20);
 
         const importedInstance = await invoke('import_instance_source', {
           sourcePath,
           customName: name || null
         });
+        setTaskInstanceId(importedInstance.id);
 
         await setupJava(importedInstance.id, javaVersion);
 
-        setLoadingProgress(60);
-        setLoadingStatus(`Downloading Minecraft ${importedInstance.version_id}...`);
+        setTaskStatus(`Downloading Minecraft ${importedInstance.version_id}...`, 60);
         await invoke('download_version', { versionId: importedInstance.version_id });
-
-        setLoadingProgress(100);
-        await loadInstances();
-        setActiveTab('instances');
-        showNotification(`Imported instance "${importedInstance.name}"!`, 'success');
-        return;
-      }
-
-      // ----------
-      // Share Code Handler
-      // Description: Extracts metadata from a shared code and rebuilds the instance by downloading all assets
-      // ----------
-      if (modLoader === 'share-code') {
+        successMessage = `Imported instance "${importedInstance.name}"!`;
+      } else if (modLoader === 'share-code') {
+        // ----------
+        // Share Code Handler
+        // Description: Extracts metadata from a shared code and rebuilds the instance by downloading all assets
+        // ----------
         const { shareData } = modLoaderVersion;
         const {
           name: originalName,
@@ -975,32 +1156,31 @@ function App() {
           datapacks = []
         } = shareData;
 
-        setLoadingStatus(`Preparing instance "${name || originalName}"...`);
-        setLoadingProgress(5);
+        setTaskStatus(`Preparing instance "${name || originalName}"...`, 5);
 
         // 0. Pre-fetch all project metadata for better speed and UI fidelity
-        setLoadingStatus("Fetching metadata...");
+        setTaskStatus('Fetching metadata...');
         const allProjectIds = [
-          ...mods.map(m => m.project_id || m.projectId),
-          ...resourcepacks.map(p => p.project_id || p.projectId),
-          ...shaders.map(s => s.project_id || s.projectId),
-          ...datapacks.map(d => d.project_id || d.projectId)
+          ...mods.map((m) => m.project_id || m.projectId),
+          ...resourcepacks.map((p) => p.project_id || p.projectId),
+          ...shaders.map((s) => s.project_id || s.projectId),
+          ...datapacks.map((d) => d.project_id || d.projectId)
         ].filter(Boolean);
 
         const uniqueIds = [...new Set(allProjectIds)];
-        let projectMap = {};
+        const projectMap = {};
 
         try {
           if (uniqueIds.length > 0) {
             const projects = await invoke('get_modrinth_projects', { projectIds: uniqueIds });
-            projects.forEach(p => {
+            projects.forEach((p) => {
               const id = p.project_id || p.id;
               if (id) projectMap[id] = p;
               if (p.slug) projectMap[p.slug] = p;
             });
           }
         } catch (e) {
-          console.warn("Failed to bulk fetch project metadata:", e);
+          console.warn('Failed to bulk fetch project metadata:', e);
         }
 
         // 1. Create the instance
@@ -1008,18 +1188,17 @@ function App() {
           name: name || originalName,
           versionId: mcVersion
         });
+        setTaskInstanceId(newInstance.id);
 
         await setupJava(newInstance.id, javaVersion);
 
         // 2. Download Minecraft
-        setLoadingStatus(`Downloading Minecraft ${mcVersion}...`);
-        setLoadingProgress(10);
+        setTaskStatus(`Downloading Minecraft ${mcVersion}...`, 10);
         await invoke('download_version', { versionId: mcVersion });
 
         // 3. Install Mod Loader
         if (loader !== 'vanilla') {
-          setLoadingStatus(`Installing ${loader}...`);
-          setLoadingProgress(20);
+          setTaskStatus(`Installing ${loader}...`, 20);
           if (loader === 'fabric') {
             await invoke('install_fabric', { instanceId: newInstance.id, loaderVersion: loader_version });
           } else if (loader === 'forge') {
@@ -1028,9 +1207,6 @@ function App() {
             await invoke('install_neoforge', { instanceId: newInstance.id, loaderVersion: loader_version });
           }
         }
-
-        // 4. Download Mods, Resource Packs, Shaders, etc.
-        // ... (existing code for share-code continues)
 
         // 4. Download Everything
         const totalItems = mods.length + resourcepacks.length + shaders.length + datapacks.length;
@@ -1070,7 +1246,7 @@ function App() {
                     }
                   }
 
-                  const file = info.files.find(f => f.primary) || info.files[0];
+                  const file = info.files.find((f) => f.primary) || info.files[0];
 
                   await invoke('install_modrinth_file', {
                     instanceId: newInstance.id,
@@ -1083,7 +1259,7 @@ function App() {
                     author: project?.author || item.author || null,
                     iconUrl: project?.icon_url || item.icon_url || item.iconUrl || null,
                     versionName: info.name || item.version_name || item.versionName,
-                    worldName: worldName,
+                    worldName,
                     categories: project?.categories || project?.display_categories || item.categories || null
                   });
                 }
@@ -1091,9 +1267,9 @@ function App() {
                 console.warn(`Failed to install ${type} ${mid}:`, e);
               }
 
-              completedItems++;
-              setLoadingStatus(`Installing ${type} ${completedItems}/${totalItems}...`);
-              setLoadingProgress(20 + (completedItems / totalItems) * 75);
+              completedItems += 1;
+              const rollingProgress = totalItems > 0 ? 20 + ((completedItems / totalItems) * 75) : 95;
+              setTaskStatus(`Installing ${type} ${completedItems}/${totalItems}...`, rollingProgress);
             }));
           }
         };
@@ -1107,26 +1283,47 @@ function App() {
           await processItems(datapacks, 'datapack', 'Shared World');
         }
 
-        setLoadingProgress(100);
-        await loadInstances();
-        setActiveTab('instances');
-        showNotification(`Share code applied! Instance "${name || originalName}" created.`, 'success');
-        return;
-      }
+        successMessage = `Share code applied! Instance "${name || originalName}" created.`;
+      } else if (modLoader === 'modpack') {
+        const {
+          provider = 'modrinth',
+          modpackId,
+          versionId: modpackVersionId,
+          modpackName,
+          modpackIcon,
+          modpackAuthor = null,
+          modpackSlug = null,
+          modpackWebsiteUrl = null
+        } = modLoaderVersion || {};
 
-      if (modLoader === 'modpack') {
-        const { modpackId, versionId: modpackVersionId, modpackName, modpackIcon } = modLoaderVersion;
-
-        setLoadingStatus(`Creating instance for ${modpackName}...`);
-        setLoadingProgress(5);
+        setTaskStatus(`Creating instance for ${modpackName}...`, 5);
         // We use a placeholder version initially, modpack installer will update it
         const newInstance = await invoke('create_instance', { name, versionId: 'pending' });
+        const normalizedProvider = provider === 'curseforge' ? 'CurseForge' : 'Modrinth';
+        const fallbackModrinthUrl = modpackId
+          ? `https://modrinth.com/modpack/${modpackSlug || modpackId}`
+          : null;
+        const resolvedModpackUrl = modpackWebsiteUrl || (provider === 'modrinth' ? fallbackModrinthUrl : null);
+
+        const attributedInstance = await invoke('update_instance', {
+          instance: {
+            ...newInstance,
+            modpack_provider: normalizedProvider,
+            modpack_project_id: modpackId ? String(modpackId) : null,
+            modpack_version_id: modpackVersionId ? String(modpackVersionId) : null,
+            modpack_title: modpackName || null,
+            modpack_author: modpackAuthor || null,
+            modpack_url: resolvedModpackUrl || null
+          }
+        });
+
+        setTaskInstanceId(attributedInstance.id);
 
         // Set the modpack icon if available
         if (modpackIcon) {
           try {
             await invoke('set_instance_logo_from_url', {
-              instanceId: newInstance.id,
+              instanceId: attributedInstance.id,
               logoUrl: modpackIcon
             });
           } catch (iconError) {
@@ -1134,37 +1331,42 @@ function App() {
           }
         }
 
-        await setupJava(newInstance.id, javaVersion);
+        await setupJava(attributedInstance.id, javaVersion);
 
-        setLoadingStatus(`Installing modpack ${modpackName}...`);
-        await invoke('install_modpack', {
-          instanceId: newInstance.id,
-          versionId: modpackVersionId
-        });
+        setTaskStatus(`Installing modpack ${modpackName}...`, 25);
+        if (provider === 'curseforge') {
+          await invoke('install_curseforge_modpack', {
+            instanceId: attributedInstance.id,
+            projectId: modpackId,
+            fileId: modpackVersionId
+          });
+        } else {
+          await invoke('install_modpack', {
+            instanceId: attributedInstance.id,
+            versionId: modpackVersionId
+          });
+        }
 
         // Now that modpack is installed, we have the real MC version.
         // We need to download it.
-        const updatedInstance = await invoke('get_instance_details', { instanceId: newInstance.id });
-        setLoadingStatus(`Downloading Minecraft ${updatedInstance.version_id}...`);
+        const updatedInstance = await invoke('get_instance_details', { instanceId: attributedInstance.id });
+        setTaskStatus(`Downloading Minecraft ${updatedInstance.version_id}...`, 65);
         await invoke('download_version', { versionId: updatedInstance.version_id });
+        successMessage = `Created instance "${name}"!`;
       } else {
         // Create instance first (so it exists even if download fails)
-        setLoadingStatus('Creating instance...');
-        setLoadingProgress(5);
+        setTaskStatus('Creating instance...', 5);
         const newInstance = await invoke('create_instance', { name, versionId });
+        setTaskInstanceId(newInstance.id);
 
         await setupJava(newInstance.id, javaVersion);
 
-        setLoadingStatus(`Downloading Minecraft ${versionId}...`);
+        setTaskStatus(`Downloading Minecraft ${versionId}...`, 45);
         await invoke('download_version', { versionId });
-
-        setLoadingProgress(80);
 
         // Install mod loader if not vanilla
         if (modLoader !== 'vanilla') {
-          setLoadingStatus(`Installing ${modLoader}...`);
-          setLoadingProgress(90);
-
+          setTaskStatus(`Installing ${modLoader}...`, 80);
           if (modLoader === 'fabric') {
             try {
               const loaderVersions = modLoaderVersion ? [modLoaderVersion] : await invoke('get_loader_versions', {
@@ -1227,35 +1429,64 @@ function App() {
             }
           }
         }
+
+        successMessage = `Created instance "${name}"!`;
       }
 
-      setLoadingProgress(100);
+      setTaskStatus('Completed', 100, { trackBackendProgress: false });
       await loadInstances();
-      setActiveTab('instances');
-      showNotification(`Created instance "${name}"!`, 'success');
+      showNotification(successMessage, 'success');
+      setTimeout(() => handleDequeueDownload(createTaskId), 900);
     } catch (error) {
-      showNotification(`Failed to create instance: ${error}`, 'error');
+      const errorText = String(error);
+      setTaskStatus(`Failed: ${errorText}`, 100, { trackBackendProgress: false });
+      showNotification(`Failed to create instance: ${errorText}`, 'error');
+      setTimeout(() => handleDequeueDownload(createTaskId, false), 2200);
     } finally {
-      setIsLoading(false);
+      if (activeQueueDownloadIdRef.current === createTaskId) {
+        activeQueueDownloadIdRef.current = null;
+      }
+      setIsCreateTaskRunning(false);
       setLoadingStatus('');
       setLoadingProgress(0);
       setLoadingCount({ current: 0, total: 0 });
       setLoadingBytes({ current: 0, total: 0 });
       setLoadingTelemetry(EMPTY_DOWNLOAD_TELEMETRY);
+      transferStatsRef.current = { lastBytes: null, lastTs: 0, speedBps: 0 };
     }
-  }, [loadInstances, showNotification]);
+  }, [
+    handleDequeueDownload,
+    handleQueueDownload,
+    handleUpdateDownloadStatus,
+    isCreateTaskRunning,
+    loadInstances,
+    showNotification
+  ]);
 
   const performDeleteInstance = useCallback(async (instanceId) => {
-    setDeletingInstanceId(instanceId);
-    try {
-      await invoke('delete_instance', { instanceId });
-      await loadInstances();
-      showNotification('Instance deleted', 'success');
-    } catch (error) {
-      showNotification(`Failed to delete instance: ${error}`, 'error');
-    } finally {
-      setDeletingInstanceId(null);
+    if (deletingInstanceIdsRef.current.has(instanceId)) {
+      return;
     }
+
+    deletingInstanceIdsRef.current.add(instanceId);
+    setDeletingInstanceIds(prev => (prev.includes(instanceId) ? prev : [...prev, instanceId]));
+
+    const runDelete = async () => {
+      try {
+        await invoke('delete_instance', { instanceId });
+        await loadInstances();
+        showNotification('Instance deleted', 'success');
+      } catch (error) {
+        showNotification(`Failed to delete instance: ${error}`, 'error');
+      } finally {
+        deletingInstanceIdsRef.current.delete(instanceId);
+        setDeletingInstanceIds(prev => prev.filter(id => id !== instanceId));
+      }
+    };
+
+    const queued = deleteQueueRef.current.then(runDelete, runDelete);
+    deleteQueueRef.current = queued.catch(() => {});
+    return queued;
   }, [loadInstances, showNotification]);
 
   const handleDeleteInstance = useCallback((instanceId) => {
@@ -1333,7 +1564,10 @@ function App() {
 
     for (let index = 0; index < updates.length; index++) {
       const update = updates[index];
-      const latestVersion = update.latest_version;
+      const provider = String(update?.provider || (update?.project_id && /^\d+$/.test(update.project_id) ? 'CurseForge' : 'Modrinth')).toLowerCase();
+      const latestVersion = provider === 'curseforge'
+        ? update.latest_curseforge_version
+        : update.latest_version;
       const displayName = update.installed_name || update.project_id || `Mod ${index + 1}`;
       const file = latestVersion?.files?.find((f) => f.primary) || latestVersion?.files?.[0];
 
@@ -1367,19 +1601,35 @@ function App() {
       handleUpdateDownloadStatus(downloadId, 'Downloading update...');
 
       try {
-        await invoke('install_modrinth_file', {
-          instanceId,
-          fileUrl: file.url,
-          filename: file.filename,
-          fileType: 'mod',
-          projectId: update.project_id || null,
-          versionId: latestVersion.id,
-          name: update.installed_name || null,
-          author: update.installed_author || null,
-          iconUrl: update.installed_icon_url || null,
-          versionName: latestVersion.version_number || latestVersion.name || null,
-          categories: update.installed_categories || null
-        });
+        if (provider === 'curseforge') {
+          await invoke('install_curseforge_file', {
+            instanceId,
+            projectId: update.project_id || '',
+            fileId: latestVersion.id,
+            fileType: 'mod',
+            filename: file.filename,
+            fileUrl: file.url || null,
+            name: update.installed_name || null,
+            author: update.installed_author || null,
+            iconUrl: update.installed_icon_url || null,
+            versionName: latestVersion.version_number || latestVersion.name || null,
+            categories: update.installed_categories || null
+          });
+        } else {
+          await invoke('install_modrinth_file', {
+            instanceId,
+            fileUrl: file.url,
+            filename: file.filename,
+            fileType: 'mod',
+            projectId: update.project_id || null,
+            versionId: latestVersion.id,
+            name: update.installed_name || null,
+            author: update.installed_author || null,
+            iconUrl: update.installed_icon_url || null,
+            versionName: latestVersion.version_number || latestVersion.name || null,
+            categories: update.installed_categories || null
+          });
+        }
 
         if (update.installed_filename && update.installed_filename !== file.filename) {
           try {
@@ -1477,6 +1727,10 @@ function App() {
   const handleLaunchInstance = useCallback(async (instanceId) => {
     if (runningInstances[instanceId]) {
       showNotification("Instance is already running", "info");
+      return;
+    }
+    if (instanceSetupByInstanceRef.current[instanceId]) {
+      showNotification("Instance is still setting up files. Please wait for setup to finish.", "info");
       return;
     }
     if (launchingInstanceIdsRef.current.includes(instanceId)) {
@@ -1818,6 +2072,16 @@ function App() {
     setShowLoginPrompt(true);
   }, []);
 
+  const focusExistingPopoutEditor = useCallback(async (instanceId) => {
+    const windowLabel = `editor-${instanceId}`;
+    const win = await WebviewWindow.getByLabel(windowLabel);
+    if (!win) return false;
+
+    setOpenEditors(prev => (prev.includes(instanceId) ? prev : [...prev, instanceId]));
+    await win.setFocus();
+    return true;
+  }, []);
+
   const handleRemoveAccount = useCallback(async (username) => {
     try {
       await invoke('remove_saved_account', { username });
@@ -1846,18 +2110,17 @@ function App() {
   }, [activeAccount, showNotification]);
 
   const handleOpenPopoutEditor = useCallback(async (instanceId) => {
-    const windowLabel = `editor-${instanceId}`;
+    if (editingInstanceId === instanceId) {
+      setEditingInstanceId(null);
+    }
 
-    // Check if already open
-    if (openEditors.includes(instanceId)) {
-      const win = await WebviewWindow.getByLabel(windowLabel);
-      if (win) {
-        await win.setFocus();
-        return;
-      }
+    const alreadyOpen = await focusExistingPopoutEditor(instanceId);
+    if (alreadyOpen) {
+      return;
     }
 
     try {
+      const windowLabel = `editor-${instanceId}`;
       const editorWindow = new WebviewWindow(windowLabel, {
         url: `/?popout=editor&instanceId=${instanceId}`,
         title: `Editing Instance - ${instances.find(i => i.id === instanceId)?.name || instanceId}`,
@@ -1882,7 +2145,7 @@ function App() {
       console.error('Failed to create window:', error);
       showNotification('Failed to open pop-out editor', 'error');
     }
-  }, [openEditors, instances, loadInstances, showNotification]);
+  }, [editingInstanceId, focusExistingPopoutEditor, instances, loadInstances, showNotification]);
 
   const handleEditInstanceChoice = useCallback(async (mode, dontAskAgain) => {
     const { instanceId } = showEditChoiceModal;
@@ -1904,7 +2167,17 @@ function App() {
     }
   }, [showEditChoiceModal, launcherSettings, loadLauncherSettings, handleOpenPopoutEditor]);
 
-  const handleEditInstance = useCallback((instanceId) => {
+  const handleEditInstance = useCallback(async (instanceId) => {
+    if (editingInstanceId === instanceId) {
+      return;
+    }
+
+    const openedInPopout = await focusExistingPopoutEditor(instanceId);
+    if (openedInPopout) {
+      showNotification('This instance is already being edited in a pop-out window.', 'info');
+      return;
+    }
+
     const preference = launcherSettings?.edit_mode_preference || 'ask';
 
     if (preference === 'ask') {
@@ -1914,7 +2187,7 @@ function App() {
     } else {
       setEditingInstanceId(instanceId);
     }
-  }, [launcherSettings, handleOpenPopoutEditor]);
+  }, [editingInstanceId, focusExistingPopoutEditor, handleOpenPopoutEditor, launcherSettings, showNotification]);
 
   const handleContextMenuAction = useCallback(async (action, data) => {
     const instance = contextMenu?.instance;
@@ -2022,6 +2295,16 @@ function App() {
           }
         }
         break;
+      case 'createShortcut':
+        if (instance) {
+          try {
+            const shortcutPath = await invoke('create_instance_shortcut', { instanceId: instance.id });
+            showNotification(`Shortcut created on desktop: ${shortcutPath}`, 'success');
+          } catch (error) {
+            showNotification(`Failed to create shortcut: ${error}`, 'error');
+          }
+        }
+        break;
     }
   }, [contextMenu, handleLaunchInstance, handleEditInstance, handleDeleteInstance, handleCloneInstance, loadInstances, showNotification]);
 
@@ -2084,8 +2367,13 @@ function App() {
             launchProgressByInstance={launchProgressByInstance}
             runningInstances={runningInstances}
             stoppingInstanceIds={stoppingInstanceIds}
-            deletingInstanceId={deletingInstanceId}
+            deletingInstanceIds={deletingInstanceIds}
             launcherSettings={launcherSettings}
+            backgroundTasks={instanceSetupTasks}
+            setupProgressByInstance={instanceSetupByInstance}
+            onQueueDownload={handleQueueDownload}
+            onUpdateDownloadStatus={handleUpdateDownloadStatus}
+            onDequeueDownload={handleDequeueDownload}
           />
         );
       case 'create':
@@ -2094,7 +2382,7 @@ function App() {
             <CreateInstance
               onClose={() => setActiveTab('instances')}
               onCreate={handleCreateInstance}
-              isLoading={isLoading}
+              isLoading={isCreateTaskRunning}
               loadingStatus={loadingStatus}
               loadingProgress={loadingProgress}
               loadingBytes={loadingBytes}
@@ -2438,6 +2726,13 @@ function App() {
           x={contextMenu.x}
           y={contextMenu.y}
           instance={contextMenu.instance}
+          isEditing={
+            Boolean(contextMenu.instance)
+            && (
+              editingInstanceId === contextMenu.instance.id
+              || openEditors.includes(contextMenu.instance.id)
+            )
+          }
           onAction={handleContextMenuAction}
         />
       )}

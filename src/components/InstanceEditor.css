@@ -53,60 +53,54 @@
 .back-btn,
 .folder-btn,
 .popout-btn {
-  background: var(--surface);
+  background: transparent;
   color: var(--text-secondary);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   padding: 8px;
   width: 36px;
   height: 36px;
   min-width: 36px;
-  border-radius: 10px;
+  border-radius: 8px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
-}
-
-.popout-btn {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.popout-btn:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.15s ease;
 }
 
 .back-btn:hover,
 .folder-btn:hover,
 .popout-btn:hover {
-  background: var(--surface-hover);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--foreground);
-  border-color: var(--accent);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.back-btn:active,
+.folder-btn:active,
+.popout-btn:active {
+  transform: translateY(1px);
 }
 
 .back-btn.popout-close-btn {
-  background: var(--surface) !important;
+  background: transparent !important;
   color: var(--text-secondary) !important;
-  border: 1px solid var(--border) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
   padding: 8px !important;
-  border-radius: 10px !important;
+  border-radius: 8px !important;
   cursor: pointer !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
   width: 36px !important;
   height: 36px !important;
-  transition: all 0.2s ease !important;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease !important;
 }
 
 .back-btn.popout-close-btn:hover {
-  background: var(--surface-hover) !important;
-  border-color: #f87171 !important;
-  color: #f87171 !important;
-}
-
-.folder-btn:hover {
-  color: var(--accent);
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(248, 113, 113, 0.42) !important;
+  color: #fca5a5 !important;
 }
 
 .header-title-container {
@@ -142,9 +136,10 @@
 }
 
 .version-badge {
-  background: var(--surface-hover);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
+  background: rgba(174, 189, 209, 0.08);
+  color: #aebdd1;
+  border: 1px solid rgba(174, 189, 209, 0.32);
+  font-weight: 600;
 }
 
 .loader-badge {
@@ -224,8 +219,9 @@
   border: none;
   padding: 12px 20px;
   font-size: 14px;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease;
   position: relative;
 }
 
@@ -234,7 +230,7 @@
 }
 
 .tab-btn.active {
-  color: var(--accent);
+  color: var(--foreground);
 }
 
 .tab-btn.active::after {
@@ -1533,6 +1529,79 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 16px;
+}
+
+.search-results-viewport {
+  position: relative;
+  padding-bottom: 36px;
+}
+
+.search-load-more-overlay {
+  display: flex;
+  position: sticky;
+  left: 50%;
+  bottom: 10px;
+  transform: translate(-50%, 12px);
+  z-index: 6;
+  width: fit-content;
+  margin: 10px 0 0;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgba(16, 18, 22, 0.86);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.search-load-more-overlay.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.search-load-more-spinner {
+  animation: spin 0.8s linear infinite;
+}
+
+.search-load-more-actions {
+  display: flex;
+  width: 100%;
+  grid-column: 1 / -1;
+  justify-content: center;
+  margin: 12px auto 0;
+}
+
+.search-load-more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(16, 18, 22, 0.86);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.search-load-more-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.search-load-more-btn:disabled {
+  opacity: 0.7;
+  cursor: default;
 }
 
 .search-result-card {

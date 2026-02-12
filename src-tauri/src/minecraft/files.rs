@@ -10,6 +10,14 @@ use std::io::Write;
 
 use crate::minecraft::instances::Instance;
 
+fn provider_from_project_id(project_id: &str) -> String {
+    if !project_id.is_empty() && project_id.chars().all(|c| c.is_ascii_digit()) {
+        "CurseForge".to_string()
+    } else {
+        "Modrinth".to_string()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InstalledMod {
     pub filename: String,
@@ -365,14 +373,14 @@ pub fn list_mods(instance: &Instance) -> Vec<InstalledMod> {
                 let mut categories = None;
                 
                 if let Some(m) = read_meta_for_entry(&mods_dir, base_filename) {
-                    project_id = Some(m.project_id);
+                    project_id = Some(m.project_id.clone());
                     version_id = m.version_id;
                     if let Some(n) = m.name { name = Some(n); }
                     author = m.author;
                     icon_url = m.icon_url;
                     version = m.version_name;
                     categories = m.categories;
-                    provider = "Modrinth".to_string();
+                    provider = provider_from_project_id(&m.project_id);
                 }
                 
                 mods.push(InstalledMod {
@@ -470,14 +478,14 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                 let mut categories: Option<Vec<String>> = None;
                 
                 if let Some(m) = read_meta_for_entry(&dir, &filename) {
-                    project_id = Some(m.project_id);
+                    project_id = Some(m.project_id.clone());
                     version_id = m.version_id;
                     if let Some(n) = m.name { name = Some(n); }
                     author = m.author;
                     icon_url = m.icon_url;
                     version = m.version_name;
                     categories = m.categories;
-                    provider = "Modrinth".to_string();
+                    provider = provider_from_project_id(&m.project_id);
                 }
 
                 packs.push(ResourcePack {
@@ -554,14 +562,14 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                 let mut categories: Option<Vec<String>> = None;
                 
                 if let Some(m) = read_meta_for_entry(&dir, &filename) {
-                    project_id = Some(m.project_id);
+                    project_id = Some(m.project_id.clone());
                     version_id = m.version_id;
                     if let Some(n) = m.name { name = Some(n); }
                     author = m.author;
                     icon_url = m.icon_url;
                     version = m.version_name;
                     categories = m.categories;
-                    provider = "Modrinth".to_string();
+                    provider = provider_from_project_id(&m.project_id);
                 }
 
                 packs.push(ShaderPack {
@@ -830,13 +838,13 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
                 let mut provider = "Manual".to_string();
                 
                 if let Some(m) = read_meta_for_entry(&datapacks_dir, &filename) {
-                    project_id = Some(m.project_id);
+                    project_id = Some(m.project_id.clone());
                     version_id = m.version_id;
                     if let Some(n) = m.name { name = Some(n); }
                     author = m.author;
                     icon_url = m.icon_url;
                     version = m.version_name;
-                    provider = "Modrinth".to_string();
+                    provider = provider_from_project_id(&m.project_id);
                 }
 
                 datapacks.push(Datapack {

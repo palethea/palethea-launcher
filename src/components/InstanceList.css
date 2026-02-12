@@ -182,6 +182,189 @@
   padding: 40px 32px 32px 32px;
 }
 
+.instance-setup-tasks {
+  padding: 10px 32px 0 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.instance-setup-task-card {
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.12), rgba(255, 255, 255, 0.03) 50%, rgba(255, 255, 255, 0.02));
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.instance-setup-task-card.collapsed {
+  gap: 0;
+}
+
+.instance-setup-task-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.instance-setup-task-name {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 700;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.instance-setup-task-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.instance-setup-info-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.78);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.16s ease;
+}
+
+.instance-setup-info-btn:hover {
+  border-color: rgba(var(--accent-rgb), 0.48);
+  color: var(--foreground);
+}
+
+.instance-setup-info-btn.active {
+  border-color: rgba(var(--accent-rgb), 0.62);
+  background: rgba(var(--accent-rgb), 0.18);
+  color: var(--foreground);
+}
+
+.instance-setup-task-percent {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.instance-setup-task-trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.instance-setup-collapse-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.78);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.instance-setup-collapse-btn:hover {
+  border-color: rgba(var(--accent-rgb), 0.48);
+  color: var(--foreground);
+}
+
+.instance-setup-collapse-btn svg {
+  transition: transform 0.16s ease;
+}
+
+.instance-setup-collapse-btn.collapsed svg {
+  transform: rotate(-90deg);
+}
+
+.instance-setup-task-status {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.instance-setup-task-note {
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 8px 9px;
+}
+
+.instance-setup-task-item {
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.instance-setup-task-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.instance-setup-task-activity-line {
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.instance-setup-task-progress {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.instance-setup-task-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+.instance-setup-task-metrics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: rgba(255, 255, 255, 0.64);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
 .instances-grid.list {
   display: flex;
   flex-direction: column;
@@ -268,10 +451,9 @@
 }
 
 .instance-card:hover {
-  transform: translateY(-4px);
+  transform: none;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
   border-color: transparent !important;
-  border-width: 2px !important;
   overflow: visible;
 }
 
@@ -719,6 +901,40 @@
   opacity: 0.55;
 }
 
+.instance-card.setting-up > :not(.instance-setup-simple-overlay) {
+  filter: blur(3px) grayscale(0.3);
+  opacity: 0.5;
+}
+
+.instance-setup-simple-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 51;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 14px;
+  background: rgba(8, 11, 16, 0.76);
+  backdrop-filter: blur(4px);
+  animation: fadeInOverlay 0.18s ease;
+}
+
+.instance-setup-simple-overlay.list {
+  border-radius: 12px;
+}
+
+.instance-setup-simple-text {
+  color: #ecf2fb;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
+}
+
 .launching-overlay {
   position: absolute;
   top: 0;
@@ -980,11 +1196,11 @@
   overflow: visible;
 }
 
-.instances-grid.list .instance-card::before {
+.instances-grid.list.no-animations .instance-card::before {
   display: none !important;
 }
 
-.instances-grid.list .instance-card:hover {
+.instances-grid.list.no-animations .instance-card:hover {
   transform: none;
   border-width: 1px !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
@@ -1029,6 +1245,47 @@
   justify-content: flex-start;
   gap: 8px;
   overflow: hidden;
+}
+
+.instance-name-line {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.instance-modpack-info-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  margin: 0;
+  line-height: 0;
+  cursor: pointer;
+  opacity: 0.9;
+  transition: color 0.18s ease, transform 0.18s ease, opacity 0.18s ease;
+}
+
+.instance-modpack-info-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.instance-modpack-info-btn:hover {
+  color: var(--accent);
+  transform: translateY(-1px);
+  opacity: 1;
+}
+
+.instance-modpack-info-btn:focus-visible {
+  outline: none;
+  color: var(--accent);
 }
 
 .instances-grid.list .instance-name {
@@ -1333,11 +1590,11 @@
   min-height: 112px;
 }
 
-.instances-grid.grid .instance-card::before {
+.instances-grid.grid.no-animations .instance-card::before {
   display: none !important;
 }
 
-.instances-grid.grid .instance-card:hover {
+.instances-grid.grid.no-animations .instance-card:hover {
   transform: none;
   border-width: 1px !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
@@ -1409,6 +1666,10 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.instances-grid.grid .instance-name-line {
+  flex: 1 1 auto;
 }
 
 .instances-grid.grid .instance-list-meta-line-grid {
@@ -1876,6 +2137,454 @@
   border-radius: 999px;
   padding: 1px 7px;
   font-weight: 700;
+}
+
+.instance-account-modal.instance-modpack-modal {
+  width: min(1080px, calc(100vw - 24px));
+  max-width: 1080px;
+  height: min(86vh, 780px);
+  max-height: min(86vh, 780px);
+}
+
+.instance-modpack-modal-header {
+  padding: 18px 20px;
+  align-items: center;
+  gap: 16px;
+}
+
+.instance-modpack-header-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  flex: 1;
+}
+
+.instance-modpack-header-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.instance-modpack-header-icon-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.instance-modpack-header-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.instance-modpack-header-copy h3 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.12;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.instance-modpack-header-meta {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.instance-modpack-header-dot {
+  opacity: 0.55;
+}
+
+.instance-modpack-header-copy p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.instance-modpack-rich-content {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(170px, 0.92fr) minmax(320px, 1.7fr) minmax(210px, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.instance-modpack-sidebar {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  border-right: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.16);
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+}
+
+.instance-modpack-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.instance-modpack-versions {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.instance-modpack-section label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.instance-modpack-status-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 11px;
+}
+
+.instance-modpack-status-top {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #77f7a4;
+}
+
+.instance-modpack-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #49db86;
+  box-shadow: 0 0 8px rgba(73, 219, 134, 0.48);
+}
+
+.instance-modpack-status-main {
+  margin-top: 8px;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.instance-modpack-status-sub {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+
+.instance-modpack-stat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.instance-modpack-stat-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--foreground);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.instance-modpack-stat-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.instance-modpack-stat-item .instance-modpack-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.instance-modpack-tabs {
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.instance-modpack-tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 12px 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: default;
+}
+
+.instance-modpack-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.instance-modpack-main-body {
+  padding: 18px 16px;
+  overflow-y: auto;
+}
+
+.instance-modpack-main-body h4 {
+  margin: 0 0 12px;
+  color: var(--foreground);
+  font-size: clamp(28px, 3.2vw, 44px);
+  line-height: 1.1;
+  font-weight: 700;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.instance-modpack-main-body p {
+  margin: 0 0 12px;
+  color: #d6dbe6;
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.instance-modpack-main-body strong {
+  color: var(--foreground);
+}
+
+.instance-modpack-link-inline {
+  color: #9ec9ff;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.instance-modpack-link-inline.missing {
+  color: var(--muted);
+}
+
+.instance-modpack-info-grid {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.instance-modpack-info-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.instance-modpack-info-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.instance-modpack-info-value {
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+.instance-modpack-info-value.instance-modpack-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  color: #d4dbe9;
+}
+
+.instance-modpack-versions-header {
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.instance-modpack-versions-header label {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.instance-modpack-provider-chip {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  border: 1px solid rgba(var(--accent-rgb), 0.36);
+  background: rgba(var(--accent-rgb), 0.14);
+  padding: 2px 7px;
+  border-radius: 7px;
+}
+
+.instance-modpack-versions-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.instance-modpack-version-card {
+  border: 1px solid rgba(var(--accent-rgb), 0.34);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(var(--accent-rgb), 0.11);
+}
+
+.instance-modpack-version-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.instance-modpack-version-name {
+  color: var(--foreground);
+  font-size: 15px;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.instance-modpack-installed-label {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #8af7aa;
+}
+
+.instance-modpack-version-bottom {
+  margin-top: 8px;
+}
+
+.instance-modpack-version-id {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+
+.instance-modpack-modal-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.instance-modpack-link-btn {
+  border: 1px solid rgba(62, 211, 132, 0.45);
+  background: rgba(62, 211, 132, 0.16);
+  color: #79ecb5;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 9px 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.instance-modpack-link-btn:hover:not(:disabled) {
+  background: rgba(62, 211, 132, 0.24);
+  border-color: rgba(62, 211, 132, 0.58);
+  color: #b7ffd6;
+}
+
+.instance-modpack-link-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 1000px) {
+  .instance-account-modal.instance-modpack-modal {
+    width: min(920px, calc(100vw - 20px));
+    height: min(90vh, 860px);
+    max-height: min(90vh, 860px);
+  }
+
+  .instance-modpack-rich-content {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .instance-modpack-sidebar,
+  .instance-modpack-main,
+  .instance-modpack-versions {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    border-right: none;
+  }
+
+  .instance-modpack-sidebar,
+  .instance-modpack-main {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .instance-modpack-sidebar {
+    max-height: 220px;
+  }
+
+  .instance-modpack-versions-scroll {
+    max-height: 190px;
+  }
 }
 
 @keyframes accountModalFade {
