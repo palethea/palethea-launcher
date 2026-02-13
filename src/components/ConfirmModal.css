@@ -232,3 +232,27 @@
   box-shadow: 0 6px 16px rgba(var(--accent-rgb), 0.3);
   opacity: 0.9;
 }
+
+.source-choice-modal .confirm-btn.primary-action {
+  background: #1BD96A;
+  color: #07130d;
+  border: 1px solid rgba(27, 217, 106, 0.5);
+  box-shadow: 0 4px 12px rgba(27, 217, 106, 0.28);
+}
+
+.source-choice-modal .confirm-btn.primary-action:hover {
+  background: #22e475;
+  box-shadow: 0 6px 16px rgba(27, 217, 106, 0.35);
+}
+
+.source-choice-modal .confirm-btn.extra-action {
+  background: #F16436;
+  color: #fff;
+  border: 1px solid rgba(241, 100, 54, 0.45);
+  box-shadow: 0 4px 12px rgba(241, 100, 54, 0.28);
+}
+
+.source-choice-modal .confirm-btn.extra-action:hover {
+  background: #ff7548;
+  box-shadow: 0 6px 16px rgba(241, 100, 54, 0.35);
+}

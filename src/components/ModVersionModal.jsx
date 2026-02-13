@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
-import { ExternalLink, Trash2 } from 'lucide-react';
+import { ExternalLink, RotateCcw, Trash2 } from 'lucide-react';
 import ProjectDetailsEntityModal from './ProjectDetailsEntityModal';
 import { stripMinecraftVersionFromNumber, stripMinecraftVersionFromTitle } from '../utils/versionDisplay';
 import './ModVersionModal.css';
@@ -61,6 +61,7 @@ const isCurseForgeProjectId = (value) => /^\d+$/.test(String(value || '').trim()
 const getCurseForgeSectionForType = (projectType) => {
   const normalized = String(projectType || '').toLowerCase();
   if (normalized === 'modpack') return 'modpacks';
+  if (normalized === 'world') return 'worlds';
   if (normalized === 'resourcepack') return 'texture-packs';
   if (normalized === 'shader') return 'shaders';
   if (normalized === 'datapack') return 'data-packs';
@@ -292,7 +293,17 @@ const buildVersionSubtitle = ({
   return baseVersionText || titleText;
 };
 
-function ModVersionModal({ project: initialProject, projectId, gameVersion, loader, onSelect, onClose, installedMod, onUninstall }) {
+function ModVersionModal({
+  project: initialProject,
+  projectId,
+  gameVersion,
+  loader,
+  onSelect,
+  onClose,
+  installedMod,
+  onUninstall,
+  onReinstall
+}) {
   const [project, setProject] = useState(initialProject);
   const [versions, setVersions] = useState([]);
   const [showAllVersions, setShowAllVersions] = useState(false);
@@ -553,6 +564,11 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
     && compatibilityMeta.bestScore > 0
     && compatibilityMeta.bestScore < 4900
     && !compatibilityMeta.hasAnyDirectMatch;
+  const installedVersion = useMemo(() => {
+    const target = String(installedMod?.version_id || '').trim();
+    if (!target) return null;
+    return versions.find((version) => String(version?.id || '').trim() === target) || null;
+  }, [installedMod?.version_id, versions]);
   const hiddenVersionCount = Math.max(0, versions.length - filteredVersions.length);
   const categories = filterContentCategories(project?.categories || []);
   const loaders = (project?.loaders && project.loaders.length > 0)
@@ -696,6 +712,24 @@ function ModVersionModal({ project: initialProject, projectId, gameVersion, load
             <span>{providerLabel === 'CurseForge' ? 'View on CurseForge' : 'View on Modrinth'}</span>
           </button>
           {installedMod && (
+            <button
+              className="reinstall-btn"
+              onClick={() => {
+                if (!installedVersion || !onReinstall) return;
+                onReinstall({
+                  project,
+                  version: installedVersion,
+                  installedItem: installedMod
+                });
+              }}
+              disabled={!installedVersion}
+              title={installedVersion ? 'Reinstall installed version' : 'Installed version is not in the current version list'}
+            >
+              <RotateCcw size={14} />
+              <span>Reinstall</span>
+            </button>
+          )}
+          {installedMod && typeof onUninstall === 'function' && (
             <button className="uninstall-btn" onClick={() => onUninstall(installedMod)}>
               <Trash2 size={14} />
               <span>Uninstall</span>

@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Trash2, RefreshCcw, Plus, Upload, FolderOpen, Loader2, ListFilterPlus, ChevronDown, Check, X, Wand2 } from 'lucide-react';
+import { Trash2, RefreshCcw, Plus, Upload, Loader2, ListFilterPlus, ChevronDown, Check, X, Wand2, Copy } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
 import FilterModal from './FilterModal';
+import InstalledContentRow from './InstalledContentRow';
+import SubTabs from './SubTabs';
 import useModrinthSearch from '../hooks/useModrinthSearch';
 import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
 import { maybeShowCurseForgeBlockedDownloadModal } from '../utils/curseforgeInstallError';
@@ -63,6 +65,7 @@ const resolveSelectedCategoryQueryValues = (options, selectedIds) => {
 };
 
 const isCurseForgeProjectId = (value) => /^\d+$/.test(String(value || '').trim());
+const MC_VERSION_TOKEN_RE = /\b\d+\.\d+(?:\.\d+)?\b/g;
 
 const normalizeProviderLabel = (provider, projectId) => {
     const normalized = String(provider || '').toLowerCase();
@@ -79,18 +82,63 @@ const getUpdateRowLatestVersion = (row) => {
     return row?.latest_version || null;
 };
 
+const extractMcVersionToken = (value) => {
+    const text = String(value || '').trim();
+    if (!text) return null;
+    const matches = text.match(MC_VERSION_TOKEN_RE);
+    if (!matches?.length) return null;
+    return matches[matches.length - 1];
+};
+
+const resolveCurseForgeInstallVersionName = (version, file, instanceVersion) => {
+    const preferredGameVersion = String(instanceVersion || '').trim();
+    const candidateFromText = extractMcVersionToken(version?.version_number)
+        || extractMcVersionToken(version?.name)
+        || extractMcVersionToken(file?.filename);
+    if (candidateFromText) return candidateFromText;
+
+    const gameVersions = Array.isArray(version?.game_versions) ? version.game_versions : [];
+    const normalizedGameVersions = gameVersions
+        .map((entry) => String(entry || '').trim())
+        .filter((entry) => /^\d+\.\d+(?:\.\d+)?$/.test(entry));
+
+    if (preferredGameVersion && normalizedGameVersions.includes(preferredGameVersion)) {
+        return preferredGameVersion;
+    }
+    if (normalizedGameVersions.length > 0) {
+        return normalizedGameVersions[0];
+    }
+
+    return version?.version_number || version?.name || file?.filename || null;
+};
+
+const resolveCurseForgeVersionLabelFromEntry = (versionEntry) => {
+    const primaryFilename = versionEntry?.files?.[0]?.filename || null;
+    return formatInstalledVersionLabel(versionEntry?.version_number, 'curseforge', primaryFilename)
+        || formatInstalledVersionLabel(versionEntry?.name, 'curseforge', primaryFilename)
+        || extractMcVersionToken(versionEntry?.version_number)
+        || extractMcVersionToken(versionEntry?.name)
+        || extractMcVersionToken(primaryFilename)
+        || null;
+};
+
 function WorldDatapacks({
     instance,
     world,
     onShowNotification,
     onShowConfirm,
-    onBack,
     isScrolled,
     onQueueDownload,
     onDequeueDownload,
-    onUpdateDownloadStatus
+    onUpdateDownloadStatus,
+    activeTab,
+    onTabChange,
+    hideTabBar = false,
+    refreshNonce = 0
 }) {
-    const [activeSubTab, setActiveSubTab] = useState('installed');
+    const [internalActiveSubTab, setInternalActiveSubTab] = useState('installed');
+    const activeSubTab = activeTab ?? internalActiveSubTab;
+    const setActiveSubTab = onTabChange ?? setInternalActiveSubTab;
     const [searchQuery, setSearchQuery] = useState('');
     const [findSearchQuery, setFindSearchQuery] = useState('');
     const [installedDatapacks, setInstalledDatapacks] = useState([]);
@@ -108,9 +156,14 @@ function WorldDatapacks({
     const [isResolvingManual, setIsResolvingManual] = useState(false);
     const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
     const [updatesFound, setUpdatesFound] = useState({});
+    const [curseForgeVersionLabels, setCurseForgeVersionLabels] = useState({});
+    const [sourceChoiceModal, setSourceChoiceModal] = useState({ show: false, bothCount: 0, scopeLabel: 'selected files' });
 
     const installedSearchRef = useRef();
     const findSearchRef = useRef();
+    const sourceChoiceResolverRef = useRef(null);
+    const hasPrefetchedPopularRef = useRef(false);
+    const previousFindProviderRef = useRef(findProvider);
 
     const loadInstalledDatapacks = useCallback(async () => {
         setLoading(true);
@@ -188,7 +241,7 @@ function WorldDatapacks({
     // Effects
     useEffect(() => {
         loadInstalledDatapacks();
-    }, [world.folder_name, loadInstalledDatapacks]);
+    }, [world.folder_name, loadInstalledDatapacks, refreshNonce]);
 
     useEffect(() => {
         const loadCurseForgeKeyStatus = async () => {
@@ -216,17 +269,84 @@ function WorldDatapacks({
         setSelectedCategories([]);
         setAppliedFindCategories([]);
         setSelectedItems([]);
+        setCurseForgeVersionLabels({});
         resetFeed();
-    }, [activeSubTab, resetFeed]);
+        hasPrefetchedPopularRef.current = false;
+    }, [world.folder_name, resetFeed]);
 
     useEffect(() => {
+        let cancelled = false;
+
+        const unresolved = installedDatapacks.filter((dp) => {
+            if (!isCurseForgeProjectId(dp.project_id) || !dp.version_id) return false;
+            const key = `${dp.project_id}:${dp.version_id}`;
+            if (curseForgeVersionLabels[key]) return false;
+            return !formatInstalledVersionLabel(dp.version, dp.provider, dp.filename);
+        });
+
+        if (unresolved.length === 0) return;
+
+        const byProject = new Map();
+        for (const dp of unresolved) {
+            const projectId = String(dp.project_id || '').trim();
+            const versionId = String(dp.version_id || '').trim();
+            if (!projectId || !versionId) continue;
+            if (!byProject.has(projectId)) byProject.set(projectId, new Set());
+            byProject.get(projectId).add(versionId);
+        }
+
+        const loadLabels = async () => {
+            const updates = {};
+
+            for (const [projectId, versionIds] of byProject.entries()) {
+                try {
+                    const versions = await invoke('get_curseforge_modpack_versions', { projectId });
+                    for (const versionEntry of Array.isArray(versions) ? versions : []) {
+                        const versionId = String(versionEntry?.id || '').trim();
+                        if (!versionId || !versionIds.has(versionId)) continue;
+                        const label = resolveCurseForgeVersionLabelFromEntry(versionEntry);
+                        if (!label) continue;
+                        updates[`${projectId}:${versionId}`] = label;
+                    }
+                } catch (error) {
+                    console.warn(`Failed to resolve CurseForge version label for project ${projectId}:`, error);
+                }
+            }
+
+            if (!cancelled && Object.keys(updates).length > 0) {
+                setCurseForgeVersionLabels((prev) => ({ ...prev, ...updates }));
+            }
+        };
+
+        loadLabels();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [installedDatapacks, curseForgeVersionLabels]);
+
+    useEffect(() => {
+        if (previousFindProviderRef.current === findProvider) return;
+        previousFindProviderRef.current = findProvider;
+        hasPrefetchedPopularRef.current = false;
         if (activeSubTab !== 'find') return;
         setSearchQuery('');
         setFindSearchQuery('');
         setSelectedCategories([]);
         setAppliedFindCategories([]);
         resetFeed();
-    }, [activeSubTab, findProvider, resetFeed]);
+
+        if (findProvider === 'curseforge' && !hasCurseForgeKey) return;
+        loadPopularDatapacks();
+    }, [activeSubTab, findProvider, hasCurseForgeKey, loadPopularDatapacks, resetFeed]);
+
+    useEffect(() => {
+        if (hasPrefetchedPopularRef.current) return;
+        if (findProvider === 'curseforge' && !hasCurseForgeKey) return;
+
+        hasPrefetchedPopularRef.current = true;
+        loadPopularDatapacks();
+    }, [findProvider, hasCurseForgeKey, loadPopularDatapacks]);
 
     useEffect(() => {
         const handleKeyDown = (e) => {
@@ -293,25 +413,32 @@ function WorldDatapacks({
     const handleBulkDelete = useCallback(async () => {
         if (selectedItems.length === 0) return;
 
-        if (confirm(`Are you sure you want to delete ${selectedItems.length} selected datapacks?`)) {
-            for (const filename of selectedItems) {
-                try {
-                    await invoke('delete_instance_datapack', {
-                        instanceId: instance.id,
-                        worldName: world.folder_name,
-                        filename: filename
-                    });
-                } catch (err) {
-                    console.error(`Failed to delete ${filename}:`, err);
+        onShowConfirm?.({
+            title: 'Delete Datapacks',
+            message: `Are you sure you want to delete ${selectedItems.length} selected datapack${selectedItems.length > 1 ? 's' : ''}?`,
+            confirmText: 'Delete',
+            cancelText: 'Cancel',
+            variant: 'danger',
+            onConfirm: async () => {
+                for (const filename of selectedItems) {
+                    try {
+                        await invoke('delete_instance_datapack', {
+                            instanceId: instance.id,
+                            worldName: world.folder_name,
+                            filename: filename
+                        });
+                    } catch (err) {
+                        console.error(`Failed to delete ${filename}:`, err);
+                    }
+                }
+                setSelectedItems([]);
+                loadInstalledDatapacks();
+                if (onShowNotification) {
+                    onShowNotification(`Successfully deleted ${selectedItems.length} datapacks.`, 'success');
                 }
             }
-            setSelectedItems([]);
-            loadInstalledDatapacks();
-            if (onShowNotification) {
-                onShowNotification(`Successfully deleted ${selectedItems.length} datapacks.`, 'success');
-            }
-        }
-    }, [selectedItems, instance.id, world.folder_name, loadInstalledDatapacks, onShowNotification]);
+        });
+    }, [selectedItems, instance.id, world.folder_name, loadInstalledDatapacks, onShowNotification, onShowConfirm]);
 
     const handleRequestInstall = useCallback((project, updateItem = null) => {
         setVersionModal({ show: true, project, updateItem: updateItem });
@@ -405,7 +532,7 @@ function WorldDatapacks({
                     iconUrl: project.icon_url || project.thumbnail || updateItem?.icon_url || null,
                     name: project.title || project.name || updateItem?.name || null,
                     author: project.author || updateItem?.author || null,
-                    versionName: resolvedVersion.name || resolvedVersion.version_number || null,
+                    versionName: resolveCurseForgeInstallVersionName(resolvedVersion, file, instance.version_id),
                     categories: project.categories || project.display_categories || (updateItem ? updateItem.categories : null) || null
                 });
             } else {
@@ -479,6 +606,20 @@ function WorldDatapacks({
         setDeleteConfirm({ show: true, datapack });
     }, []);
 
+    const handleToggleDatapack = useCallback(async (datapack) => {
+        try {
+            await invoke('toggle_instance_datapack', {
+                instanceId: instance.id,
+                worldName: world.folder_name,
+                filename: datapack.filename
+            });
+            await loadInstalledDatapacks();
+        } catch (error) {
+            console.error('Failed to toggle datapack:', error);
+            onShowNotification?.(`Failed to toggle datapack: ${error}`, 'error');
+        }
+    }, [instance.id, world.folder_name, loadInstalledDatapacks, onShowNotification]);
+
     const handleImportFile = async () => {
         try {
             const selected = await open({
@@ -525,32 +666,93 @@ function WorldDatapacks({
         }
     };
 
+    const handleCopyShareCode = useCallback(async () => {
+        try {
+            const code = await invoke('get_instance_share_code', { instanceId: instance.id });
+            await navigator.clipboard.writeText(code);
+            onShowNotification?.('Share code copied! Includes supported Modrinth and CurseForge files; manual files are not included.', 'success');
+        } catch (error) {
+            console.error('Failed to generate share code:', error);
+            onShowNotification?.(`Failed to generate share code: ${error}`, 'error');
+        }
+    }, [instance.id, onShowNotification]);
+
+    const requestSourceChoice = useCallback((bothCount, scopeLabel = 'selected files') => {
+        return new Promise((resolve) => {
+            sourceChoiceResolverRef.current = resolve;
+            setSourceChoiceModal({ show: true, bothCount, scopeLabel });
+        });
+    }, []);
+
+    const closeSourceChoice = useCallback((choice = null) => {
+        setSourceChoiceModal((prev) => ({ ...prev, show: false }));
+        const resolve = sourceChoiceResolverRef.current;
+        sourceChoiceResolverRef.current = null;
+        if (resolve) resolve(choice);
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (sourceChoiceResolverRef.current) {
+                sourceChoiceResolverRef.current(null);
+                sourceChoiceResolverRef.current = null;
+            }
+        };
+    }, []);
+
     const handleResolveManualMetadata = useCallback(async () => {
         if (isResolvingManual) return;
         setIsResolvingManual(true);
         try {
+            const previewResult = await invoke('resolve_manual_modrinth_metadata', {
+                instanceId: instance.id,
+                fileType: 'datapack',
+                worldName: world.folder_name,
+                dryRun: true
+            });
+
+            if (previewResult.scanned === 0) {
+                onShowNotification?.('No manual datapacks available to check.', 'info');
+                return;
+            }
+
+            if (previewResult.matched === 0) {
+                onShowNotification?.('Couldn\'t find matches on Modrinth/CurseForge for these datapacks.', 'info');
+                return;
+            }
+
+            let preferredSource;
+            if ((previewResult.both_sources || 0) > 0) {
+                preferredSource = await requestSourceChoice(previewResult.both_sources, 'selected datapacks');
+                if (!preferredSource) {
+                    onShowNotification?.('Manual metadata check cancelled.', 'info');
+                    return;
+                }
+            }
+
             const result = await invoke('resolve_manual_modrinth_metadata', {
                 instanceId: instance.id,
                 fileType: 'datapack',
-                worldName: world.folder_name
+                worldName: world.folder_name,
+                preferredSource
             });
             await loadInstalledDatapacks();
             if (onShowNotification) {
                 if (result.updated > 0) {
-                    onShowNotification(`Matched ${result.updated}/${result.scanned} datapack file${result.updated === 1 ? '' : 's'} on Modrinth.`, 'success');
+                    onShowNotification(`Matched ${result.updated}/${result.scanned} datapack file${result.updated === 1 ? '' : 's'} on Modrinth/CurseForge.`, 'success');
                 } else if (result.scanned > 0) {
-                    onShowNotification('No Modrinth matches found for these datapacks.', 'info');
+                    onShowNotification('Couldn\'t find matches on Modrinth/CurseForge for these datapacks.', 'info');
                 } else {
                     onShowNotification('No manual datapacks available to check.', 'info');
                 }
             }
         } catch (error) {
-            console.error('Failed to resolve datapacks on Modrinth:', error);
-            onShowNotification?.(`Failed to check Modrinth: ${error}`, 'error');
+            console.error('Failed to resolve datapacks on Modrinth/CurseForge:', error);
+            onShowNotification?.(`Failed to check Modrinth/CurseForge: ${error}`, 'error');
         } finally {
             setIsResolvingManual(false);
         }
-    }, [instance.id, world.folder_name, loadInstalledDatapacks, onShowNotification, isResolvingManual]);
+    }, [instance.id, world.folder_name, loadInstalledDatapacks, onShowNotification, isResolvingManual, requestSourceChoice]);
 
     const handleBulkCheckUpdates = useCallback(async () => {
         const tracked = installedDatapacks.filter((p) => p.project_id && (!p.provider || p.provider !== 'Manual'));
@@ -648,47 +850,36 @@ function WorldDatapacks({
 
     return (
         <div className="datapacks-view">
-            <div className="view-header">
-                <button className="back-btn" onClick={onBack}>← Worlds</button>
-                <div className="header-info">
-                    <h3>Datapacks for {world.name}</h3>
+            {!hideTabBar && (
+                <div className={`sub-tabs-row ${isScrolled ? 'scrolled' : ''}`}>
+                    <SubTabs
+                        tabs={[
+                            { id: 'installed', label: `Installed (${installedDatapacks.length})` },
+                            { id: 'find', label: 'Find Datapacks' }
+                        ]}
+                        activeTab={activeSubTab}
+                        onTabChange={setActiveSubTab}
+                    />
+                    <div className="sub-tabs-actions">
+                        {activeSubTab === 'installed' && (
+                            <>
+                                <button className="open-folder-btn" onClick={handleImportFile} title="Add Datapack ZIP File">
+                                    <Plus size={16} />
+                                    <span>Add Datapack</span>
+                                </button>
+                                <button
+                                    className="open-folder-btn"
+                                    onClick={handleOpenFolder}
+                                    title="Open Datapacks Folder"
+                                >
+                                    <span aria-hidden="true">📁</span>
+                                    <span>Folder</span>
+                                </button>
+                            </>
+                        )}
+                    </div>
                 </div>
-            </div>
-
-            <div className={`sub-tabs-row ${isScrolled ? 'scrolled' : ''}`}>
-                <div className="sub-tabs">
-                    <button
-                        className={`sub-tab ${activeSubTab === 'installed' ? 'active' : ''}`}
-                        onClick={() => setActiveSubTab('installed')}
-                    >
-                        Installed ({installedDatapacks.length})
-                    </button>
-                    <button
-                        className={`sub-tab ${activeSubTab === 'find' ? 'active' : ''}`}
-                        onClick={() => setActiveSubTab('find')}
-                    >
-                        Find Datapacks
-                    </button>
-                </div>
-                <div className="sub-tabs-actions">
-                    {activeSubTab === 'installed' && (
-                        <>
-                            <button className="open-folder-btn" onClick={handleImportFile} title="Add Datapack ZIP File">
-                                <Plus size={16} />
-                                <span>Add Datapack</span>
-                            </button>
-                            <button
-                                className="open-folder-btn"
-                                onClick={handleOpenFolder}
-                                title="Open Datapacks Folder"
-                            >
-                                <FolderOpen size={16} />
-                                <span>Folder</span>
-                            </button>
-                        </>
-                    )}
-                </div>
-            </div>
+            )}
 
             <FilterModal
                 isOpen={isFilterModalOpen}
@@ -698,6 +889,23 @@ function WorldDatapacks({
                 onApply={setSelectedCategories}
                 title={activeSubTab === 'find' && findProvider === 'curseforge' ? 'CurseForge Datapack Categories' : 'Datapack Categories'}
             />
+
+            {sourceChoiceModal.show && (
+                <ConfirmModal
+                    isOpen={sourceChoiceModal.show}
+                    modalClassName="source-choice-modal"
+                    title="Choose metadata source"
+                    message={`Found ${sourceChoiceModal.bothCount} ${sourceChoiceModal.scopeLabel} that match both Modrinth and CurseForge. Which source should be used?`}
+                    confirmText="Use Modrinth"
+                    extraConfirmText="Use CurseForge"
+                    cancelText="Cancel"
+                    variant="secondary"
+                    actionLayout="flat"
+                    onConfirm={() => closeSourceChoice('modrinth')}
+                    onExtraConfirm={() => closeSourceChoice('curseforge')}
+                    onCancel={() => closeSourceChoice(null)}
+                />
+            )}
 
             {activeSubTab === 'installed' ? (
                 <div className="installed-section">
@@ -781,6 +989,10 @@ function WorldDatapacks({
                                                 Update All
                                             </button>
                                         )}
+                                        <button className="copy-code-btn" onClick={handleCopyShareCode} title="Copy Share Code">
+                                            <Copy size={12} />
+                                            <span>Copy Code</span>
+                                        </button>
                                     </div>
                                     <div className="installed-list">
                                         {filteredInstalledDatapacks
@@ -789,102 +1001,37 @@ function WorldDatapacks({
                                             .map((dp) => {
                                                 const isUpdating = updatingItems.includes(dp.filename);
                                                 const isSelected = selectedItems.includes(dp.filename);
-                                                const versionLabel = withVersionPrefix(
-                                                    formatInstalledVersionLabel(dp.version, dp.provider, dp.filename)
-                                                );
+                                                const formattedVersion = formatInstalledVersionLabel(dp.version, dp.provider, dp.filename);
+                                                const curseForgeResolvedLabel = isCurseForgeProjectId(dp.project_id) && dp.version_id
+                                                    ? curseForgeVersionLabels[`${dp.project_id}:${dp.version_id}`] || null
+                                                    : null;
+                                                const versionLabel = withVersionPrefix(formattedVersion || curseForgeResolvedLabel);
                                                 return (
-                                                    <div
+                                                    <InstalledContentRow
                                                         key={dp.filename}
-                                                        className={`installed-item ${isUpdating ? 'mod-updating' : ''} ${isSelected ? 'selected' : ''}`}
-                                                        onClick={() => {
-                                                            if (selectedItems.length > 0) {
-                                                                handleToggleSelect(dp.filename);
-                                                            } else {
-                                                                handleRequestInstall({
-                                                                    project_id: dp.project_id,
-                                                                    title: dp.name,
-                                                                    slug: dp.project_id,
-                                                                    icon_url: dp.icon_url,
-                                                                    project_type: 'datapack',
-                                                                    provider_label: normalizeProviderLabel(dp.provider, dp.project_id),
-                                                                    categories: dp.categories
-                                                                }, dp);
-                                                            }
-                                                        }}
-                                                    >
-                                                        {isUpdating && (
-                                                            <div className="mod-updating-overlay">
-                                                                <RefreshCcw className="spin-icon" size={20} />
-                                                                <span>Updating...</span>
-                                                            </div>
-                                                        )}
-                                                        <div className="item-main">
-                                                            <div className="item-selection" onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                handleToggleSelect(dp.filename);
-                                                            }}>
-                                                                <div className={`selection-checkbox ${isSelected ? 'checked' : ''}`}>
-                                                                    {isSelected && <Check size={12} />}
-                                                                </div>
-                                                            </div>
-                                                            {dp.icon_url ? (
-                                                                <img src={dp.icon_url} alt={dp.name} className="mod-icon-small" onError={(e) => e.target.src = 'https://cdn-icons-png.flaticon.com/512/3011/3011270.png'} />
-                                                            ) : (
-                                                                <div className="mod-icon-placeholder">📦</div>
-                                                            )}
-                                                            <div className="item-info">
-                                                                <div className="item-title-row">
-                                                                    <h4>{dp.name || dp.filename}</h4>
-                                                                    {versionLabel && <span className="mod-version-tag">{versionLabel}</span>}
-                                                                    {updatesFound[dp.project_id] && (
-                                                                        <span className="update-available-tag pulse">Update Available</span>
-                                                                    )}
-                                                                </div>
-                                                                <div className="item-meta-row">
-                                                                    <span className="mod-provider">{dp.provider}</span>
-                                                                    {dp.size > 0 && (
-                                                                        <>
-                                                                            <span className="mod-separator">•</span>
-                                                                            <span className="mod-size">{(dp.size / 1024 / 1024).toFixed(2)} MB</span>
-                                                                        </>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div className="item-actions">
-                                                            {dp.project_id && (
-                                                                <button
-                                                                    className="update-btn-simple"
-                                                                    title="Update Datapack"
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        handleRequestInstall({
-                                                                            project_id: dp.project_id,
-                                                                            title: dp.name,
-                                                                            slug: dp.project_id,
-                                                                            icon_url: dp.icon_url,
-                                                                            project_type: 'datapack',
-                                                                            provider_label: normalizeProviderLabel(dp.provider, dp.project_id)
-                                                                        }, dp);
-                                                                    }}
-                                                                    disabled={isUpdating}
-                                                                >
-                                                                    <RefreshCcw size={14} />
-                                                                </button>
-                                                            )}
-                                                            <button
-                                                                className="delete-btn-simple"
-                                                                title="Delete Datapack"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleDelete(dp);
-                                                                }}
-                                                                disabled={isUpdating}
-                                                            >
-                                                                <Trash2 size={16} />
-                                                            </button>
-                                                        </div>
-                                                    </div>
+                                                        item={dp}
+                                                        isUpdating={isUpdating}
+                                                        isSelected={isSelected}
+                                                        selectionModeActive={selectedItems.length > 0}
+                                                        versionLabel={versionLabel || 'Unknown version'}
+                                                        showUpdateBadge={Boolean(updatesFound[dp.project_id])}
+                                                        authorFallback="Unknown author"
+                                                        onToggleSelect={handleToggleSelect}
+                                                        onInfoAction={() => handleRequestInstall({
+                                                            project_id: dp.project_id,
+                                                            title: dp.name,
+                                                            slug: dp.project_id,
+                                                            icon_url: dp.icon_url,
+                                                            project_type: 'datapack',
+                                                            provider_label: normalizeProviderLabel(dp.provider, dp.project_id),
+                                                            categories: dp.categories
+                                                        }, dp)}
+                                                        onToggleEnabled={() => handleToggleDatapack(dp)}
+                                                        onDelete={() => handleDelete(dp)}
+                                                        infoTitle="Open project info"
+                                                        deleteTitle="Delete datapack"
+                                                        updatingLabel="Updating..."
+                                                    />
                                                 );
                                             })}
                                     </div>
@@ -912,53 +1059,21 @@ function WorldDatapacks({
                                             .map((dp) => {
                                                 const isSelected = selectedItems.includes(dp.filename);
                                                 return (
-                                                    <div
+                                                    <InstalledContentRow
                                                         key={dp.filename}
-                                                        className={`installed-item ${isSelected ? 'selected' : ''}`}
-                                                        onClick={() => {
-                                                            if (selectedItems.length > 0) {
-                                                                handleToggleSelect(dp.filename);
-                                                            }
-                                                        }}
-                                                    >
-                                                        <div className="item-main">
-                                                            <div className="item-selection" onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                handleToggleSelect(dp.filename);
-                                                            }}>
-                                                                <div className={`selection-checkbox ${isSelected ? 'checked' : ''}`}>
-                                                                    {isSelected && <Check size={12} />}
-                                                                </div>
-                                                            </div>
-                                                            <div className="mod-icon-placeholder manual">📦</div>
-                                                            <div className="item-info">
-                                                                <div className="item-title-row">
-                                                                    <h4>{dp.filename}</h4>
-                                                                </div>
-                                                                <div className="item-meta-row">
-                                                                    <span className="mod-provider">Manual</span>
-                                                                    {dp.size > 0 && (
-                                                                        <>
-                                                                            <span className="mod-separator">•</span>
-                                                                            <span className="mod-size">{(dp.size / 1024 / 1024).toFixed(2)} MB</span>
-                                                                        </>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <div className="item-actions">
-                                                            <button
-                                                                className="delete-btn-simple"
-                                                                title="Delete Datapack"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleDelete(dp);
-                                                                }}
-                                                            >
-                                                                <Trash2 size={16} />
-                                                            </button>
-                                                        </div>
-                                                    </div>
+                                                        item={dp}
+                                                        isUpdating={false}
+                                                        isSelected={isSelected}
+                                                        selectionModeActive={selectedItems.length > 0}
+                                                        versionLabel="Unknown version"
+                                                        platformLabel="Manual"
+                                                        authorFallback="Manual file"
+                                                        onToggleSelect={handleToggleSelect}
+                                                        onToggleEnabled={() => handleToggleDatapack(dp)}
+                                                        onDelete={() => handleDelete(dp)}
+                                                        infoTitle="Project info unavailable"
+                                                        deleteTitle="Delete datapack"
+                                                    />
                                                 );
                                             })}
                                     </div>
@@ -971,20 +1086,14 @@ function WorldDatapacks({
                 <div className="find-section">
                     <div className="mods-container">
                         <div className="search-controls-refined">
-                            <div className="sub-tabs">
-                                <button
-                                    className={`sub-tab ${findProvider === 'modrinth' ? 'active' : ''}`}
-                                    onClick={() => setFindProvider('modrinth')}
-                                >
-                                    Modrinth
-                                </button>
-                                <button
-                                    className={`sub-tab ${findProvider === 'curseforge' ? 'active' : ''}`}
-                                    onClick={() => setFindProvider('curseforge')}
-                                >
-                                    CurseForge
-                                </button>
-                            </div>
+                            <SubTabs
+                                tabs={[
+                                    { id: 'modrinth', label: 'Modrinth' },
+                                    { id: 'curseforge', label: 'CurseForge' }
+                                ]}
+                                activeTab={findProvider}
+                                onTabChange={setFindProvider}
+                            />
                             <button
                                 className={`filter-btn-modal ${selectedCategories.length > 0 ? 'active' : ''}`}
                                 onClick={() => setIsFilterModalOpen(true)}
@@ -1040,7 +1149,10 @@ function WorldDatapacks({
                                 <div className="search-results">
                                     {displayItems.map((project, index) => {
                                         const installedItem = getInstalledItem(project);
-                                        const isDownloading = installing === (project.slug || project.project_id || project.id);
+                                        const isDownloading = [project.project_id, project.id, project.slug]
+                                            .filter(Boolean)
+                                            .map((value) => String(value))
+                                            .includes(String(installing || ''));
 
                                         return (
                                             <div
@@ -1150,9 +1262,16 @@ function WorldDatapacks({
                     projectId={versionModal.project?.project_id || versionModal.project?.id || versionModal.project?.slug}
                     gameVersion={instance.version_id}
                     loader={null}
+                    installedMod={versionModal.updateItem || (versionModal.project ? getInstalledItem(versionModal.project) : null)}
                     onClose={() => setVersionModal({ show: false, project: null, updateItem: null })}
                     onSelect={(version) => {
                         handleInstall(versionModal.project, version, false, versionModal.updateItem);
+                        setVersionModal({ show: false, project: null, updateItem: null });
+                    }}
+                    onReinstall={({ project: modalProject, version, installedItem }) => {
+                        const projectItem = modalProject || versionModal.project;
+                        const updateItem = installedItem || versionModal.updateItem;
+                        handleInstall(projectItem, version, false, updateItem);
                         setVersionModal({ show: false, project: null, updateItem: null });
                     }}
                 />

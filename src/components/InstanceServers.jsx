@@ -1,6 +1,10 @@
-import { useState, useEffect, useCallback, memo } from 'react';
+import { useState, useEffect, useCallback, useLayoutEffect, useRef, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
+import { Plus, Play, Ellipsis, RefreshCw, Copy, Pencil, Trash2, SlidersHorizontal, Signal } from 'lucide-react';
 import ConfirmModal from './ConfirmModal';
+import TabLoadingState from './TabLoadingState';
+import SubTabs from './SubTabs';
 import './ContextMenu.css';
 
 // Helper for parsing Minecraft formatting codes
@@ -27,6 +31,8 @@ const parseMinecraftColors = (text) => {
   return lines.map((line, lineIdx) => {
     if (!line && lineIdx === lines.length - 1) return null;
     
+    line = line.trim();
+
     let currentColorClass = '';
     let currentFormatClasses = [];
     
@@ -70,10 +76,29 @@ const parseMinecraftColors = (text) => {
 
 const stripMinecraftCodes = (text) => text?.replace(/§[0-9a-fk-or]/g, '') || '';
 
-function InstanceServers({ instance, onShowNotification, isScrolled }) {
+function formatLastPlayed(value) {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Never';
+
+  const now = Date.now();
+  const diff = now - date.getTime();
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (diff < minute) return 'Just now';
+  if (diff < hour) return `${Math.floor(diff / minute)}m ago`;
+  if (diff < day) return `${Math.floor(diff / hour)}h ago`;
+  return `${Math.floor(diff / day)}d ago`;
+}
+
+function InstanceServers({ instance, onShowNotification, isScrolled, onLaunchInstance }) {
+  const [activeSubTab, setActiveSubTab] = useState('servers');
   const [servers, setServers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [pingData, setPingData] = useState({});
+  const [lastPlayedMap, setLastPlayedMap] = useState({});
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -81,6 +106,7 @@ function InstanceServers({ instance, onShowNotification, isScrolled }) {
   const [deleteIndex, setDeleteIndex] = useState(null);
   const [deleteServerName, setDeleteServerName] = useState('');
   const [newServerName, setNewServerName] = useState('');
+  const contextMenuRef = useRef(null);
   const [newServerIp, setNewServerIp] = useState('');
   const [editServerName, setEditServerName] = useState('');
   const [editServerIp, setEditServerIp] = useState('');
@@ -90,8 +116,25 @@ function InstanceServers({ instance, onShowNotification, isScrolled }) {
   const [previewError, setPreviewError] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
 
+  const getServerLastPlayedKey = useCallback((server) => `${instance.id}:${server.name}:${server.ip}`, [instance.id]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('server-last-played-map');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          setLastPlayedMap(parsed);
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to load server last-played cache', error);
+    }
+  }, []);
+
   const loadServers = useCallback(async () => {
     try {
+      setPingData({});
       const s = await invoke('get_instance_servers', { instanceId: instance.id });
       setServers(s);
     } catch (error) {
@@ -105,10 +148,40 @@ function InstanceServers({ instance, onShowNotification, isScrolled }) {
   }, [loadServers]);
 
   useEffect(() => {
+    if (activeSubTab !== 'servers' || servers.length === 0) return;
+    servers.forEach((server, index) => {
+      handlePing(index, server.ip, true);
+    });
+  }, [servers, activeSubTab]);
+
+  useEffect(() => {
     const handleClickOutside = () => setContextMenu(null);
     window.addEventListener('click', handleClickOutside);
     return () => window.removeEventListener('click', handleClickOutside);
   }, []);
+
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return;
+
+    const rect = contextMenuRef.current.getBoundingClientRect();
+    const margin = 8;
+    const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
+    const clampedX = Math.min(Math.max(contextMenu.x, margin), maxX);
+    const clampedY = Math.min(Math.max(contextMenu.y, margin), maxY);
+
+    if (clampedX !== contextMenu.x || clampedY !== contextMenu.y || !contextMenu.positioned) {
+      setContextMenu(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          x: clampedX,
+          y: clampedY,
+          positioned: true
+        };
+      });
+    }
+  }, [contextMenu]);
 
   useEffect(() => {
     let timeout;
@@ -161,9 +234,25 @@ function InstanceServers({ instance, onShowNotification, isScrolled }) {
 
   const handleContextMenu = (e, server, index) => {
     e.preventDefault();
+    e.stopPropagation();
+
     setContextMenu({
-      x: e.pageX,
-      y: e.pageY,
+      x: e.clientX + 2,
+      y: e.clientY + 2,
+      positioned: false,
+      server,
+      index
+    });
+  };
+
+  const handleContextMenuButton = (e, server, index) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setContextMenu({
+      x: rect.right - 8,
+      y: rect.bottom + 6,
+      positioned: false,
       server,
       index
     });
@@ -223,17 +312,21 @@ function InstanceServers({ instance, onShowNotification, isScrolled }) {
       });
       loadServers();
       const labels = ['Prompt', 'Enabled', 'Disabled'];
-      onShowNotification(`Resource Packs: ${labels[nextMode]}`, 'success');
+      if (onShowNotification) {
+        onShowNotification(`Resource Packs: ${labels[nextMode]}`, 'success');
+      }
     } catch (error) {
-      onShowNotification(`Failed: ${error}`, 'error');
+      if (onShowNotification) {
+        onShowNotification(`Failed to update resource pack setting: ${error}`, 'error');
+      }
     }
     setContextMenu(null);
   };
 
-  const handlePing = async (index, ip) => {
+  const handlePing = async (index, ip, showLoading = true) => {
     setPingData(prev => ({
       ...prev,
-      [index]: { ...prev[index], loading: true, error: null }
+      [index]: { ...prev[index], loading: showLoading, error: null }
     }));
 
     try {
@@ -251,133 +344,191 @@ function InstanceServers({ instance, onShowNotification, isScrolled }) {
     }
   };
 
+  const handleCopyAddress = async (address) => {
+    try {
+      await navigator.clipboard.writeText(address);
+      if (onShowNotification) onShowNotification('Server address copied', 'success');
+    } catch (error) {
+      if (onShowNotification) onShowNotification(`Failed to copy address: ${error}`, 'error');
+    }
+    setContextMenu(null);
+  };
+
+  const handlePlayServer = async (server) => {
+    const nowIso = new Date().toISOString();
+    const key = getServerLastPlayedKey(server);
+    const updated = { ...lastPlayedMap, [key]: nowIso };
+    setLastPlayedMap(updated);
+    try {
+      localStorage.setItem('server-last-played-map', JSON.stringify(updated));
+    } catch (error) {
+      console.warn('Failed to persist server last played map', error);
+    }
+
+    if (typeof onLaunchInstance === 'function') {
+      await onLaunchInstance(server.ip);
+      if (onShowNotification) {
+        onShowNotification(`Launching and joining ${server.name}`, 'success');
+      }
+    } else if (onShowNotification) {
+      onShowNotification('Launch action is not wired yet in this context', 'error');
+    }
+  };
+
   return (
     <div className="servers-tab">
-      <div className={`tab-header-actions ${isScrolled ? 'scrolled' : ''}`}>
-        <button className="add-server-btn" onClick={() => setShowAddModal(true)}>
-          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none">
-            <line x1="12" y1="5" x2="12" y2="19"></line>
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-          </svg>
-          Add Server
-        </button>
+      <div className={`sub-tabs-row ${isScrolled ? 'scrolled' : ''}`}>
+        <SubTabs
+          tabs={[
+            { id: 'servers', label: 'Servers' },
+            { id: 'find', label: 'Find Servers' }
+          ]}
+          activeTab={activeSubTab}
+          onTabChange={setActiveSubTab}
+        />
+        <div className="sub-tabs-actions">
+          {activeSubTab === 'servers' && (
+            <button className="open-folder-btn" onClick={() => setShowAddModal(true)} title="Add Server">
+              <Plus size={16} />
+              <span>Add Server</span>
+            </button>
+          )}
+        </div>
       </div>
 
-      {servers.length === 0 ? (
-        <div className="empty-state">
-          <h4>No servers added</h4>
-          <p>Servers you add in-game will appear here.</p>
-          <p className="hint">The servers.dat file is stored in the instance folder.</p>
-        </div>
-      ) : (
-        <div className="servers-list">
-          {servers.map((server, index) => {
-            const p = pingData[index];
-            return (
-              <div 
-                key={index} 
-                className="server-item"
-                onContextMenu={(e) => handleContextMenu(e, server, index)}
-              >
-                <div className="server-icon">
-                  {server.icon ? (
-                    <img src={`data:image/png;base64,${server.icon}`} alt="" />
-                  ) : (
-                    <div className="default-icon">🖥️</div>
-                  )}
-                </div>
-                <div className="server-info">
-                  <div className="server-header">
-                    <h4>{server.name || 'Unnamed Server'}</h4>
-                    <span className="server-ip">{server.ip}</span>
+      {activeSubTab === 'servers' ? (
+        loading ? (
+          <TabLoadingState label="Loading servers" rows={4} />
+        ) : servers.length === 0 ? (
+          <div className="empty-state">
+            <h4>No servers added</h4>
+            <p>Servers you add in-game will appear here.</p>
+            <p className="hint">The servers.dat file is stored in the instance folder.</p>
+          </div>
+        ) : (
+          <div className="servers-list">
+            {servers.map((server, index) => {
+              const p = pingData[index];
+              const lastPlayedKey = getServerLastPlayedKey(server);
+              const lastPlayed = formatLastPlayed(lastPlayedMap[lastPlayedKey]);
+              return (
+                <div 
+                  key={index} 
+                  className="server-item"
+                  onContextMenu={(e) => handleContextMenu(e, server, index)}
+                >
+                  <div className="server-left-grid">
+                    <div className="server-icon">
+                      {server.icon ? (
+                        <img src={`data:image/png;base64,${server.icon}`} alt="" />
+                      ) : (
+                        <div className="default-icon">🖥️</div>
+                      )}
+                    </div>
+                    <div className="server-info">
+                      <div className="server-header">
+                        <h4>{server.name || 'Unnamed Server'}</h4>
+                        {p?.data && (
+                          <span className="server-online-pill">
+                            <Signal size={12} />
+                            {p.data.online_players.toLocaleString()} online
+                          </span>
+                        )}
+                      </div>
+                      <div className="server-last-played">Last played: {lastPlayed}</div>
+                    </div>
                   </div>
-                  {p?.data && (
-                    <div className="ping-motd" title={stripMinecraftCodes(p.data.motd)}>
-                      {parseMinecraftColors(p.data.motd)}
-                    </div>
-                  )}
-                </div>
-                <div className="server-ping">
-                  {p?.loading ? (
-                    <div className="ping-status loading">
-                      <div className="ping-spinner"></div>
-                      <span className="ping-players">Pinging...</span>
-                    </div>
-                  ) : p?.data ? (
-                    <div className="ping-container">
-                      <div className="ping-status success">
-                        <div className="ping-row">
-                          <span className={`ping-ms ${p.data.latency_ms < 100 ? 'good' : p.data.latency_ms < 200 ? 'medium' : 'bad'}`}>
-                            {p.data.latency_ms}ms
-                          </span>
-                          <span className="ping-players">
-                            {p.data.online_players.toLocaleString()}/{p.data.max_players.toLocaleString()}
-                          </span>
+
+                  <div className="server-middle-grid">
+                    <div className="server-motd-box" title={stripMinecraftCodes(p?.data?.motd || '')}>
+                      {p?.loading ? (
+                        <div className="motd-loading" aria-label="Loading MOTD">
+                          <div className="motd-loading-line line-1" />
+                          <div className="motd-loading-line line-2" />
                         </div>
-                        <span className="ping-version" title={p.data.version_name}>
-                          {p.data.version_name.includes('MC') ? '' : 'MC '}{p.data.version_name}
-                        </span>
-                      </div>
-                      <button 
-                        className="ping-refresh-button" 
-                        onClick={() => handlePing(index, server.ip)}
-                        title="Re-ping server"
-                      >
-                        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2.5" fill="none">
-                          <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
-                        </svg>
-                      </button>
+                      ) : p?.data ? (
+                        <div className="ping-motd">
+                          {parseMinecraftColors(p.data.motd)}
+                        </div>
+                      ) : p?.error ? (
+                        <div className="ping-status error">
+                          <span className="ping-error" title={p.error}>{p.error.includes('timeout') ? 'Offline / Timeout' : 'Could not load MOTD'}</span>
+                        </div>
+                      ) : (
+                        <div className="motd-loading" aria-label="Loading MOTD">
+                          <div className="motd-loading-line line-1" />
+                          <div className="motd-loading-line line-2" />
+                        </div>
+                      )}
+
                     </div>
-                  ) : p?.error ? (
-                    <div className="ping-container">
-                      <div className="ping-status error">
-                        <span className="ping-error" title={p.error}>{p.error.includes('timeout') ? 'Offline / Timeout' : 'Error'}</span>
-                        <span className="ping-version" title={p.error}>{p.error.length > 20 ? p.error.substring(0, 20) + '...' : p.error}</span>
-                      </div>
-                      <button 
-                        className="ping-refresh-button" 
-                        onClick={() => handlePing(index, server.ip)}
-                        title="Retry ping"
-                      >
-                        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2.5" fill="none">
-                          <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
-                        </svg>
-                      </button>
-                    </div>
-                  ) : (
-                    <button 
-                      className="ping-button" 
-                      onClick={() => handlePing(index, server.ip)}
+                  </div>
+
+                  <div className="server-right-grid">
+                    <button
+                      className="server-play-btn"
+                      onClick={() => handlePlayServer(server)}
+                      title="Play"
                     >
-                      Ping Server
+                      <Play size={14} fill="currentColor" />
+                      <span>Play</span>
                     </button>
-                  )}
+                    <button
+                      className="server-menu-btn"
+                      onClick={(e) => handleContextMenuButton(e, server, index)}
+                      title="Server actions"
+                    >
+                      <Ellipsis size={16} />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+        )
+      ) : (
+        <div className="empty-state">
+          <h4>Find Servers coming soon</h4>
+          <p>We currently do not support a server list to pick from.</p>
+          <p>We are open for suggestions and wouldn&apos;t mind adding users&apos; servers here.</p>
         </div>
       )}
 
-      {contextMenu && (
+      {contextMenu && createPortal(
         <div 
+          ref={contextMenuRef}
           className="context-menu" 
-          style={{ top: contextMenu.y, left: contextMenu.x }}
+          style={{ top: contextMenu.y, left: contextMenu.x, position: 'fixed', visibility: contextMenu.positioned ? 'visible' : 'hidden' }}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="context-menu-header">{contextMenu.server.name}</div>
           <div className="context-menu-divider" />
-          <button className="context-menu-item" onClick={() => openEditModal(contextMenu.server, contextMenu.index)}>
-            Edit Server
+          <button className="context-menu-item with-icon" onClick={() => handlePing(contextMenu.index, contextMenu.server.ip)}>
+            <RefreshCw size={14} />
+            <span>Refresh</span>
           </button>
-          <button className="context-menu-item" onClick={() => toggleResourcePacks(contextMenu.index, contextMenu.server.accept_textures || 0)}>
-            Resource Packs: {['Prompt', 'Enabled', 'Disabled'][contextMenu.server.accept_textures || 0]}
+          <button className="context-menu-item with-icon" onClick={() => handleCopyAddress(contextMenu.server.ip)}>
+            <Copy size={14} />
+            <span>Copy address</span>
+          </button>
+          <button className="context-menu-item with-icon" onClick={() => openEditModal(contextMenu.server, contextMenu.index)}>
+            <Pencil size={14} />
+            <span>Edit</span>
+          </button>
+          <button
+            className="context-menu-item with-icon"
+            onClick={() => toggleResourcePacks(contextMenu.index, contextMenu.server.accept_textures || 0)}
+          >
+            <SlidersHorizontal size={14} />
+            <span>Resource Packs: {['Prompt', 'Enabled', 'Disabled'][contextMenu.server.accept_textures || 0]}</span>
           </button>
           <div className="context-menu-divider" />
-          <button className="context-menu-item danger" onClick={() => openDeleteModal(contextMenu.server, contextMenu.index)}>
-            Delete Server
+          <button className="context-menu-item with-icon danger" onClick={() => openDeleteModal(contextMenu.server, contextMenu.index)}>
+            <Trash2 size={14} />
+            <span>Remove</span>
           </button>
-        </div>
+        </div>,
+        document.body
       )}
 
       <ConfirmModal

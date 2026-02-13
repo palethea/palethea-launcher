@@ -1437,6 +1437,33 @@
     transform: translateY(-1px);
 }
 
+.reinstall-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(var(--accent-rgb), 0.12);
+    border: 1px solid rgba(var(--accent-rgb), 0.28);
+    color: var(--foreground);
+    padding: 10px 20px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.reinstall-btn:hover:not(:disabled) {
+    background: rgba(var(--accent-rgb), 0.2);
+    border-color: rgba(var(--accent-rgb), 0.42);
+    transform: translateY(-1px);
+}
+
+.reinstall-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
 .modpack-switch-btn {
     display: inline-flex;
     align-items: center;

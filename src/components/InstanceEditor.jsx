@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { ArrowLeft, Play, Box, Cpu, FolderOpen, Square, X, ExternalLink } from 'lucide-react';
@@ -34,6 +34,10 @@ function InstanceEditor({
   const [confirmModal, setConfirmModal] = useState(null);
   const [launching, setLaunching] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [tabIndicatorStyle, setTabIndicatorStyle] = useState({ left: 0, width: 0, visible: false });
+  const tabsContainerRef = useRef(null);
+  const tabButtonRefs = useRef({});
+  const indicatorRafRef = useRef(null);
 
   // Check if we are in popout mode
   const isPopout = new URLSearchParams(window.location.search).get('popout') === 'editor';
@@ -88,6 +92,73 @@ function InstanceEditor({
     setScrolled(false);
   }, [activeTab]);
 
+  const updateMainTabIndicator = useCallback(() => {
+    const container = tabsContainerRef.current;
+    const activeButton = tabButtonRefs.current[activeTab];
+    const indicatorHorizontalPadding = 6;
+
+    if (!container || !activeButton) {
+      setTabIndicatorStyle((prev) => ({ ...prev, visible: false }));
+      return false;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const activeLabel = activeButton.querySelector('.tab-btn-label');
+    const targetRect = activeLabel
+      ? activeLabel.getBoundingClientRect()
+      : activeButton.getBoundingClientRect();
+
+    if (!targetRect.width || !containerRect.width) {
+      setTabIndicatorStyle((prev) => ({ ...prev, visible: false }));
+      return false;
+    }
+
+    setTabIndicatorStyle({
+      left: targetRect.left - containerRect.left - indicatorHorizontalPadding,
+      width: targetRect.width + indicatorHorizontalPadding * 2,
+      visible: true
+    });
+    return true;
+  }, [activeTab]);
+
+  const scheduleMainTabIndicatorUpdate = useCallback((maxRetries = 10) => {
+    if (indicatorRafRef.current) {
+      cancelAnimationFrame(indicatorRafRef.current);
+      indicatorRafRef.current = null;
+    }
+
+    const tick = (remainingRetries) => {
+      const resolved = updateMainTabIndicator();
+      if (resolved || remainingRetries <= 0) {
+        indicatorRafRef.current = null;
+        return;
+      }
+      indicatorRafRef.current = requestAnimationFrame(() => tick(remainingRetries - 1));
+    };
+
+    indicatorRafRef.current = requestAnimationFrame(() => tick(maxRetries));
+  }, [updateMainTabIndicator]);
+
+  useLayoutEffect(() => {
+    updateMainTabIndicator();
+    scheduleMainTabIndicatorUpdate(12);
+
+    window.addEventListener('resize', updateMainTabIndicator);
+    if (document?.fonts?.ready) {
+      document.fonts.ready.then(() => {
+        scheduleMainTabIndicatorUpdate(6);
+      }).catch(() => {});
+    }
+
+    return () => {
+      window.removeEventListener('resize', updateMainTabIndicator);
+      if (indicatorRafRef.current) {
+        cancelAnimationFrame(indicatorRafRef.current);
+        indicatorRafRef.current = null;
+      }
+    };
+  }, [updateMainTabIndicator, scheduleMainTabIndicatorUpdate]);
+
   const handleScroll = (e) => {
     setScrolled(e.target.scrollTop > 10);
   };
@@ -116,7 +187,7 @@ function InstanceEditor({
     setConfirmModal(config);
   };
 
-  const handleLaunch = async () => {
+  const handleLaunch = async (serverAddress = null) => {
     if (isRunning) {
       if (onStop) await onStop(instanceId);
       return;
@@ -126,7 +197,7 @@ function InstanceEditor({
       setLaunching(true);
       setConsoleClearKey(prev => prev + 1); // Trigger console clear
       setActiveTab('console');
-      await onLaunch(instance.id);
+      await onLaunch(instance.id, { serverAddress });
       setLaunching(false);
     }
   };
@@ -203,7 +274,7 @@ function InstanceEditor({
           onUpdateDownloadStatus={onUpdateDownloadStatus}
         />;
       case 'servers':
-        return <InstanceServers instance={instance} onShowNotification={onShowNotification} isScrolled={scrolled} />;
+        return <InstanceServers instance={instance} onShowNotification={onShowNotification} isScrolled={scrolled} onLaunchInstance={handleLaunch} />;
       case 'screenshots':
         return <InstanceScreenshots instance={instance} onShowNotification={onShowNotification} isScrolled={scrolled} />;
       default:
@@ -283,20 +354,38 @@ function InstanceEditor({
         </div>
       </div>
 
-      <div className="editor-tabs">
+      <div className="editor-tabs" ref={tabsContainerRef}>
         {tabs.map((tab) => (
           <button
             key={tab.id}
+            ref={(el) => {
+              if (el) {
+                tabButtonRefs.current[tab.id] = el;
+                if (tab.id === activeTab) {
+                  scheduleMainTabIndicatorUpdate(8);
+                }
+              }
+            }}
             className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
             onClick={() => setActiveTab(tab.id)}
           >
-            {tab.label}
+            <span className="tab-btn-label">{tab.label}</span>
           </button>
         ))}
+        <div
+          className="main-tab-indicator"
+          style={{
+            transform: `translateX(${tabIndicatorStyle.left}px)`,
+            width: `${tabIndicatorStyle.width}px`,
+            opacity: tabIndicatorStyle.visible ? 1 : 0
+          }}
+        />
       </div>
 
-      <div className="editor-content" onScroll={handleScroll}>
-        {renderTabContent()}
+      <div className={`editor-content ${activeTab === 'console' ? 'console-active' : ''}`} onScroll={handleScroll}>
+        <div key={activeTab} className={`editor-tab-panel ${activeTab === 'console' ? 'console-panel' : ''}`}>
+          {renderTabContent()}
+        </div>
       </div>
 
       {confirmModal && (

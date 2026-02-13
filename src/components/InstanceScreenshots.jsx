@@ -1,6 +1,9 @@
-import { useState, useEffect, useCallback, memo } from 'react';
+import { useState, useEffect, useCallback, useLayoutEffect, useRef, useMemo, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import ConfirmModal from './ConfirmModal';
+import TabLoadingState from './TabLoadingState';
+import SubTabs from './SubTabs';
 import './ScreenshotContextMenu.css';
 
 function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
@@ -12,6 +15,16 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
   const [screenshotContextMenu, setScreenshotContextMenu] = useState(null);
   const [renameModal, setRenameModal] = useState({ show: false, screenshot: null, newName: '' });
   const [toast, setToast] = useState(null);
+  const [activeSubTab, setActiveSubTab] = useState('gallery');
+  const screenshotContextMenuRef = useRef(null);
+
+  const sortedScreenshots = useMemo(() => {
+    return [...screenshots].sort((left, right) => {
+      const leftTime = left?.date ? new Date(left.date).getTime() : 0;
+      const rightTime = right?.date ? new Date(right.date).getTime() : 0;
+      return rightTime - leftTime;
+    });
+  }, [screenshots]);
 
   const loadScreenshots = useCallback(async () => {
     try {
@@ -32,6 +45,29 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
   }, [instance.id, loadScreenshots]);
+
+  useLayoutEffect(() => {
+    if (!screenshotContextMenu || !screenshotContextMenuRef.current) return;
+
+    const rect = screenshotContextMenuRef.current.getBoundingClientRect();
+    const margin = 8;
+    const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
+    const clampedX = Math.min(Math.max(screenshotContextMenu.x, margin), maxX);
+    const clampedY = Math.min(Math.max(screenshotContextMenu.y, margin), maxY);
+
+    if (clampedX !== screenshotContextMenu.x || clampedY !== screenshotContextMenu.y || !screenshotContextMenu.positioned) {
+      setScreenshotContextMenu(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          x: clampedX,
+          y: clampedY,
+          positioned: true
+        };
+      });
+    }
+  }, [screenshotContextMenu]);
 
   const showToast = (message) => {
     setToast(message);
@@ -127,9 +163,11 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
   const handleScreenshotContextMenu = (e, ss) => {
     e.preventDefault();
     e.stopPropagation();
+
     setScreenshotContextMenu({
-      x: e.clientX,
-      y: e.clientY,
+      x: e.clientX + 2,
+      y: e.clientY + 2,
+      positioned: false,
       screenshot: ss
     });
   };
@@ -180,23 +218,81 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
   if (loading) {
     return (
       <div className="screenshots-tab">
-        <p>Loading screenshots...</p>
+        <div className={`sub-tabs-row ${isScrolled ? 'scrolled' : ''}`}>
+          <SubTabs
+            tabs={[
+              { id: 'gallery', label: 'Gallery' },
+              { id: 'timeline', label: 'Timeline' }
+            ]}
+            activeTab={activeSubTab}
+            onTabChange={setActiveSubTab}
+          />
+          <div className="sub-tabs-actions">
+            <button className="open-folder-btn" disabled title="Open Screenshots Folder">
+              📁 Folder
+            </button>
+          </div>
+        </div>
+        <TabLoadingState label="Loading screenshots" rows={4} />
       </div>
     );
   }
 
   return (
     <div className="screenshots-tab">
-      <div className={`console-actions ${isScrolled ? 'scrolled' : ''}`}>
-        <button className="open-btn" onClick={handleOpenFolder}>
-          Open Screenshots Folder
-        </button>
+      <div className={`sub-tabs-row ${isScrolled ? 'scrolled' : ''}`}>
+        <SubTabs
+          tabs={[
+            { id: 'gallery', label: `Gallery (${screenshots.length})` },
+            { id: 'timeline', label: 'Timeline' }
+          ]}
+          activeTab={activeSubTab}
+          onTabChange={setActiveSubTab}
+        />
+        <div className="sub-tabs-actions">
+          <button className="open-folder-btn" onClick={handleOpenFolder} title="Open Screenshots Folder">
+            📁 Folder
+          </button>
+        </div>
       </div>
 
       {screenshots.length === 0 ? (
         <div className="empty-state">
           <h4>No screenshots yet</h4>
           <p>Press F2 in-game to take screenshots.</p>
+        </div>
+      ) : activeSubTab === 'timeline' ? (
+        <div className="screenshots-timeline">
+          {sortedScreenshots.map((ss) => (
+            <div
+              key={ss.filename}
+              className="screenshot-timeline-row"
+              onContextMenu={(e) => handleScreenshotContextMenu(e, ss)}
+            >
+              <button
+                type="button"
+                className="screenshot-timeline-thumb-btn"
+                onClick={() => setSelectedImage(ss)}
+              >
+                <img src={convertFileSrc(ss.path)} alt={ss.filename} className="screenshot-timeline-thumb" />
+              </button>
+              <div className="screenshot-timeline-meta">
+                <span className="screenshot-filename" title={ss.filename}>{ss.filename}</span>
+                <span className="screenshot-date">{formatDate(ss.date)}</span>
+              </div>
+              <div className="screenshot-timeline-actions">
+                <button className="open-btn" onClick={() => setSelectedImage(ss)} title="Open preview">Open</button>
+                <button
+                  className="timeline-copy-btn"
+                  title={copiedId === ss.filename ? 'Copied!' : 'Copy to clipboard'}
+                  onClick={() => handleCopy(ss)}
+                >
+                  {copiedId === ss.filename ? 'Copied' : 'Copy'}
+                </button>
+                <button className="delete-btn" onClick={() => handleDelete(ss)}>Delete</button>
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="screenshots-grid">
@@ -291,12 +387,15 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
         onCancel={() => setDeleteConfirm({ show: false, screenshot: null })}
       />
 
-      {screenshotContextMenu && (
+      {screenshotContextMenu && createPortal(
         <div
+          ref={screenshotContextMenuRef}
           className="screenshot-context-menu"
           style={{
-            left: Math.min(screenshotContextMenu.x, window.innerWidth - 170),
-            top: Math.min(screenshotContextMenu.y, window.innerHeight - 240)
+            position: 'fixed',
+            left: screenshotContextMenu.x,
+            top: screenshotContextMenu.y,
+            visibility: screenshotContextMenu.positioned ? 'visible' : 'hidden'
           }}
           onClick={e => e.stopPropagation()}
         >
@@ -332,7 +431,8 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2-2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
             Delete
           </button>
-        </div>
+        </div>,
+        document.body
       )}
 
       {renameModal.show && (

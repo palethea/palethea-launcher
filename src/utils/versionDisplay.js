@@ -20,15 +20,32 @@ function stripArchiveExtension(value) {
 }
 
 function extractTrailingVersion(value) {
-  const match = value.match(/(\d+(?:\.\d+){1,4}(?:[-+._][0-9a-z]+)*)$/i);
+  const match = value.match(/(\d+(?:\.\d+){1,4}(?:[a-z]\d*)?(?:[-+._][0-9a-z]+)*)$/i);
   return match ? match[1] : null;
+}
+
+function extractVersionFromFilename(filename) {
+  const base = stripArchiveExtension(normalizeVersionText(filename) || '').trim();
+  if (!base) return null;
+
+  const trailingVersion = extractTrailingVersion(base);
+  if (trailingVersion) return trailingVersion;
+
+  const bracketedVersion = base.match(/\[(\d+(?:\.\d+){1,4}(?:[a-z]\d*)?(?:[-+._][0-9a-z]+)*)\]/i);
+  if (bracketedVersion?.[1]) return bracketedVersion[1];
+
+  return null;
 }
 
 export function formatInstalledVersionLabel(version, provider, filename) {
   const raw = normalizeVersionText(version);
-  if (!raw) return null;
-
   const providerKey = String(provider || '').toLowerCase();
+  const filenameVersion = extractVersionFromFilename(filename);
+
+  if (!raw) {
+    return filenameVersion;
+  }
+
   if (providerKey !== 'curseforge') {
     return raw;
   }
@@ -41,13 +58,18 @@ export function formatInstalledVersionLabel(version, provider, filename) {
     return trailingVersion;
   }
 
+  const embeddedVersions = base.match(MC_VERSION_RE);
+  if (embeddedVersions?.length) {
+    return embeddedVersions[embeddedVersions.length - 1];
+  }
+
   const filenameBase = stripArchiveExtension(normalizeVersionText(filename) || '').trim().toLowerCase();
   if (filenameBase && filenameBase === base.toLowerCase()) {
-    return null;
+    return filenameVersion;
   }
 
   if (base.length > 32) {
-    return null;
+    return filenameVersion;
   }
 
   return base;
@@ -56,7 +78,7 @@ export function formatInstalledVersionLabel(version, provider, filename) {
 export function withVersionPrefix(label) {
   const text = normalizeVersionText(label);
   if (!text) return null;
-  return text.toLowerCase().startsWith('v') ? text : `v${text}`;
+  return text;
 }
 
 export function stripMinecraftVersionFromTitle(title, gameVersion) {

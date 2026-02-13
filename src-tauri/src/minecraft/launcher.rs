@@ -355,7 +355,14 @@ fn detect_mods_min_java_major(instance: &Instance) -> Option<u32> {
             let Ok(mut zipped) = archive.by_index(i) else {
                 continue;
             };
-            if !zipped.name().ends_with(".class") {
+            let class_path = zipped.name().to_ascii_lowercase();
+            if !class_path.ends_with(".class") {
+                continue;
+            }
+            // Ignore multi-release classes (META-INF/versions/*). These are optional
+            // JVM-specific overrides and can falsely bump required Java (e.g. to 25)
+            // even when the base mod/runtime remains compatible with Java 21.
+            if class_path.starts_with("meta-inf/versions/") {
                 continue;
             }
 
@@ -395,15 +402,14 @@ fn select_java_for_launch(instance: &Instance, version_details: &VersionDetails)
         match required_major {
             Some(current_required) if mods_required_major > current_required => {
                 log::warn!(
-                    "Detected installed mods requiring Java {}, raising launch requirement above version requirement Java {}",
+                    "Detected installed mods with class version suggesting Java {}, but keeping version requirement Java {} from metadata",
                     mods_required_major,
                     current_required
                 );
-                required_major = Some(mods_required_major);
             }
             None => {
                 log::warn!(
-                    "Detected installed mods requiring Java {}, applying that as launch requirement",
+                    "No Minecraft Java metadata available; detected installed mods requiring Java {}, applying that as launch requirement",
                     mods_required_major
                 );
                 required_major = Some(mods_required_major);
@@ -618,6 +624,7 @@ pub fn build_game_args(
     username: &str,
     access_token: &str,
     uuid: &str,
+    join_server_address: Option<&str>,
 ) -> Vec<String> {
     let game_dir = instance.get_game_directory();
     let assets_dir = get_assets_dir();
@@ -654,6 +661,7 @@ pub fn build_game_args(
             args.push(resolution_height);
         }
         
+        append_direct_connect_args(&mut args, join_server_address);
         return args;
     }
     
@@ -692,7 +700,73 @@ pub fn build_game_args(
     }
     
     // Deduplicate game arguments
-    deduplicate_game_args(args)
+    let mut deduped = deduplicate_game_args(args);
+    append_direct_connect_args(&mut deduped, join_server_address);
+    deduped
+}
+
+fn parse_server_address(address: &str) -> Option<(String, Option<u16>)> {
+    let trimmed = address.trim();
+    if trimmed.is_empty() {
+      return None;
+    }
+
+    if let Some((host, port_str)) = trimmed.rsplit_once(':') {
+        if !host.is_empty() {
+            if let Ok(port) = port_str.parse::<u16>() {
+                return Some((host.to_string(), Some(port)));
+            }
+        }
+    }
+
+    Some((trimmed.to_string(), None))
+}
+
+fn append_direct_connect_args(args: &mut Vec<String>, join_server_address: Option<&str>) {
+    let Some(address) = join_server_address else {
+        return;
+    };
+
+    let Some((host, port)) = parse_server_address(address) else {
+        return;
+    };
+
+    // Remove pre-existing direct-connect flags so our selected server always wins.
+    // Some manifests or loader layers may already contain one of these fields.
+    let mut cleaned_args = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for arg in args.iter() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        if arg == "--server" || arg == "--port" || arg == "--quickPlayMultiplayer" {
+            skip_next = true;
+            continue;
+        }
+
+        cleaned_args.push(arg.clone());
+    }
+    *args = cleaned_args;
+
+    let quick_play_target = match port {
+        Some(server_port) => format!("{}:{}", host, server_port),
+        None => host.clone(),
+    };
+
+    // Newer clients use quick play; legacy clients use --server/--port.
+    // Passing both keeps compatibility across versions/loaders.
+    args.push("--quickPlayMultiplayer".to_string());
+    args.push(quick_play_target);
+
+    args.push("--server".to_string());
+    args.push(host);
+
+    if let Some(server_port) = port {
+        args.push("--port".to_string());
+        args.push(server_port.to_string());
+    }
 }
 
 /// Process argument string with variable replacements
@@ -981,6 +1055,7 @@ pub async fn launch_game(
     uuid: &str,
     app_handle: &tauri::AppHandle,
     launch_instance_id: Option<&str>,
+    join_server_address: Option<&str>,
 ) -> Result<std::process::Child, String> {
     // Determine the actual version details to use (may be overridden by mod loader)
     let mut actual_version_details = version_details.clone();
@@ -1259,7 +1334,14 @@ pub async fn launch_game(
         jvm_args.push("-Duser.language=en".to_string());
     }
 
-    let game_args = build_game_args(&actual_version_details, instance, username, access_token, uuid);
+    let game_args = build_game_args(
+        &actual_version_details,
+        instance,
+        username,
+        access_token,
+        uuid,
+        join_server_address,
+    );
     
     // Create game directory if it doesn't exist
     let game_dir = instance.get_game_directory();

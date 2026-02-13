@@ -857,19 +857,13 @@ function CreateInstance({
                       <span className="stat-value">{decodedShareData.shaders.length}</span>
                       <span className="stat-label">Shaders</span>
                     </div>
-                    {decodedShareData.datapacks && decodedShareData.datapacks.length > 0 && (
-                      <div className="preview-stat">
-                        <span className="stat-value">{decodedShareData.datapacks.length}</span>
-                        <span className="stat-label">Data</span>
-                      </div>
-                    )}
                   </div>
                 </div>
               )}
             </div>
 
             <div className="share-code-info">
-              Note: Shares only include files from Modrinth. Manually added files won't be synced.
+              Note: Shares include supported Modrinth and CurseForge files. Manual files are not synced, and datapacks are skipped during new instance creation (they belong to worlds).
             </div>
           </div>
         )}

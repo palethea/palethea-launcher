@@ -18,10 +18,10 @@ const CURSEFORGE_API_BASE: &str = "https://api.curseforge.com/v1";
 const CURSEFORGE_MINECRAFT_GAME_ID: u32 = 432;
 const CURSEFORGE_MOD_CLASS_ID: u32 = 6;
 const CURSEFORGE_RESOURCEPACK_CLASS_ID: u32 = 12;
+const CURSEFORGE_WORLD_CLASS_ID: u32 = 17;
 const CURSEFORGE_MODPACK_CLASS_ID: u32 = 4471;
 const CURSEFORGE_SHADER_CLASS_ID: u32 = 6552;
 const CURSEFORGE_DATAPACK_CLASS_ID: u32 = 6945;
-const CURSEFORGE_CUSTOMIZATION_CLASS_ID: u32 = 4546;
 const CURSEFORGE_SORT_FIELD_TOTAL_DOWNLOADS: u32 = 6;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -500,6 +500,7 @@ fn extract_video_gallery_from_description(description_html: &str) -> Vec<CurseFo
 fn normalize_project_type(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "mod" | "mods" | "mc-mods" => "mod".to_string(),
+        "world" | "worlds" => "world".to_string(),
         "modpack" | "modpacks" => "modpack".to_string(),
         "resourcepack" | "resourcepacks" | "resource-pack" | "resource-packs" | "texture-pack" | "texture-packs" => "resourcepack".to_string(),
         "shader" | "shaders" => "shader".to_string(),
@@ -512,6 +513,7 @@ fn project_type_from_class_id(class_id: u64) -> String {
     match class_id as u32 {
         CURSEFORGE_MODPACK_CLASS_ID => "modpack".to_string(),
         CURSEFORGE_RESOURCEPACK_CLASS_ID => "resourcepack".to_string(),
+        CURSEFORGE_WORLD_CLASS_ID => "world".to_string(),
         CURSEFORGE_SHADER_CLASS_ID => "shader".to_string(),
         CURSEFORGE_DATAPACK_CLASS_ID => "datapack".to_string(),
         CURSEFORGE_MOD_CLASS_ID => "mod".to_string(),
@@ -521,18 +523,11 @@ fn project_type_from_class_id(class_id: u64) -> String {
 
 fn class_id_candidates_for_project_type(project_type: &str) -> Vec<u32> {
     match normalize_project_type(project_type).as_str() {
+        "world" => vec![CURSEFORGE_WORLD_CLASS_ID],
         "modpack" => vec![CURSEFORGE_MODPACK_CLASS_ID],
         "resourcepack" => vec![CURSEFORGE_RESOURCEPACK_CLASS_ID],
-        "shader" => vec![
-            CURSEFORGE_SHADER_CLASS_ID,
-            CURSEFORGE_CUSTOMIZATION_CLASS_ID,
-            CURSEFORGE_MOD_CLASS_ID,
-        ],
-        "datapack" => vec![
-            CURSEFORGE_DATAPACK_CLASS_ID,
-            CURSEFORGE_CUSTOMIZATION_CLASS_ID,
-            CURSEFORGE_MOD_CLASS_ID,
-        ],
+        "shader" => vec![CURSEFORGE_SHADER_CLASS_ID],
+        "datapack" => vec![CURSEFORGE_DATAPACK_CLASS_ID],
         _ => vec![CURSEFORGE_MOD_CLASS_ID],
     }
 }

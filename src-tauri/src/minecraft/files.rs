@@ -69,6 +69,7 @@ pub struct ResourcePack {
     pub name: Option<String>,
     pub author: Option<String>,
     pub version: Option<String>,
+    pub enabled: bool,
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
@@ -93,6 +94,7 @@ pub struct ShaderPack {
     pub name: Option<String>,
     pub author: Option<String>,
     pub version: Option<String>,
+    pub enabled: bool,
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
@@ -463,7 +465,10 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                 continue;
             }
             
-            if filename.ends_with(".zip") || path.is_dir() {
+            let enabled = !filename.ends_with(".disabled");
+            let base_filename = filename.trim_end_matches(".disabled").to_string();
+
+            if base_filename.ends_with(".zip") || path.is_dir() {
                 let metadata = fs::metadata(&path).ok();
                 let size = metadata.map(|m| m.len()).unwrap_or(0);
 
@@ -473,11 +478,11 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                 let mut icon_url = None;
                 let mut author: Option<String> = None;
                 let mut version = None;
-                let mut name = Some(filename.trim_end_matches(".zip").to_string());
+                let mut name = Some(base_filename.trim_end_matches(".zip").to_string());
                 let mut provider = "Manual".to_string();
                 let mut categories: Option<Vec<String>> = None;
                 
-                if let Some(m) = read_meta_for_entry(&dir, &filename) {
+                if let Some(m) = read_meta_for_entry(&dir, &base_filename) {
                     project_id = Some(m.project_id.clone());
                     version_id = m.version_id;
                     if let Some(n) = m.name { name = Some(n); }
@@ -493,6 +498,7 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
                     name,
                     author,
                     version,
+                    enabled,
                     project_id,
                     version_id,
                     icon_url,
@@ -505,6 +511,25 @@ pub fn list_resourcepacks(instance: &Instance) -> Vec<ResourcePack> {
     }
     
     packs
+}
+
+pub fn toggle_resourcepack(instance: &Instance, filename: &str) -> Result<bool, String> {
+    let dir = get_resourcepacks_dir(instance);
+    let current_path = dir.join(filename);
+
+    if !current_path.exists() {
+        return Err("Resource pack not found".to_string());
+    }
+
+    let new_path = if filename.ends_with(".disabled") {
+        dir.join(filename.trim_end_matches(".disabled"))
+    } else {
+        dir.join(format!("{}.disabled", filename))
+    };
+
+    fs::rename(&current_path, &new_path).map_err(|e| e.to_string())?;
+
+    Ok(!filename.ends_with(".disabled"))
 }
 
 /// Delete a resource pack
@@ -547,7 +572,10 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                 continue;
             }
             
-            if filename.ends_with(".zip") || path.is_dir() {
+            let enabled = !filename.ends_with(".disabled");
+            let base_filename = filename.trim_end_matches(".disabled").to_string();
+
+            if base_filename.ends_with(".zip") || path.is_dir() {
                 let metadata = fs::metadata(&path).ok();
                 let size = metadata.map(|m| m.len()).unwrap_or(0);
 
@@ -557,11 +585,11 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                 let mut icon_url = None;
                 let mut author: Option<String> = None;
                 let mut version = None;
-                let mut name = Some(filename.trim_end_matches(".zip").to_string());
+                let mut name = Some(base_filename.trim_end_matches(".zip").to_string());
                 let mut provider = "Manual".to_string();
                 let mut categories: Option<Vec<String>> = None;
                 
-                if let Some(m) = read_meta_for_entry(&dir, &filename) {
+                if let Some(m) = read_meta_for_entry(&dir, &base_filename) {
                     project_id = Some(m.project_id.clone());
                     version_id = m.version_id;
                     if let Some(n) = m.name { name = Some(n); }
@@ -577,6 +605,7 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
                     name,
                     author,
                     version,
+                    enabled,
                     project_id,
                     version_id,
                     icon_url,
@@ -589,6 +618,25 @@ pub fn list_shaderpacks(instance: &Instance) -> Vec<ShaderPack> {
     }
     
     packs
+}
+
+pub fn toggle_shaderpack(instance: &Instance, filename: &str) -> Result<bool, String> {
+    let dir = get_shaderpacks_dir(instance);
+    let current_path = dir.join(filename);
+
+    if !current_path.exists() {
+        return Err("Shader pack not found".to_string());
+    }
+
+    let new_path = if filename.ends_with(".disabled") {
+        dir.join(filename.trim_end_matches(".disabled"))
+    } else {
+        dir.join(format!("{}.disabled", filename))
+    };
+
+    fs::rename(&current_path, &new_path).map_err(|e| e.to_string())?;
+
+    Ok(!filename.ends_with(".disabled"))
 }
 
 /// Delete a shader pack
@@ -757,6 +805,232 @@ pub fn rename_world(instance: &Instance, old_name: &str, new_name: &str) -> Resu
     Ok(())
 }
 
+pub fn import_world(instance: &Instance, source_path: &str) -> Result<String, String> {
+    let saves_dir = get_saves_dir(instance);
+    if !saves_dir.exists() {
+        fs::create_dir_all(&saves_dir).map_err(|e| e.to_string())?;
+    }
+
+    let source = Path::new(source_path);
+    if !source.exists() {
+        return Err("Source path not found".to_string());
+    }
+
+    if source.is_dir() {
+        return import_world_from_directory(source, &saves_dir);
+    }
+
+    if source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("zip"))
+        .unwrap_or(false)
+    {
+        return import_world_from_zip(source, &saves_dir);
+    }
+
+    Err("Unsupported world import source. Please select a world folder or a .zip archive.".to_string())
+}
+
+fn import_world_from_directory(source: &Path, saves_dir: &Path) -> Result<String, String> {
+    let selected_world_dir = if source.join("level.dat").exists() {
+        source.to_path_buf()
+    } else {
+        let mut child_dirs_with_level = Vec::new();
+        if let Ok(entries) = fs::read_dir(source) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() && path.join("level.dat").exists() {
+                    child_dirs_with_level.push(path);
+                }
+            }
+        }
+
+        if child_dirs_with_level.len() == 1 {
+            child_dirs_with_level.remove(0)
+        } else {
+            return Err("Selected folder is not a valid world (missing level.dat).".to_string());
+        }
+    };
+
+    let desired_name = selected_world_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or("Imported World");
+    let destination = unique_destination_dir(saves_dir, desired_name);
+
+    if let Err(error) = copy_dir_recursive(&selected_world_dir, &destination) {
+        let _ = fs::remove_dir_all(&destination);
+        return Err(error);
+    }
+
+    if !destination.join("level.dat").exists() {
+        let _ = fs::remove_dir_all(&destination);
+        return Err("Imported folder does not contain level.dat at the world root.".to_string());
+    }
+
+    Ok(destination
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Imported World")
+        .to_string())
+}
+
+fn import_world_from_zip(source_zip: &Path, saves_dir: &Path) -> Result<String, String> {
+    let zip_file = File::open(source_zip).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| e.to_string())?;
+
+    let mut detected_root: Option<PathBuf> = None;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|e| e.to_string())?;
+        let Some(path) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+            continue;
+        };
+
+        let is_level_dat = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.eq_ignore_ascii_case("level.dat"))
+            .unwrap_or(false);
+        if !is_level_dat {
+            continue;
+        }
+
+        let candidate_root = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(PathBuf::new);
+
+        match &detected_root {
+            None => detected_root = Some(candidate_root),
+            Some(current) => {
+                if candidate_root.components().count() < current.components().count() {
+                    detected_root = Some(candidate_root);
+                }
+            }
+        }
+    }
+
+    let world_root = detected_root.ok_or_else(|| {
+        "Selected .zip does not contain a valid world (missing level.dat).".to_string()
+    })?;
+
+    let desired_name = if world_root.as_os_str().is_empty() {
+        source_zip
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or("Imported World")
+            .to_string()
+    } else {
+        world_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or("Imported World")
+            .to_string()
+    };
+
+    let destination = unique_destination_dir(saves_dir, &desired_name);
+    fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
+
+    let extraction_result: Result<(), String> = (|| {
+        let zip_file = File::open(source_zip).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| e.to_string())?;
+
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+            let Some(path) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+                continue;
+            };
+
+            let relative_path = if world_root.as_os_str().is_empty() {
+                path.clone()
+            } else {
+                match path.strip_prefix(&world_root) {
+                    Ok(stripped) if !stripped.as_os_str().is_empty() => stripped.to_path_buf(),
+                    _ => continue,
+                }
+            };
+
+            let output_path = destination.join(relative_path);
+            if entry.is_dir() {
+                fs::create_dir_all(&output_path).map_err(|e| e.to_string())?;
+                continue;
+            }
+
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+
+            let mut output_file = File::create(&output_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut output_file).map_err(|e| e.to_string())?;
+        }
+
+        Ok(())
+    })();
+
+    if let Err(error) = extraction_result {
+        let _ = fs::remove_dir_all(&destination);
+        return Err(error);
+    }
+
+    if !destination.join("level.dat").exists() {
+        let _ = fs::remove_dir_all(&destination);
+        return Err("Imported .zip did not extract a valid world root with level.dat.".to_string());
+    }
+
+    Ok(destination
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Imported World")
+        .to_string())
+}
+
+fn unique_destination_dir(parent: &Path, desired_name: &str) -> PathBuf {
+    let base_name = if desired_name.trim().is_empty() {
+        "Imported World"
+    } else {
+        desired_name.trim()
+    };
+
+    let mut counter = 0;
+    loop {
+        let candidate_name = if counter == 0 {
+            base_name.to_string()
+        } else {
+            format!("{} ({})", base_name, counter + 1)
+        };
+
+        let candidate = parent.join(&candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+
+        counter += 1;
+    }
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+
+    let entries = fs::read_dir(source).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+
+        if source_path.is_dir() {
+            copy_dir_recursive(&source_path, &destination_path)?;
+        } else {
+            fs::copy(&source_path, &destination_path).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Update world's internal name in level.dat
 pub fn update_world_level_name(world_path: &Path, new_name: &str) -> Result<(), String> {
     let level_dat = world_path.join("level.dat");
@@ -824,7 +1098,10 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
             }
             
             // Allow .zip, .jar (some hybrid datapacks), and directories
-            if filename.ends_with(".zip") || filename.ends_with(".jar") || path.is_dir() {
+            let enabled = !filename.ends_with(".disabled");
+            let base_filename = filename.trim_end_matches(".disabled").to_string();
+
+            if base_filename.ends_with(".zip") || base_filename.ends_with(".jar") || path.is_dir() {
                 let metadata = fs::metadata(&path).ok();
                 let size = metadata.map(|m| m.len()).unwrap_or(0);
 
@@ -834,10 +1111,10 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
                 let mut icon_url = None;
                 let mut author: Option<String> = None;
                 let mut version = None;
-                let mut name = Some(filename.trim_end_matches(".zip").trim_end_matches(".jar").to_string());
+                let mut name = Some(base_filename.trim_end_matches(".zip").trim_end_matches(".jar").to_string());
                 let mut provider = "Manual".to_string();
                 
-                if let Some(m) = read_meta_for_entry(&datapacks_dir, &filename) {
+                if let Some(m) = read_meta_for_entry(&datapacks_dir, &base_filename) {
                     project_id = Some(m.project_id.clone());
                     version_id = m.version_id;
                     if let Some(n) = m.name { name = Some(n); }
@@ -857,13 +1134,32 @@ pub fn list_datapacks(instance: &Instance, world_name: &str) -> Vec<Datapack> {
                     icon_url,
                     size,
                     provider,
-                    enabled: true,
+                    enabled,
                 });
             }
         }
     }
     
     datapacks
+}
+
+pub fn toggle_datapack(instance: &Instance, world_name: &str, filename: &str) -> Result<bool, String> {
+    let dir = get_saves_dir(instance).join(world_name).join("datapacks");
+    let current_path = dir.join(filename);
+
+    if !current_path.exists() {
+        return Err("Datapack not found".to_string());
+    }
+
+    let new_path = if filename.ends_with(".disabled") {
+        dir.join(filename.trim_end_matches(".disabled"))
+    } else {
+        dir.join(format!("{}.disabled", filename))
+    };
+
+    fs::rename(&current_path, &new_path).map_err(|e| e.to_string())?;
+
+    Ok(!filename.ends_with(".disabled"))
 }
 
 /// Delete a datapack from a world

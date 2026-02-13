@@ -915,7 +915,7 @@ function App() {
         if (launchHandler) {
           await launchHandler(instanceId);
         } else {
-          const result = await invoke('launch_instance', { instanceId });
+          const result = await invoke('launch_instance', { instanceId, serverAddress: null });
           showNotification(result, 'success');
           loadRunningInstances();
         }
@@ -965,7 +965,7 @@ function App() {
       unlistenShortcutLaunch.then(fn => fn());
       document.removeEventListener('contextmenu', handleContextMenu);
     };
-  }, [loadInstances, loadRunningInstances, isLoading, showNotification]);
+  }, [loadInstances, loadRunningInstances, showNotification]);
 
   useEffect(() => {
     if (!isLoading && !isCreateTaskRunning) {
@@ -1150,24 +1150,24 @@ function App() {
           version: mcVersion,
           loader,
           loader_version,
-          mods,
-          resourcepacks,
-          shaders,
-          datapacks = []
+          mods = [],
+          resourcepacks = [],
+          shaders = []
         } = shareData;
+
+        const isCurseForgeProjectId = (projectId) => /^\d+$/.test(String(projectId || '').trim());
 
         setTaskStatus(`Preparing instance "${name || originalName}"...`, 5);
 
         // 0. Pre-fetch all project metadata for better speed and UI fidelity
         setTaskStatus('Fetching metadata...');
-        const allProjectIds = [
+        const modrinthProjectIds = [
           ...mods.map((m) => m.project_id || m.projectId),
           ...resourcepacks.map((p) => p.project_id || p.projectId),
-          ...shaders.map((s) => s.project_id || s.projectId),
-          ...datapacks.map((d) => d.project_id || d.projectId)
-        ].filter(Boolean);
+          ...shaders.map((s) => s.project_id || s.projectId)
+        ].filter((projectId) => projectId && !isCurseForgeProjectId(projectId));
 
-        const uniqueIds = [...new Set(allProjectIds)];
+        const uniqueIds = [...new Set(modrinthProjectIds)];
         const projectMap = {};
 
         try {
@@ -1209,59 +1209,110 @@ function App() {
         }
 
         // 4. Download Everything
-        const totalItems = mods.length + resourcepacks.length + shaders.length + datapacks.length;
+        const totalItems = mods.length + resourcepacks.length + shaders.length;
         let completedItems = 0;
 
         // Helper to process items with parallel concurrency
-        const processItems = async (items, type, worldName = null) => {
+        const processItems = async (items, type) => {
           const CONCURRENCY = 10;
           for (let i = 0; i < items.length; i += CONCURRENCY) {
             const chunk = items.slice(i, i + CONCURRENCY);
 
             await Promise.all(chunk.map(async (item) => {
-              const mid = item.project_id || item.projectId;
-              const vid = item.version_id || item.versionId;
+              const mid = String(item.project_id || item.projectId || '').trim();
+              const vid = String(item.version_id || item.versionId || '').trim();
+              if (!mid) {
+                completedItems += 1;
+                return;
+              }
 
               try {
-                let info;
-                if (vid) {
-                  info = await invoke('get_modrinth_version', { versionId: vid });
-                } else {
-                  const versions = await invoke('get_modrinth_versions', {
-                    projectId: mid,
-                    gameVersion: mcVersion,
-                    loader: type === 'mod' ? (loader === 'vanilla' ? null : loader) : null
-                  });
-                  info = versions.length > 0 ? versions[0] : null;
-                }
-
-                if (info) {
-                  let project = projectMap[mid];
-
-                  if (!project) {
-                    try {
-                      project = await invoke('get_modrinth_project', { projectId: mid });
-                    } catch (e) {
-                      console.warn(`Failed to fetch project metadata for ${mid}:`, e);
-                    }
+                if (isCurseForgeProjectId(mid)) {
+                  let project = null;
+                  try {
+                    project = await invoke('get_curseforge_modpack', { projectId: mid });
+                  } catch (e) {
+                    console.warn(`Failed to fetch CurseForge project metadata for ${mid}:`, e);
                   }
 
-                  const file = info.files.find((f) => f.primary) || info.files[0];
+                  const cfVersions = await invoke('get_curseforge_modpack_versions', { projectId: mid });
+                  if (!Array.isArray(cfVersions) || cfVersions.length === 0) {
+                    return;
+                  }
 
-                  await invoke('install_modrinth_file', {
+                  let selectedVersion = vid
+                    ? cfVersions.find((entry) => String(entry.id) === vid)
+                    : null;
+
+                  if (!selectedVersion) {
+                    const sorted = [...cfVersions].sort((a, b) => new Date(b.date_published) - new Date(a.date_published));
+                    selectedVersion = sorted[0];
+                  }
+
+                  if (!selectedVersion) {
+                    return;
+                  }
+
+                  const file = selectedVersion.files?.find((entry) => entry.primary) || selectedVersion.files?.[0];
+                  if (!file) {
+                    return;
+                  }
+
+                  await invoke('install_curseforge_file', {
                     instanceId: newInstance.id,
-                    fileUrl: file.url,
-                    filename: file.filename,
-                    fileType: type,
                     projectId: mid,
-                    versionId: info.id,
+                    fileId: String(selectedVersion.id),
+                    fileType: type,
+                    filename: file.filename || `${mid}-${selectedVersion.id}.${type === 'mod' ? 'jar' : 'zip'}`,
+                    fileUrl: file.url || null,
+                    worldName: null,
+                    iconUrl: project?.icon_url || item.icon_url || item.iconUrl || null,
                     name: project?.title || item.name || null,
                     author: project?.author || item.author || null,
-                    iconUrl: project?.icon_url || item.icon_url || item.iconUrl || null,
-                    versionName: info.name || item.version_name || item.versionName,
-                    worldName,
+                    versionName: selectedVersion.version_number || selectedVersion.name || item.version_name || item.versionName || null,
                     categories: project?.categories || project?.display_categories || item.categories || null
                   });
+                } else {
+                  let info;
+                  if (vid) {
+                    info = await invoke('get_modrinth_version', { versionId: vid });
+                  } else {
+                    const versions = await invoke('get_modrinth_versions', {
+                      projectId: mid,
+                      gameVersion: mcVersion,
+                      loader: type === 'mod' ? (loader === 'vanilla' ? null : loader) : null
+                    });
+                    info = versions.length > 0 ? versions[0] : null;
+                  }
+
+                  if (info) {
+                    let project = projectMap[mid];
+
+                    if (!project) {
+                      try {
+                        project = await invoke('get_modrinth_project', { projectId: mid });
+                      } catch (e) {
+                        console.warn(`Failed to fetch project metadata for ${mid}:`, e);
+                      }
+                    }
+
+                    const file = info.files.find((f) => f.primary) || info.files[0];
+
+                    await invoke('install_modrinth_file', {
+                      instanceId: newInstance.id,
+                      fileUrl: file.url,
+                      filename: file.filename,
+                      fileType: type,
+                      projectId: mid,
+                      versionId: info.id,
+                      name: project?.title || item.name || null,
+                      author: project?.author || item.author || null,
+                      iconUrl: project?.icon_url || item.icon_url || item.iconUrl || null,
+                      versionName: info.name || item.version_name || item.versionName,
+                      worldName: null,
+                      categories: project?.categories || project?.display_categories || item.categories || null
+                    });
+                  }
                 }
               } catch (e) {
                 console.warn(`Failed to install ${type} ${mid}:`, e);
@@ -1277,11 +1328,6 @@ function App() {
         await processItems(mods, 'mod');
         await processItems(resourcepacks, 'resourcepack');
         await processItems(shaders, 'shader');
-
-        if (datapacks.length > 0) {
-          // For datapacks, we create a default world since they must belong to a world
-          await processItems(datapacks, 'datapack', 'Shared World');
-        }
 
         successMessage = `Share code applied! Instance "${name || originalName}" created.`;
       } else if (modLoader === 'modpack') {
@@ -1724,7 +1770,7 @@ function App() {
     }
   }, [handleQueueDownload, handleUpdateDownloadStatus, handleDequeueDownload]);
 
-  const handleLaunchInstance = useCallback(async (instanceId) => {
+  const handleLaunchInstance = useCallback(async (instanceId, launchOptions = {}) => {
     if (runningInstances[instanceId]) {
       showNotification("Instance is already running", "info");
       return;
@@ -1770,7 +1816,11 @@ function App() {
     try {
       const targetInstance = instances.find((inst) => inst.id === instanceId)
         || await invoke('get_instance_details', { instanceId });
-      const shouldCheckForLaunchUpdates = targetInstance?.check_mod_updates_on_launch !== false;
+      const isManagedModpackInstance = Boolean(
+        targetInstance?.modpack_provider || targetInstance?.modpack_project_id
+      );
+      const shouldCheckForLaunchUpdates =
+        targetInstance?.check_mod_updates_on_launch !== false && !isManagedModpackInstance;
 
       if (shouldCheckForLaunchUpdates) {
         setLaunchProgressByInstance((prev) => ({
@@ -1893,7 +1943,14 @@ function App() {
         console.warn('Failed to clear log file:', logError);
       }
 
-      const result = await invoke('launch_instance', { instanceId });
+      const normalizedServerAddress = typeof launchOptions?.serverAddress === 'string' && launchOptions.serverAddress.trim()
+        ? launchOptions.serverAddress.trim()
+        : null;
+
+      const result = await invoke('launch_instance', {
+        instanceId,
+        serverAddress: normalizedServerAddress,
+      });
       showNotification(result, 'success');
       loadRunningInstances(); // Update running instances immediately
 
@@ -2287,7 +2344,7 @@ function App() {
             const code = await invoke('get_instance_share_code', { instanceId: instance.id });
             await navigator.clipboard.writeText(code);
             showNotification(
-              'Share code copied! Note: Only Modrinth-sourced files are included.',
+              'Share code copied! Includes supported Modrinth and CurseForge files; manual files are not included.',
               'success'
             );
           } catch (error) {

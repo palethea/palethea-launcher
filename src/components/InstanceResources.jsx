@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Trash2, RefreshCcw, Plus, Upload, Loader2, ChevronDown, Check, ListFilterPlus, Settings2, X, Wand2 } from 'lucide-react';
+import { Trash2, RefreshCcw, Plus, Upload, Loader2, ChevronDown, Check, ListFilterPlus, Settings2, X, Wand2, Copy, Code } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
 import FilterModal from './FilterModal';
+import InstalledContentRow from './InstalledContentRow';
+import TabLoadingState from './TabLoadingState';
+import SubTabs from './SubTabs';
 import useModrinthSearch from '../hooks/useModrinthSearch';
 import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
 import { maybeShowCurseForgeBlockedDownloadModal } from '../utils/curseforgeInstallError';
@@ -119,6 +122,7 @@ const resolveSelectedCategoryQueryValues = (options, selectedIds) => {
 };
 
 const isCurseForgeProjectId = (value) => /^\d+$/.test(String(value || '').trim());
+const MC_VERSION_TOKEN_RE = /\b\d+\.\d+(?:\.\d+)?\b/g;
 
 const normalizeProviderLabel = (provider, projectId) => {
   const normalized = String(provider || '').toLowerCase();
@@ -133,6 +137,24 @@ const getUpdateRowLatestVersion = (row) => {
     return row?.latest_curseforge_version || null;
   }
   return row?.latest_version || null;
+};
+
+const extractMcVersionToken = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const matches = text.match(MC_VERSION_TOKEN_RE);
+  if (!matches?.length) return null;
+  return matches[matches.length - 1];
+};
+
+const resolveCurseForgeVersionLabelFromEntry = (versionEntry) => {
+  const primaryFilename = versionEntry?.files?.[0]?.filename || null;
+  return formatInstalledVersionLabel(versionEntry?.version_number, 'curseforge', primaryFilename)
+    || formatInstalledVersionLabel(versionEntry?.name, 'curseforge', primaryFilename)
+    || extractMcVersionToken(versionEntry?.version_number)
+    || extractMcVersionToken(versionEntry?.name)
+    || extractMcVersionToken(primaryFilename)
+    || null;
 };
 
 function InstanceResources({
@@ -164,9 +186,18 @@ function InstanceResources({
 
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updatesFound, setUpdatesFound] = useState({}); // { project_id: update_row }
+  const [curseForgeVersionLabels, setCurseForgeVersionLabels] = useState({}); // {"projectId:versionId": "label"}
   const [resolvingManualType, setResolvingManualType] = useState(null);
+  const [sourceChoiceModal, setSourceChoiceModal] = useState({ show: false, bothCount: 0, scopeLabel: 'selected files' });
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addModalType, setAddModalType] = useState('resourcepack');
+  const [shareCodeInput, setShareCodeInput] = useState('');
+  const [applyingCode, setApplyingCode] = useState(false);
+  const [applyProgress, setApplyProgress] = useState(0);
+  const [applyStatus, setApplyStatus] = useState('');
   const installedSearchRef = useRef();
   const findSearchRef = useRef();
+  const sourceChoiceResolverRef = useRef(null);
 
   const loadResources = useCallback(async () => {
     setError(null);
@@ -285,6 +316,56 @@ function InstanceResources({
     setSelectedItems([]);
     resetFeed();
   }, [activeSubTab, resetFeed]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const unresolved = [...resourcePacks, ...shaderPacks].filter((item) => {
+      if (!isCurseForgeProjectId(item?.project_id) || !item?.version_id) return false;
+      const key = `${item.project_id}:${item.version_id}`;
+      if (curseForgeVersionLabels[key]) return false;
+      return !formatInstalledVersionLabel(item?.version, item?.provider, item?.filename);
+    });
+
+    if (unresolved.length === 0) return;
+
+    const byProject = new Map();
+    for (const item of unresolved) {
+      const projectId = String(item?.project_id || '').trim();
+      const versionId = String(item?.version_id || '').trim();
+      if (!projectId || !versionId) continue;
+      if (!byProject.has(projectId)) byProject.set(projectId, new Set());
+      byProject.get(projectId).add(versionId);
+    }
+
+    const loadLabels = async () => {
+      const updates = {};
+      for (const [projectId, versionIds] of byProject.entries()) {
+        try {
+          const versions = await invoke('get_curseforge_modpack_versions', { projectId });
+          for (const versionEntry of Array.isArray(versions) ? versions : []) {
+            const versionId = String(versionEntry?.id || '').trim();
+            if (!versionId || !versionIds.has(versionId)) continue;
+            const label = resolveCurseForgeVersionLabelFromEntry(versionEntry);
+            if (!label) continue;
+            updates[`${projectId}:${versionId}`] = label;
+          }
+        } catch (error) {
+          console.warn(`Failed to resolve CurseForge version label for project ${projectId}:`, error);
+        }
+      }
+
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setCurseForgeVersionLabels((prev) => ({ ...prev, ...updates }));
+      }
+    };
+
+    loadLabels();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resourcePacks, shaderPacks, curseForgeVersionLabels]);
 
   useEffect(() => {
     const isFindTab = activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders';
@@ -546,6 +627,20 @@ function InstanceResources({
     setDeleteConfirm({ show: true, item, type });
   }, []);
 
+  const handleToggleInstalled = useCallback(async (item, type) => {
+    try {
+      const command = type === 'resourcepack' ? 'toggle_instance_resourcepack' : 'toggle_instance_shaderpack';
+      await invoke(command, {
+        instanceId: instance.id,
+        filename: item.filename
+      });
+      await loadResources();
+    } catch (error) {
+      console.error('Failed to toggle item:', error);
+      onShowNotification?.(`Failed to toggle ${type}: ${error}`, 'error');
+    }
+  }, [instance.id, loadResources, onShowNotification]);
+
   const confirmDelete = useCallback(async () => {
     const { item, type } = deleteConfirm;
     setDeleteConfirm({ show: false, item: null, type: null });
@@ -714,35 +809,253 @@ function InstanceResources({
     }
   }, [instance.id, onShowNotification]);
 
+  const handleCopyShareCode = useCallback(async () => {
+    try {
+      const code = await invoke('get_instance_share_code', { instanceId: instance.id });
+      await navigator.clipboard.writeText(code);
+      onShowNotification?.('Share code copied!', 'success');
+    } catch (error) {
+      console.error('Failed to generate share code:', error);
+      onShowNotification?.(`Failed to generate share code: ${error}`, 'error');
+    }
+  }, [instance.id, onShowNotification]);
+
+  const handleApplyCode = useCallback(async () => {
+    if (!shareCodeInput.trim()) return;
+
+    setApplyingCode(true);
+    setApplyProgress(0);
+    setApplyStatus('Decoding share code...');
+
+    try {
+      const shareData = await invoke('decode_instance_share_code', { code: shareCodeInput.trim() });
+      const items = addModalType === 'resourcepack'
+        ? (shareData.resourcepacks || [])
+        : (shareData.shaders || []);
+
+      if (items.length === 0) {
+        onShowNotification?.(`No ${addModalType === 'resourcepack' ? 'resource packs' : 'shaders'} found in this code.`, 'info');
+        setApplyingCode(false);
+        return;
+      }
+
+      setApplyStatus(`Found ${items.length} ${addModalType === 'resourcepack' ? 'packs' : 'shaders'}. Fetching metadata...`);
+      setApplyProgress(10);
+
+      const currentInstalled = addModalType === 'resourcepack' ? resourcePacks : shaderPacks;
+      const installedProjectIds = new Set(
+        currentInstalled
+          .map((item) => String(item?.project_id || '').trim())
+          .filter(Boolean)
+      );
+
+      const modrinthIds = items
+        .map((item) => item.project_id || item.projectId)
+        .filter((projectId) => projectId && !isCurseForgeProjectId(projectId));
+      const projectMap = {};
+
+      try {
+        if (modrinthIds.length > 0) {
+          const projects = await invoke('get_modrinth_projects', { projectIds: modrinthIds });
+          projects.forEach((project) => {
+            const id = project.project_id || project.id;
+            if (id) projectMap[id] = project;
+            if (project.slug) projectMap[project.slug] = project;
+          });
+        }
+      } catch (error) {
+        console.warn('Bulk Modrinth fetch failed:', error);
+      }
+
+      let installedCount = 0;
+      for (let index = 0; index < items.length; index += 1) {
+        const entry = items[index];
+        const projectId = String(entry.project_id || entry.projectId || '').trim();
+        const versionId = String(entry.version_id || entry.versionId || '').trim();
+        if (!projectId) continue;
+
+        setApplyStatus(`Installing ${entry.name || projectId} (${index + 1}/${items.length})...`);
+        setApplyProgress(10 + ((index / items.length) * 90));
+
+        if (installedProjectIds.has(projectId)) {
+          installedCount += 1;
+          continue;
+        }
+
+        try {
+          if (isCurseForgeProjectId(projectId)) {
+            const project = await invoke('get_curseforge_modpack', { projectId });
+            const cfVersions = await invoke('get_curseforge_modpack_versions', { projectId });
+            if (!Array.isArray(cfVersions) || cfVersions.length === 0) continue;
+
+            let selectedVersion = versionId
+              ? cfVersions.find((candidate) => String(candidate.id) === versionId)
+              : null;
+            if (!selectedVersion) {
+              const sorted = [...cfVersions].sort((a, b) => new Date(b.date_published) - new Date(a.date_published));
+              selectedVersion = sorted[0];
+            }
+            if (!selectedVersion) continue;
+
+            const file = selectedVersion.files?.find((candidate) => candidate.primary) || selectedVersion.files?.[0];
+            if (!file) continue;
+
+            await invoke('install_curseforge_file', {
+              instanceId: instance.id,
+              projectId,
+              fileId: String(selectedVersion.id),
+              fileType: addModalType,
+              filename: file.filename || `${projectId}-${selectedVersion.id}.zip`,
+              fileUrl: file.url || null,
+              worldName: null,
+              iconUrl: project?.icon_url || entry.icon_url || entry.iconUrl || null,
+              name: project?.title || entry.name || null,
+              author: project?.author || entry.author || null,
+              versionName: selectedVersion.version_number || selectedVersion.name || entry.version_name || entry.versionName || null,
+              categories: project?.categories || project?.display_categories || entry.categories || null
+            });
+          } else {
+            let version = null;
+            if (versionId) {
+              version = await invoke('get_modrinth_version', { versionId });
+            } else {
+              const versions = await invoke('get_modrinth_versions', {
+                projectId,
+                gameVersion: instance.version_id,
+                loader: null
+              });
+              version = Array.isArray(versions) && versions.length > 0 ? versions[0] : null;
+            }
+
+            if (!version) continue;
+            const project = projectMap[projectId] || await invoke('get_modrinth_project', { projectId });
+            const file = version.files?.find((candidate) => candidate.primary) || version.files?.[0];
+            if (!file) continue;
+
+            await invoke('install_modrinth_file', {
+              instanceId: instance.id,
+              fileUrl: file.url,
+              filename: file.filename,
+              fileType: addModalType,
+              projectId,
+              versionId: version.id,
+              worldName: null,
+              iconUrl: project?.icon_url || entry.icon_url || entry.iconUrl || null,
+              name: project?.title || entry.name || null,
+              author: project?.author || entry.author || null,
+              versionName: version.version_number || version.name || entry.version_name || entry.versionName || null,
+              categories: project?.categories || project?.display_categories || entry.categories || null
+            });
+          }
+
+          installedProjectIds.add(projectId);
+          installedCount += 1;
+        } catch (error) {
+          console.error(`Failed to install ${addModalType} ${projectId}:`, error);
+        }
+      }
+
+      setApplyProgress(100);
+      onShowNotification?.(`Successfully installed ${installedCount} ${addModalType === 'resourcepack' ? 'packs' : 'shaders'}!`, 'success');
+      setTimeout(() => {
+        setShowAddModal(false);
+        setShareCodeInput('');
+        setApplyingCode(false);
+        setApplyProgress(0);
+        setApplyStatus('');
+        loadResources();
+      }, 400);
+      return;
+    } catch (error) {
+      console.error('Failed to apply code:', error);
+      onShowNotification?.('Invalid or incompatible share code.', 'error');
+    }
+
+    setApplyingCode(false);
+    setApplyProgress(0);
+    setApplyStatus('');
+  }, [shareCodeInput, addModalType, instance.id, instance.version_id, resourcePacks, shaderPacks, loadResources, onShowNotification]);
+
+  const requestSourceChoice = useCallback((bothCount, scopeLabel = 'selected files') => {
+    return new Promise((resolve) => {
+      sourceChoiceResolverRef.current = resolve;
+      setSourceChoiceModal({ show: true, bothCount, scopeLabel });
+    });
+  }, []);
+
+  const closeSourceChoice = useCallback((choice = null) => {
+    setSourceChoiceModal((prev) => ({ ...prev, show: false }));
+    const resolve = sourceChoiceResolverRef.current;
+    sourceChoiceResolverRef.current = null;
+    if (resolve) resolve(choice);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (sourceChoiceResolverRef.current) {
+        sourceChoiceResolverRef.current(null);
+        sourceChoiceResolverRef.current = null;
+      }
+    };
+  }, []);
+
   const handleResolveManualMetadata = useCallback(async (type, filenames = null) => {
     if (resolvingManualType) return;
     setResolvingManualType(type);
     try {
+      const previewResult = await invoke('resolve_manual_modrinth_metadata', {
+        instanceId: instance.id,
+        fileType: type,
+        filenames,
+        dryRun: true
+      });
+
+      if (previewResult.scanned === 0) {
+        onShowNotification?.('No manual files available to check.', 'info');
+        return;
+      }
+
+      if (previewResult.matched === 0) {
+        onShowNotification?.('Couldn\'t find matches on Modrinth/CurseForge for the selected files.', 'info');
+        return;
+      }
+
+      let preferredSource;
+      if ((previewResult.both_sources || 0) > 0) {
+        const scopeLabel = type === 'resourcepack' ? 'selected packs' : 'selected shaders';
+        preferredSource = await requestSourceChoice(previewResult.both_sources, scopeLabel);
+        if (!preferredSource) {
+          onShowNotification?.('Manual metadata check cancelled.', 'info');
+          return;
+        }
+      }
+
       const result = await invoke('resolve_manual_modrinth_metadata', {
         instanceId: instance.id,
         fileType: type,
-        filenames
+        filenames,
+        preferredSource
       });
       await loadResources();
       if (onShowNotification) {
         if (result.updated > 0) {
           onShowNotification(
-            `Matched ${result.updated}/${result.scanned} ${type === 'resourcepack' ? 'pack' : 'shader'} file${result.updated === 1 ? '' : 's'} on Modrinth.`,
+            `Matched ${result.updated}/${result.scanned} ${type === 'resourcepack' ? 'pack' : 'shader'} file${result.updated === 1 ? '' : 's'} on Modrinth/CurseForge.`,
             'success'
           );
         } else if (result.scanned > 0) {
-          onShowNotification('No Modrinth matches found for the selected files.', 'info');
+          onShowNotification('Couldn\'t find matches on Modrinth/CurseForge for the selected files.', 'info');
         } else {
           onShowNotification('No manual files available to check.', 'info');
         }
       }
     } catch (error) {
-      console.error('Failed to resolve metadata on Modrinth:', error);
-      onShowNotification?.(`Failed to check Modrinth: ${error}`, 'error');
+      console.error('Failed to resolve metadata on Modrinth/CurseForge:', error);
+      onShowNotification?.(`Failed to check Modrinth/CurseForge: ${error}`, 'error');
     } finally {
       setResolvingManualType(null);
     }
-  }, [instance.id, loadResources, onShowNotification, resolvingManualType]);
+  }, [instance.id, loadResources, onShowNotification, requestSourceChoice, resolvingManualType]);
 
   const matchesAllSelectedCategories = useCallback((project) => {
     if (findProvider === 'curseforge') return true;
@@ -782,36 +1095,27 @@ function InstanceResources({
   return (
     <div className="resources-tab">
       <div className={`sub-tabs-row ${isScrolled ? 'scrolled' : ''}`}>
-        <div className="sub-tabs">
-          <button
-            className={`sub-tab ${activeSubTab === 'resourcepacks' ? 'active' : ''}`}
-            onClick={() => setActiveSubTab('resourcepacks')}
-          >
-            Resource Packs ({resourcePacks.length})
-          </button>
-          <button
-            className={`sub-tab ${activeSubTab === 'find-resourcepacks' ? 'active' : ''}`}
-            onClick={() => setActiveSubTab('find-resourcepacks')}
-          >
-            Find Packs
-          </button>
-          <button
-            className={`sub-tab ${activeSubTab === 'shaders' ? 'active' : ''}`}
-            onClick={() => setActiveSubTab('shaders')}
-          >
-            Shaders ({shaderPacks.length})
-          </button>
-          <button
-            className={`sub-tab ${activeSubTab === 'find-shaders' ? 'active' : ''}`}
-            onClick={() => setActiveSubTab('find-shaders')}
-          >
-            Find Shaders
-          </button>
-        </div>
+        <SubTabs
+          tabs={[
+            { id: 'resourcepacks', label: `Resource Packs (${resourcePacks.length})` },
+            { id: 'find-resourcepacks', label: 'Find Packs' },
+            { id: 'shaders', label: `Shaders (${shaderPacks.length})` },
+            { id: 'find-shaders', label: 'Find Shaders' }
+          ]}
+          activeTab={activeSubTab}
+          onTabChange={setActiveSubTab}
+        />
         <div className="sub-tabs-actions">
           {activeSubTab === 'resourcepacks' && (
             <>
-              <button className="open-folder-btn" onClick={() => handleImportFile('resourcepack')} title="Add Pack ZIP File">
+              <button
+                className="open-folder-btn"
+                onClick={() => {
+                  setAddModalType('resourcepack');
+                  setShowAddModal(true);
+                }}
+                title="Add Pack"
+              >
                 <Plus size={16} />
                 <span>Add Pack</span>
               </button>
@@ -822,7 +1126,14 @@ function InstanceResources({
           )}
           {activeSubTab === 'shaders' && (
             <>
-              <button className="open-folder-btn" onClick={() => handleImportFile('shader')} title="Add Shader ZIP File">
+              <button
+                className="open-folder-btn"
+                onClick={() => {
+                  setAddModalType('shader');
+                  setShowAddModal(true);
+                }}
+                title="Add Shader"
+              >
                 <Plus size={16} />
                 <span>Add Shader</span>
               </button>
@@ -837,7 +1148,7 @@ function InstanceResources({
       {activeSubTab === 'resourcepacks' && (
         <div className="installed-section">
           {loading ? (
-            <p>Loading...</p>
+            <TabLoadingState label="Loading resource packs" rows={5} />
           ) : resourcePacks.length === 0 ? (
             <div className="empty-state">
               <p>No resource packs installed. Go to "Find Packs" to browse and install resource packs.</p>
@@ -916,6 +1227,10 @@ function InstanceResources({
                         Update All
                       </button>
                     )}
+                    <button className="copy-code-btn" onClick={handleCopyShareCode} title="Copy Share Code">
+                      <Copy size={12} />
+                      <span>Copy Code</span>
+                    </button>
                   </div>
                   <div className="installed-list">
                     {filteredResourcePacks
@@ -924,101 +1239,37 @@ function InstanceResources({
                       .map((rp) => {
                         const isUpdating = updatingItems.includes(rp.filename) || (rp.project_id && installing === rp.project_id);
                         const isSelected = selectedItems.includes(rp.filename);
-                        const versionLabel = withVersionPrefix(
-                          formatInstalledVersionLabel(rp.version, rp.provider, rp.filename)
-                        );
+                        const formattedVersion = formatInstalledVersionLabel(rp.version, rp.provider, rp.filename);
+                        const curseForgeResolvedLabel = isCurseForgeProjectId(rp.project_id) && rp.version_id
+                          ? curseForgeVersionLabels[`${rp.project_id}:${rp.version_id}`] || null
+                          : null;
+                        const versionLabel = withVersionPrefix(formattedVersion || curseForgeResolvedLabel);
                         return (
-                          <div
+                          <InstalledContentRow
                             key={rp.filename}
-                            className={`installed-item ${isUpdating ? 'mod-updating' : ''} ${isSelected ? 'selected' : ''}`}
-                            onClick={() => {
-                              if (selectedItems.length > 0) {
-                                handleToggleSelect(rp.filename);
-                              } else {
-                                handleRequestInstall({
-                                  project_id: rp.project_id,
-                                  title: rp.name,
-                                  slug: rp.project_id,
-                                  icon_url: rp.icon_url,
-                                  project_type: 'resourcepack',
-                                  provider_label: normalizeProviderLabel(rp.provider, rp.project_id),
-                                  categories: rp.categories
-                                }, { ...rp, item_type: 'resourcepack' });
-                              }
-                            }}
-                          >
-                            {isUpdating && (
-                              <div className="mod-updating-overlay">
-                                <RefreshCcw className="spin-icon" size={20} />
-                                <span>Updating...</span>
-                              </div>
-                            )}
-                            <div className="item-main">
-                              <div className="item-selection" onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleSelect(rp.filename);
-                              }}>
-                                <div className={`selection-checkbox ${isSelected ? 'checked' : ''}`}>
-                                  {isSelected && <Check size={12} />}
-                                </div>
-                              </div>
-                              {rp.icon_url ? (
-                                <img src={rp.icon_url} alt={rp.name} className="mod-icon-small" onError={(e) => e.target.src = 'https://cdn-icons-png.flaticon.com/512/3011/3011270.png'} />
-                              ) : (
-                                <div className="mod-icon-placeholder">📦</div>
-                              )}
-                              <div className="item-info">
-                                <div className="item-title-row">
-                                  <h4>{rp.name}</h4>
-                                  {versionLabel && <span className="mod-version-tag">{versionLabel}</span>}
-                                  {updatesFound[rp.project_id] && (
-                                    <span className="update-available-tag pulse">Update Available</span>
-                                  )}
-                                </div>
-                                <div className="item-meta-row">
-                                  <span className="mod-provider">{rp.provider}</span>
-                                  {rp.size > 0 && (
-                                    <>
-                                      <span className="mod-separator">•</span>
-                                      <span className="mod-size">{(rp.size / 1024 / 1024).toFixed(2)} MB</span>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="item-actions">
-                              <button
-                                className="update-btn-simple"
-                                title="Update Pack"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleRequestInstall({
-                                    project_id: rp.project_id,
-                                    title: rp.name,
-                                    slug: rp.project_id,
-                                    icon_url: rp.icon_url,
-                                    project_type: 'resourcepack',
-                                    provider_label: normalizeProviderLabel(rp.provider, rp.project_id),
-                                    categories: rp.categories
-                                  }, { ...rp, item_type: 'resourcepack' });
-                                }}
-                                disabled={isUpdating}
-                              >
-                                <RefreshCcw size={14} />
-                              </button>
-                              <button
-                                className="delete-btn-simple"
-                                title="Delete Pack"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDelete(rp, 'resourcepack');
-                                }}
-                                disabled={isUpdating}
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </div>
+                            item={rp}
+                            isUpdating={isUpdating}
+                            isSelected={isSelected}
+                            selectionModeActive={selectedItems.length > 0}
+                            versionLabel={versionLabel || 'Unknown version'}
+                            showUpdateBadge={Boolean(updatesFound[rp.project_id])}
+                            authorFallback="Unknown author"
+                            onToggleSelect={handleToggleSelect}
+                            onInfoAction={() => handleRequestInstall({
+                              project_id: rp.project_id,
+                              title: rp.name,
+                              slug: rp.project_id,
+                              icon_url: rp.icon_url,
+                              project_type: 'resourcepack',
+                              provider_label: normalizeProviderLabel(rp.provider, rp.project_id),
+                              categories: rp.categories
+                            }, { ...rp, item_type: 'resourcepack' })}
+                            onToggleEnabled={() => handleToggleInstalled(rp, 'resourcepack')}
+                            onDelete={() => handleDelete(rp, 'resourcepack')}
+                            infoTitle="Open project info"
+                            deleteTitle="Delete pack"
+                            updatingLabel="Updating..."
+                          />
                         );
                       })}
                   </div>
@@ -1046,53 +1297,21 @@ function InstanceResources({
                       .map((rp) => {
                         const isSelected = selectedItems.includes(rp.filename);
                         return (
-                          <div
+                          <InstalledContentRow
                             key={rp.filename}
-                            className={`installed-item ${isSelected ? 'selected' : ''}`}
-                            onClick={() => {
-                              if (selectedItems.length > 0) {
-                                handleToggleSelect(rp.filename);
-                              }
-                            }}
-                          >
-                            <div className="item-main">
-                              <div className="item-selection" onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleSelect(rp.filename);
-                              }}>
-                                <div className={`selection-checkbox ${isSelected ? 'checked' : ''}`}>
-                                  {isSelected && <Check size={12} />}
-                                </div>
-                              </div>
-                              <div className="mod-icon-placeholder">📦</div>
-                              <div className="item-info">
-                                <div className="item-title-row">
-                                  <h4>{rp.filename.endsWith('.zip') ? rp.filename : `${rp.filename}.zip`}</h4>
-                                </div>
-                                <div className="item-meta-row">
-                                  <span className="mod-provider">Manual</span>
-                                  {rp.size > 0 && (
-                                    <>
-                                      <span className="mod-separator">•</span>
-                                      <span className="mod-size">{(rp.size / 1024 / 1024).toFixed(2)} MB</span>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="item-actions">
-                              <button
-                                className="delete-btn-simple"
-                                title="Delete Pack"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDelete(rp, 'resourcepack');
-                                }}
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </div>
+                            item={rp}
+                            isUpdating={false}
+                            isSelected={isSelected}
+                            selectionModeActive={selectedItems.length > 0}
+                            versionLabel="Unknown version"
+                            platformLabel="Manual"
+                            authorFallback="Manual file"
+                            onToggleSelect={handleToggleSelect}
+                            onToggleEnabled={() => handleToggleInstalled(rp, 'resourcepack')}
+                            onDelete={() => handleDelete(rp, 'resourcepack')}
+                            infoTitle="Project info unavailable"
+                            deleteTitle="Delete pack"
+                          />
                         );
                       })}
                   </div>
@@ -1106,7 +1325,7 @@ function InstanceResources({
       {activeSubTab === 'shaders' && (
         <div className="installed-section">
           {loading ? (
-            <p>Loading...</p>
+            <TabLoadingState label="Loading shaders" rows={5} />
           ) : shaderPacks.length === 0 ? (
             <div className="empty-state">
               <p>No shader packs installed. Go to "Find Shaders" to browse and install shaders.</p>
@@ -1180,6 +1399,10 @@ function InstanceResources({
                         Update All
                       </button>
                     )}
+                    <button className="copy-code-btn" onClick={handleCopyShareCode} title="Copy Share Code">
+                      <Copy size={12} />
+                      <span>Copy Code</span>
+                    </button>
                   </div>
                   <div className="installed-list">
                     {filteredShaderPacks
@@ -1188,101 +1411,36 @@ function InstanceResources({
                       .map((sp) => {
                         const isUpdating = updatingItems.includes(sp.filename) || (sp.project_id && installing === sp.project_id);
                         const isSelected = selectedItems.includes(sp.filename);
-                        const versionLabel = withVersionPrefix(
-                          formatInstalledVersionLabel(sp.version, sp.provider, sp.filename)
-                        );
+                        const formattedVersion = formatInstalledVersionLabel(sp.version, sp.provider, sp.filename);
+                        const curseForgeResolvedLabel = isCurseForgeProjectId(sp.project_id) && sp.version_id
+                          ? curseForgeVersionLabels[`${sp.project_id}:${sp.version_id}`] || null
+                          : null;
+                        const versionLabel = withVersionPrefix(formattedVersion || curseForgeResolvedLabel);
                         return (
-                          <div
+                          <InstalledContentRow
                             key={sp.filename}
-                            className={`installed-item ${isUpdating ? 'mod-updating' : ''} ${isSelected ? 'selected' : ''}`}
-                            onClick={() => {
-                              if (selectedItems.length > 0) {
-                                handleToggleSelect(sp.filename);
-                              } else {
-                                handleRequestInstall({
-                                  project_id: sp.project_id,
-                                  title: sp.name,
-                                  slug: sp.project_id,
-                                  icon_url: sp.icon_url,
-                                  project_type: 'shader',
-                                  provider_label: normalizeProviderLabel(sp.provider, sp.project_id)
-                                }, { ...sp, item_type: 'shader' });
-                              }
-                            }}
-                          >
-                            {isUpdating && (
-                              <div className="mod-updating-overlay">
-                                <RefreshCcw className="spin-icon" size={20} />
-                                <span>Updating...</span>
-                              </div>
-                            )}
-                            <div className="item-main">
-                              <div className="item-selection" onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleSelect(sp.filename);
-                              }}>
-                                <div className={`selection-checkbox ${isSelected ? 'checked' : ''}`}>
-                                  {isSelected && <Check size={12} />}
-                                </div>
-                              </div>
-                              {sp.icon_url ? (
-                                <img src={sp.icon_url} alt={sp.name} className="mod-icon-small" onError={(e) => e.target.src = 'https://cdn-icons-png.flaticon.com/512/3011/3011270.png'} />
-                              ) : (
-                                <div className="mod-icon-placeholder">📦</div>
-                              )}
-                              <div className="item-info">
-                                <div className="item-title-row">
-                                  <h4>{sp.name}</h4>
-                                  {versionLabel && <span className="mod-version-tag">{versionLabel}</span>}
-                                  {updatesFound[sp.project_id] && (
-                                    <span className="update-available-tag pulse">Update Available</span>
-                                  )}
-                                </div>
-                                <div className="item-meta-row">
-                                  <span className="mod-provider">{sp.provider}</span>
-                                  {sp.size > 0 && (
-                                    <>
-                                      <span className="mod-separator">•</span>
-                                      <span className="mod-size">{(sp.size / 1024 / 1024).toFixed(2)} MB</span>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="item-actions">
-                              {sp.project_id && (
-                                <button
-                                  className="update-btn-simple"
-                                  title="Update Shader"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleRequestInstall({
-                                      project_id: sp.project_id,
-                                      title: sp.name,
-                                      slug: sp.project_id,
-                                      icon_url: sp.icon_url,
-                                      project_type: 'shader',
-                                      provider_label: normalizeProviderLabel(sp.provider, sp.project_id)
-                                    }, { ...sp, item_type: 'shader' });
-                                  }}
-                                  disabled={isUpdating}
-                                >
-                                  <RefreshCcw size={16} />
-                                </button>
-                              )}
-                              <button
-                                className="delete-btn-simple"
-                                title="Delete Shader"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDelete(sp, 'shader');
-                                }}
-                                disabled={isUpdating}
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </div>
+                            item={sp}
+                            isUpdating={isUpdating}
+                            isSelected={isSelected}
+                            selectionModeActive={selectedItems.length > 0}
+                            versionLabel={versionLabel || 'Unknown version'}
+                            showUpdateBadge={Boolean(updatesFound[sp.project_id])}
+                            authorFallback="Unknown author"
+                            onToggleSelect={handleToggleSelect}
+                            onInfoAction={() => handleRequestInstall({
+                              project_id: sp.project_id,
+                              title: sp.name,
+                              slug: sp.project_id,
+                              icon_url: sp.icon_url,
+                              project_type: 'shader',
+                              provider_label: normalizeProviderLabel(sp.provider, sp.project_id)
+                            }, { ...sp, item_type: 'shader' })}
+                            onToggleEnabled={() => handleToggleInstalled(sp, 'shader')}
+                            onDelete={() => handleDelete(sp, 'shader')}
+                            infoTitle="Open project info"
+                            deleteTitle="Delete shader"
+                            updatingLabel="Updating..."
+                          />
                         );
                       })}
                   </div>
@@ -1310,53 +1468,21 @@ function InstanceResources({
                       .map((sp) => {
                         const isSelected = selectedItems.includes(sp.filename);
                         return (
-                          <div
+                          <InstalledContentRow
                             key={sp.filename}
-                            className={`installed-item ${isSelected ? 'selected' : ''}`}
-                            onClick={() => {
-                              if (selectedItems.length > 0) {
-                                handleToggleSelect(sp.filename);
-                              }
-                            }}
-                          >
-                            <div className="item-main">
-                              <div className="item-selection" onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleSelect(sp.filename);
-                              }}>
-                                <div className={`selection-checkbox ${isSelected ? 'checked' : ''}`}>
-                                  {isSelected && <Check size={12} />}
-                                </div>
-                              </div>
-                              <div className="mod-icon-placeholder">📦</div>
-                              <div className="item-info">
-                                <div className="item-title-row">
-                                  <h4>{sp.filename.endsWith('.zip') ? sp.filename : `${sp.filename}.zip`}</h4>
-                                </div>
-                                <div className="item-meta-row">
-                                  <span className="mod-provider">Manual</span>
-                                  {sp.size > 0 && (
-                                    <>
-                                      <span className="mod-separator">•</span>
-                                      <span className="mod-size">{(sp.size / 1024 / 1024).toFixed(2)} MB</span>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="item-actions">
-                              <button
-                                className="delete-btn-simple"
-                                title="Delete Shader"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDelete(sp, 'shader');
-                                }}
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </div>
+                            item={sp}
+                            isUpdating={false}
+                            isSelected={isSelected}
+                            selectionModeActive={selectedItems.length > 0}
+                            versionLabel="Unknown version"
+                            platformLabel="Manual"
+                            authorFallback="Manual file"
+                            onToggleSelect={handleToggleSelect}
+                            onToggleEnabled={() => handleToggleInstalled(sp, 'shader')}
+                            onDelete={() => handleDelete(sp, 'shader')}
+                            infoTitle="Project info unavailable"
+                            deleteTitle="Delete shader"
+                          />
                         );
                       })}
                   </div>
@@ -1371,20 +1497,14 @@ function InstanceResources({
         <div className="find-section">
           <div className="mods-container">
             <div className="search-controls-refined">
-              <div className="sub-tabs">
-                <button
-                  className={`sub-tab ${findProvider === 'modrinth' ? 'active' : ''}`}
-                  onClick={() => setFindProvider('modrinth')}
-                >
-                  Modrinth
-                </button>
-                <button
-                  className={`sub-tab ${findProvider === 'curseforge' ? 'active' : ''}`}
-                  onClick={() => setFindProvider('curseforge')}
-                >
-                  CurseForge
-                </button>
-              </div>
+              <SubTabs
+                tabs={[
+                  { id: 'modrinth', label: 'Modrinth' },
+                  { id: 'curseforge', label: 'CurseForge' }
+                ]}
+                activeTab={findProvider}
+                onTabChange={setFindProvider}
+              />
               <button
                 className={`filter-btn-modal ${selectedCategories.length > 0 ? 'active' : ''}`}
                 onClick={() => setIsFilterModalOpen(true)}
@@ -1459,7 +1579,10 @@ function InstanceResources({
                 <div className="search-results">
                   {displayItems.map((project, index) => {
                     const installedItem = getInstalledItem(project);
-                    const isDownloading = installing === (project.slug || project.project_id || project.id);
+                    const isDownloading = [project.project_id, project.id, project.slug]
+                      .filter(Boolean)
+                      .map((value) => String(value))
+                      .includes(String(installing || ''));
 
                     return (
                       <div
@@ -1553,6 +1676,23 @@ function InstanceResources({
         }
       />
 
+      {sourceChoiceModal.show && (
+        <ConfirmModal
+          isOpen={sourceChoiceModal.show}
+          modalClassName="source-choice-modal"
+          title="Choose metadata source"
+          message={`Found ${sourceChoiceModal.bothCount} ${sourceChoiceModal.scopeLabel} that match both Modrinth and CurseForge. Which source should be used?`}
+          confirmText="Use Modrinth"
+          extraConfirmText="Use CurseForge"
+          cancelText="Cancel"
+          variant="secondary"
+          actionLayout="flat"
+          onConfirm={() => closeSourceChoice('modrinth')}
+          onExtraConfirm={() => closeSourceChoice('curseforge')}
+          onCancel={() => closeSourceChoice(null)}
+        />
+      )}
+
       {deleteConfirm.show && (
         <ConfirmModal
           isOpen={deleteConfirm.show}
@@ -1572,12 +1712,84 @@ function InstanceResources({
           projectId={versionModal.project?.project_id || versionModal.project?.id || versionModal.project?.slug}
           gameVersion={instance.version_id}
           loader={null}
+          installedMod={versionModal.updateItem || (versionModal.project ? getInstalledItem(versionModal.project) : null)}
           onClose={() => setVersionModal({ show: false, project: null, updateItem: null })}
           onSelect={(version) => {
             handleInstall(versionModal.project, version, false, versionModal.updateItem);
             setVersionModal({ show: false, project: null, updateItem: null });
           }}
+          onReinstall={({ project: modalProject, version, installedItem }) => {
+            const projectItem = modalProject || versionModal.project;
+            const updateItem = installedItem || versionModal.updateItem;
+            handleInstall(projectItem, version, false, updateItem);
+            setVersionModal({ show: false, project: null, updateItem: null });
+          }}
         />
+      )}
+
+      {showAddModal && (
+        <div className="add-mod-modal-overlay" onClick={() => !applyingCode && setShowAddModal(false)}>
+          <div className="add-mod-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="add-mod-header">
+              <h2>{addModalType === 'resourcepack' ? 'Add Resource Pack' : 'Add Shader'}</h2>
+              <button className="close-btn-simple" onClick={() => setShowAddModal(false)}>✕</button>
+            </div>
+            <div className="add-mod-body">
+              {applyingCode ? (
+                <div className="apply-progress-container">
+                  <div className="apply-status-text">{applyStatus}</div>
+                  <div className="apply-progress-bar-bg">
+                    <div className="apply-progress-bar-fill" style={{ width: `${applyProgress}%` }} />
+                  </div>
+                  <div className="apply-progress-percent">{Math.round(applyProgress)}%</div>
+                </div>
+              ) : (
+                <>
+                  <div className="choice-grid">
+                    <button
+                      className="choice-card"
+                      onClick={() => {
+                        setShowAddModal(false);
+                        handleImportFile(addModalType);
+                      }}
+                    >
+                      <div className="choice-icon">
+                        <Upload size={24} />
+                      </div>
+                      <span>{addModalType === 'resourcepack' ? 'Add .ZIP' : 'Add .ZIP'}</span>
+                    </button>
+                    <button className="choice-card" style={{ cursor: 'default', opacity: 1 }}>
+                      <div className="choice-icon" style={{ color: 'var(--accent)' }}>
+                        <Code size={24} />
+                      </div>
+                      <span>Use Code</span>
+                    </button>
+                  </div>
+
+                  <div className="code-input-container">
+                    <label style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Paste Share Code</label>
+                    <div className="code-input-wrapper">
+                      <input
+                        type="text"
+                        className="code-input"
+                        placeholder="Paste code here..."
+                        value={shareCodeInput}
+                        onChange={(event) => setShareCodeInput(event.target.value)}
+                        disabled={applyingCode}
+                      />
+                      <button className="apply-btn" onClick={handleApplyCode} disabled={applyingCode || !shareCodeInput.trim()}>
+                        {applyingCode ? '...' : 'Apply'}
+                      </button>
+                    </div>
+                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
+                      Installs {addModalType === 'resourcepack' ? 'packs' : 'shaders'} from Modrinth and CurseForge.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {selectedItems.length > 0 && (

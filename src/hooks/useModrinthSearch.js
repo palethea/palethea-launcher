@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 const PAGE_SIZE = 20;
+const CURSEFORGE_PAGE_SIZE = 12;
 const SEARCH_TIMEOUT_MS = 20000;
 const SEARCH_CACHE_TTL_MS = 2 * 60 * 1000;
 const SEARCH_CACHE_MAX_ENTRIES = 120;
@@ -153,10 +154,11 @@ export default function useModrinthSearch({
   withPopular = false,
   searchEmptyQuery = true,
 }) {
+  const requestPageSize = provider === 'curseforge' ? CURSEFORGE_PAGE_SIZE : PAGE_SIZE;
   const [searchResults, setSearchResults] = useState([]);
   const [popularItems, setPopularItems] = useState([]);
   const [searching, setSearching] = useState(false);
-  const [loadingPopular, setLoadingPopular] = useState(withPopular);
+  const [loadingPopular, setLoadingPopular] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [searchError, setSearchError] = useState(null);
   const [searchOffset, setSearchOffset] = useState(0);
@@ -194,11 +196,11 @@ export default function useModrinthSearch({
         Array.isArray(categoryValues) && categoryValues.length > 0
           ? categoryValues
           : (stableCategories.length > 0 ? stableCategories : null),
-      limit: PAGE_SIZE,
+      limit: requestPageSize,
       offset,
       index,
     }),
-    [gameVersion, loader, projectType, stableCategories]
+    [gameVersion, loader, projectType, requestPageSize, stableCategories]
   );
 
   const handleSearch = useCallback(
@@ -253,8 +255,8 @@ export default function useModrinthSearch({
         const nextOffset = newOffset + rawHits.length;
         const totalHits = parseTotalHits(results);
         let more = provider === 'curseforge'
-          ? rawHits.length === PAGE_SIZE
-          : (rawHits.length === PAGE_SIZE && nextOffset < totalHits);
+          ? rawHits.length === requestPageSize
+          : (rawHits.length === requestPageSize && nextOffset < totalHits);
 
         if (isInitial) {
           setSearchResults(hits);
@@ -320,8 +322,8 @@ export default function useModrinthSearch({
       const hits = dedupeProjects(rawHits);
       const totalHits = parseTotalHits(results);
       const more = provider === 'curseforge'
-        ? rawHits.length === PAGE_SIZE
-        : (rawHits.length === PAGE_SIZE && totalHits > PAGE_SIZE);
+        ? rawHits.length === requestPageSize
+        : (rawHits.length === requestPageSize && totalHits > requestPageSize);
 
       setPopularItems(hits);
       setPopularOffset(rawHits.length);
@@ -361,8 +363,8 @@ export default function useModrinthSearch({
       const nextOffset = popularOffset + rawHits.length;
       const totalHits = parseTotalHits(results);
       let more = provider === 'curseforge'
-        ? rawHits.length === PAGE_SIZE
-        : (rawHits.length === PAGE_SIZE && nextOffset < totalHits);
+        ? rawHits.length === requestPageSize
+        : (rawHits.length === requestPageSize && nextOffset < totalHits);
 
       if (hits.length > 0) {
         setPopularItems((prev) => {
@@ -416,13 +418,13 @@ export default function useModrinthSearch({
     setHasMoreSearch(true);
     setHasMorePopular(true);
     setSearching(false);
-    setLoadingPopular(withPopular);
+    setLoadingPopular(false);
     setLoadingMore(false);
     setSearchError(null);
     loadingMoreRef.current = false;
     hasMoreSearchRef.current = true;
     hasMorePopularRef.current = true;
-  }, [withPopular]);
+  }, []);
 
   return {
     searchResults,

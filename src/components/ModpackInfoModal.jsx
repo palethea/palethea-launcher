@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink, RotateCcw } from 'lucide-react';
 import {
   getEmbedVideoUrl,
   isVideoFileUrl
@@ -336,6 +336,15 @@ function ModpackInfoModal({
       && !switchingVersion
       && !loading
   );
+  const reinstallTargetVersionId = useMemo(
+    () => String(installedVersionId || selectedVersion?.id || versions[0]?.id || ''),
+    [installedVersionId, selectedVersion?.id, versions]
+  );
+  const canReinstallCurrent = Boolean(
+    reinstallTargetVersionId
+      && !switchingVersion
+      && !loading
+  );
 
   const switchActionLabel = useMemo(() => {
     if (!selectedVersion) return 'Switch Version';
@@ -433,6 +442,94 @@ function ModpackInfoModal({
     onUpdateDownloadStatus,
     selectedVersion,
     switchActionLabel
+  ]);
+
+  const handleReinstallCurrent = useCallback(async () => {
+    if (!canReinstallCurrent) return;
+    const targetVersionId = reinstallTargetVersionId;
+    const taskId = `instance-reinstall-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const taskName = `Reinstall ${instance.name}`;
+    setSwitchingVersion(true);
+    setSwitchProgress(0);
+    setSwitchStage('Preparing reinstall...');
+
+    if (onQueueDownload) {
+      onQueueDownload({
+        id: taskId,
+        name: taskName,
+        icon: iconUrl || '/minecraft_logo.png',
+        status: 'Preparing...',
+        progress: 0,
+        kind: 'instance-setup',
+        instanceId: instance.id,
+        trackBackendProgress: true
+      });
+    }
+    if (onUpdateDownloadStatus) {
+      onUpdateDownloadStatus(taskId, {
+        status: 'Reinstalling modpack...',
+        progress: 0,
+        kind: 'instance-setup',
+        instanceId: instance.id,
+        trackBackendProgress: true
+      });
+    }
+
+    try {
+      await invoke('switch_instance_modpack_version', {
+        instanceId: instance.id,
+        targetVersionId,
+        forceReinstall: true
+      });
+      if (onInstancesRefresh) {
+        await onInstancesRefresh();
+      }
+      if (onShowNotification) {
+        onShowNotification(
+          `Reinstalled ${instance.name} (${targetVersionId})`,
+          'success'
+        );
+      }
+      if (onUpdateDownloadStatus) {
+        onUpdateDownloadStatus(taskId, {
+          status: 'Modpack reinstalled',
+          progress: 100,
+          stageLabel: 'Modpack reinstalled',
+          trackBackendProgress: false
+        });
+      }
+      if (onDequeueDownload) {
+        setTimeout(() => onDequeueDownload(taskId), 600);
+      }
+    } catch (switchError) {
+      console.error('Failed to reinstall modpack version:', switchError);
+      if (onShowNotification) {
+        onShowNotification(`Failed to reinstall modpack: ${switchError}`, 'error');
+      }
+      if (onUpdateDownloadStatus) {
+        onUpdateDownloadStatus(taskId, {
+          status: `Failed: ${switchError}`,
+          stageLabel: 'Modpack reinstall failed',
+          trackBackendProgress: false
+        });
+      }
+      if (onDequeueDownload) {
+        setTimeout(() => onDequeueDownload(taskId), 1200);
+      }
+    } finally {
+      setSwitchingVersion(false);
+    }
+  }, [
+    canReinstallCurrent,
+    reinstallTargetVersionId,
+    instance.id,
+    instance.name,
+    onQueueDownload,
+    onUpdateDownloadStatus,
+    iconUrl,
+    onInstancesRefresh,
+    onShowNotification,
+    onDequeueDownload
   ]);
 
   const modalTitle = project?.title || instance?.modpack_title || 'Modpack';
@@ -540,6 +637,10 @@ function ModpackInfoModal({
           <button className="modrinth-link-btn" onClick={handleOpenSource} disabled={!sourceUrl}>
             <ExternalLink size={14} />
             <span>{provider === 'curseforge' ? 'View on CurseForge' : 'View on Modrinth'}</span>
+          </button>
+          <button className="reinstall-btn" onClick={handleReinstallCurrent} disabled={!canReinstallCurrent}>
+            <RotateCcw size={14} />
+            <span>{switchingVersion ? 'Applying...' : 'Reinstall Current'}</span>
           </button>
           <button className="modpack-switch-btn" onClick={handleSwitchVersion} disabled={!canSwitchVersion}>
             <span>{switchingVersion ? 'Applying...' : switchActionLabel}</span>

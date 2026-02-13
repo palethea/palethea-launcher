@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import ConfirmModal from './ConfirmModal';
 import './Settings.css';
 
 function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, launcherSettings, onSettingsUpdated }) {
@@ -19,6 +20,15 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
   const [javaDownloadVersion, setJavaDownloadVersion] = useState('21');
   const [javaDownloading, setJavaDownloading] = useState(false);
   const [javaDownloadError, setJavaDownloadError] = useState('');
+  const [storageError, setStorageError] = useState('');
+  const [confirmState, setConfirmState] = useState({
+    show: false,
+    title: '',
+    message: '',
+    confirmText: 'Confirm',
+    variant: 'primary',
+    onConfirm: null,
+  });
 
   useEffect(() => {
     // Throttle settings load to prevent repeated calls on tab switch
@@ -201,34 +211,61 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
     }
   };
 
-  const handleClearAssets = async () => {
-    if (!confirm('Are you sure you want to clear the assets cache? This will save space but requires re-downloading assets when launching games.')) {
-      return;
-    }
+  const requestConfirm = ({ title, message, confirmText = 'Confirm', variant = 'primary', onConfirm }) => {
+    setConfirmState({
+      show: true,
+      title,
+      message,
+      confirmText,
+      variant,
+      onConfirm,
+    });
+  };
 
-    setIsCleaning(true);
-    try {
-      await invoke('clear_assets_cache');
-      await loadStorageInfo();
-    } catch (error) {
-      console.error('Failed to clear assets:', error);
-      alert(`Failed to clear assets: ${error}`);
-    }
-    setIsCleaning(false);
+  const closeConfirm = () => {
+    setConfirmState((prev) => ({ ...prev, show: false, onConfirm: null }));
+  };
+
+  const handleClearAssets = async () => {
+    requestConfirm({
+      title: 'Clear Assets Cache',
+      message: 'Are you sure you want to clear the assets cache? This will save space but requires re-downloading assets when launching games.',
+      confirmText: 'Clear Cache',
+      variant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        setStorageError('');
+        setIsCleaning(true);
+        try {
+          await invoke('clear_assets_cache');
+          await loadStorageInfo();
+        } catch (error) {
+          console.error('Failed to clear assets:', error);
+          setStorageError(`Failed to clear assets: ${error}`);
+        }
+        setIsCleaning(false);
+      }
+    });
   };
 
   const handleDeleteVersion = async (versionId) => {
-    if (!confirm(`Are you sure you want to delete Minecraft version ${versionId}?`)) {
-      return;
-    }
-
-    try {
-      await invoke('delete_version', { versionId });
-      await loadStorageInfo();
-    } catch (error) {
-      console.error('Failed to delete version:', error);
-      alert(`Failed to delete version: ${error}`);
-    }
+    requestConfirm({
+      title: 'Delete Minecraft Version',
+      message: `Are you sure you want to delete Minecraft version ${versionId}?`,
+      confirmText: 'Delete',
+      variant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        setStorageError('');
+        try {
+          await invoke('delete_version', { versionId });
+          await loadStorageInfo();
+        } catch (error) {
+          console.error('Failed to delete version:', error);
+          setStorageError(`Failed to delete version: ${error}`);
+        }
+      }
+    });
   };
 
   const formatSize = (bytes) => {
@@ -253,6 +290,7 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
   };
 
   return (
+    <>
     <div className="settings">
       <div className="settings-header page-header">
         <p className="page-subtitle">Configure your account settings, launcher behavior, and system options for the best experience.</p>
@@ -443,6 +481,9 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
                   {isCleaning ? 'Cleaning...' : 'Clear Assets Cache'}
                 </button>
               </div>
+              {storageError && (
+                <p className="setting-hint" style={{ color: '#f56565', marginTop: '8px' }}>{storageError}</p>
+              )}
             </div>
           )}
 
@@ -503,6 +544,19 @@ function Settings({ username, onSetUsername, isLoggedIn, onLogin, onLogout, laun
     </section>
   </div>
 </div>
+      {confirmState.show && (
+        <ConfirmModal
+          isOpen={confirmState.show}
+          title={confirmState.title}
+          message={confirmState.message}
+          confirmText={confirmState.confirmText}
+          cancelText="Cancel"
+          variant={confirmState.variant}
+          onConfirm={confirmState.onConfirm}
+          onCancel={closeConfirm}
+        />
+      )}
+    </>
   );
 }
 

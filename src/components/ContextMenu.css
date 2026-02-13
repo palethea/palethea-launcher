@@ -54,6 +54,17 @@
   transition: background 0.15s ease;
 }
 
+.context-menu-item.with-icon {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.context-menu-item.with-icon svg {
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
 .context-menu-item:hover {
   background: var(--background);
 }

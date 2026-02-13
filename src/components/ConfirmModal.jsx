@@ -33,11 +33,11 @@ function ConfirmModal({
               </button>
             )}
             {extraConfirmText && (
-              <button className="confirm-btn secondary" onClick={onExtraConfirm}>
+              <button className="confirm-btn secondary extra-action" onClick={onExtraConfirm}>
                 {extraConfirmText}
               </button>
             )}
-            <button className={`confirm-btn ${variant}`} onClick={onConfirm}>
+            <button className={`confirm-btn ${variant} primary-action`} onClick={onConfirm}>
               {confirmText}
             </button>
           </div>
@@ -52,11 +52,11 @@ function ConfirmModal({
             </div>
             <div className="confirm-footer-right">
               {extraConfirmText && (
-                <button className="confirm-btn secondary" onClick={onExtraConfirm}>
+                <button className="confirm-btn secondary extra-action" onClick={onExtraConfirm}>
                   {extraConfirmText}
                 </button>
               )}
-              <button className={`confirm-btn ${variant}`} onClick={onConfirm}>
+              <button className={`confirm-btn ${variant} primary-action`} onClick={onConfirm}>
                 {confirmText}
               </button>
             </div>

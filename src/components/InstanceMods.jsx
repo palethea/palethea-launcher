@@ -5,6 +5,9 @@ import { open } from '@tauri-apps/plugin-dialog';
 import ConfirmModal from './ConfirmModal';
 import ModVersionModal from './ModVersionModal';
 import FilterModal from './FilterModal';
+import InstalledContentRow from './InstalledContentRow';
+import TabLoadingState from './TabLoadingState';
+import SubTabs from './SubTabs';
 import useModrinthSearch from '../hooks/useModrinthSearch';
 import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
 import { maybeShowCurseForgeBlockedDownloadModal } from '../utils/curseforgeInstallError';
@@ -163,9 +166,12 @@ function InstanceMods({
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [isFixingAllConflicts, setIsFixingAllConflicts] = useState(false);
   const [isResolvingManualMods, setIsResolvingManualMods] = useState(false);
+  const [sourceChoiceModal, setSourceChoiceModal] = useState({ show: false, bothCount: 0, scopeLabel: 'selected files' });
+  const isManagedModpackInstance = Boolean(instance?.modpack_provider || instance?.modpack_project_id);
 
   const installedSearchRef = useRef(null);
   const findSearchRef = useRef(null);
+  const sourceChoiceResolverRef = useRef(null);
 
   const modLoaderForSearch =
     instance.mod_loader?.toLowerCase() !== 'vanilla'
@@ -219,14 +225,64 @@ function InstanceMods({
     setLoading(false);
   }, [instance.id]);
 
+  const requestSourceChoice = useCallback((bothCount, scopeLabel = 'selected files') => {
+    return new Promise((resolve) => {
+      sourceChoiceResolverRef.current = resolve;
+      setSourceChoiceModal({ show: true, bothCount, scopeLabel });
+    });
+  }, []);
+
+  const closeSourceChoice = useCallback((choice = null) => {
+    setSourceChoiceModal((prev) => ({ ...prev, show: false }));
+    const resolve = sourceChoiceResolverRef.current;
+    sourceChoiceResolverRef.current = null;
+    if (resolve) resolve(choice);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (sourceChoiceResolverRef.current) {
+        sourceChoiceResolverRef.current(null);
+        sourceChoiceResolverRef.current = null;
+      }
+    };
+  }, []);
+
   const handleResolveManualMetadata = useCallback(async (filenames = null) => {
     if (isResolvingManualMods) return;
     setIsResolvingManualMods(true);
     try {
+      const previewResult = await invoke('resolve_manual_modrinth_metadata', {
+        instanceId: instance.id,
+        fileType: 'mod',
+        filenames,
+        dryRun: true
+      });
+
+      if (previewResult.scanned === 0) {
+        onShowNotification?.('No manual mod files available to check.', 'info');
+        return;
+      }
+
+      if (previewResult.matched === 0) {
+        onShowNotification?.('No matches found for the selected files.', 'info');
+        return;
+      }
+
+      let preferredSource;
+      if ((previewResult.both_sources || 0) > 0) {
+        preferredSource = await requestSourceChoice(previewResult.both_sources, 'selected mods');
+        if (!preferredSource) {
+          onShowNotification?.('Manual metadata check cancelled.', 'info');
+          return;
+        }
+      }
+
       const result = await invoke('resolve_manual_modrinth_metadata', {
         instanceId: instance.id,
         fileType: 'mod',
-        filenames
+        filenames,
+        preferredSource
       });
       await loadInstalledMods();
       if (onShowNotification) {
@@ -247,7 +303,7 @@ function InstanceMods({
     } finally {
       setIsResolvingManualMods(false);
     }
-  }, [instance.id, isResolvingManualMods, loadInstalledMods, onShowNotification]);
+  }, [instance.id, isResolvingManualMods, loadInstalledMods, onShowNotification, requestSourceChoice]);
 
   const executeFindSearch = useCallback((queryOverride = searchQuery, categoriesOverride = selectedCategories) => {
     if (findProvider === 'curseforge' && !hasCurseForgeKey) {
@@ -1019,9 +1075,11 @@ function InstanceMods({
       setApplyStatus(`Found ${mods.length} mods. Fetching metadata...`);
       setApplyProgress(10);
 
-      // Pre-fetch metadata if possible
+      // Pre-fetch Modrinth metadata if possible
       let projectMap = {};
-      const projectIds = mods.map(m => m.project_id || m.projectId).filter(Boolean);
+      const projectIds = mods
+        .map(m => m.project_id || m.projectId)
+        .filter((projectId) => projectId && !isCurseForgeProjectId(projectId));
       try {
         if (projectIds.length > 0) {
           const projects = await invoke('get_modrinth_projects', { projectIds });
@@ -1049,6 +1107,51 @@ function InstanceMods({
           // Skip if already installed
           if (installedMods.some(m => m.project_id === mid)) {
             installedCount++;
+            continue;
+          }
+
+          if (isCurseForgeProjectId(mid)) {
+            let project = null;
+            let version = null;
+
+            try {
+              project = await invoke('get_curseforge_modpack', { projectId: mid });
+            } catch (e) {
+              console.warn(`Failed to fetch CurseForge project metadata for ${mid}:`, e);
+            }
+
+            const cfVersions = await invoke('get_curseforge_modpack_versions', { projectId: mid });
+            if (Array.isArray(cfVersions) && cfVersions.length > 0) {
+              version = vid
+                ? cfVersions.find((entry) => String(entry.id) === String(vid))
+                : null;
+              if (!version) {
+                const sorted = [...cfVersions].sort((a, b) => new Date(b.date_published) - new Date(a.date_published));
+                version = sorted[0];
+              }
+            }
+
+            if (version) {
+              const file = version?.files?.find((entry) => entry.primary) || version?.files?.[0];
+              if (file) {
+                await invoke('install_curseforge_file', {
+                  instanceId: instance.id,
+                  projectId: mid,
+                  fileId: String(version.id),
+                  fileType: 'mod',
+                  filename: file.filename || `${mid}-${version.id}.jar`,
+                  fileUrl: file.url || null,
+                  worldName: null,
+                  iconUrl: project?.icon_url || mod.icon_url || mod.iconUrl || null,
+                  name: project?.title || mod.name || null,
+                  author: project?.author || mod.author || null,
+                  versionName: version.version_number || version.name || mod.version_name || mod.versionName || null,
+                  categories: project?.categories || project?.display_categories || mod.categories || null
+                });
+                installedCount++;
+              }
+            }
+
             continue;
           }
 
@@ -1303,20 +1406,14 @@ function InstanceMods({
   return (
     <div className="mods-tab">
       <div className={`sub-tabs-row ${isScrolled ? 'scrolled' : ''}`}>
-        <div className="sub-tabs">
-          <button
-            className={`sub-tab ${activeSubTab === 'installed' ? 'active' : ''}`}
-            onClick={() => setActiveSubTab('installed')}
-          >
-            Installed ({installedMods.length})
-          </button>
-          <button
-            className={`sub-tab ${activeSubTab === 'find' ? 'active' : ''}`}
-            onClick={() => setActiveSubTab('find')}
-          >
-            Find Mods
-          </button>
-        </div>
+        <SubTabs
+          tabs={[
+            { id: 'installed', label: `Mods (${installedMods.length})` },
+            { id: 'find', label: 'Find Mods' }
+          ]}
+          activeTab={activeSubTab}
+          onTabChange={setActiveSubTab}
+        />
         <div className="sub-tabs-actions">
           {activeSubTab === 'installed' && (
             <>
@@ -1343,6 +1440,36 @@ function InstanceMods({
         onApply={setSelectedCategories}
         title={activeSubTab === 'find' && findProvider === 'curseforge' ? 'CurseForge Mod Categories' : 'Mod Categories'}
       />
+
+      {sourceChoiceModal.show && (
+        <ConfirmModal
+          isOpen={sourceChoiceModal.show}
+          modalClassName="source-choice-modal"
+          title="Choose metadata source"
+          message={`Found ${sourceChoiceModal.bothCount} ${sourceChoiceModal.scopeLabel} that match both Modrinth and CurseForge. Which source should be used?`}
+          confirmText="Use Modrinth"
+          extraConfirmText="Use CurseForge"
+          cancelText="Cancel"
+          variant="secondary"
+          actionLayout="flat"
+          onConfirm={() => closeSourceChoice('modrinth')}
+          onExtraConfirm={() => closeSourceChoice('curseforge')}
+          onCancel={() => closeSourceChoice(null)}
+        />
+      )}
+
+      {isManagedModpackInstance && (
+        <div className="managed-modpack-warning" role="note">
+          <TriangleAlert size={16} className="managed-modpack-warning-icon" />
+          <div className="managed-modpack-warning-content">
+            <strong>Managed modpack detected</strong>
+            <span>
+              Updating mods manually here can break the modpack. To update safely, use the modpack updater in Instance List:
+              click the info icon before the instance name.
+            </span>
+          </div>
+        </div>
+      )}
 
       {activeSubTab === 'installed' ? (
         <div className="installed-section">
@@ -1384,7 +1511,7 @@ function InstanceMods({
           )}
 
           {loading ? (
-            <p>Loading...</p>
+            <TabLoadingState label="Loading mods" rows={5} />
           ) : installedMods.length === 0 ? (
             <div className="empty-state">
               <p>No mods installed. Go to "Find Mods" to browse and install mods.</p>
@@ -1451,81 +1578,23 @@ function InstanceMods({
                         formatInstalledVersionLabel(mod.version, mod.provider, mod.filename)
                       );
                       return (
-                        <div
+                        <InstalledContentRow
                           key={mod.filename}
-                          className={`installed-item ${!mod.enabled ? 'disabled' : ''} ${isUpdating ? 'mod-updating' : ''} ${isSelected ? 'selected' : ''}`}
-                          onClick={() => {
-                            if (selectedMods.length > 0) {
-                              handleToggleSelect(mod.filename);
-                            }
-                          }}
-                        >
-                          {isUpdating && (
-                            <div className="mod-updating-overlay">
-                              <RefreshCcw className="spin-icon" size={20} />
-                              <span>Updating...</span>
-                            </div>
-                          )}
-                          <div className="item-main">
-                            <div className="item-selection" onClick={(e) => { e.stopPropagation(); handleToggleSelect(mod.filename); }}>
-                              <div className={`selection-checkbox ${isSelected ? 'checked' : ''}`}>
-                                {isSelected && <Check size={12} />}
-                              </div>
-                            </div>
-                            <div
-                              className={`item-toggle ${mod.enabled ? 'enabled' : ''}`}
-                              onClick={(e) => { e.stopPropagation(); !isUpdating && handleToggle(mod); }}
-                              title={mod.enabled ? "Disable Mod" : "Enable Mod"}
-                            />
-                            {mod.icon_url ? (
-                              <img src={mod.icon_url} alt="" className="mod-icon-small" referrerPolicy="no-referrer" />
-                            ) : (
-                              <div className="mod-icon-placeholder">📦</div>
-                            )}
-                            <div
-                              className="item-info clickable"
-                              onClick={(e) => {
-                                if (selectedMods.length > 0) {
-                                  e.stopPropagation();
-                                  handleToggleSelect(mod.filename);
-                                } else {
-                                  handleCheckUpdate(mod);
-                                }
-                              }}
-                            >
-                              <div className="item-title-row">
-                                <h4>{mod.name || mod.filename}</h4>
-                                {versionLabel && <span className="mod-version-tag">{versionLabel}</span>}
-                                {updatesFound[mod.project_id] && (
-                                  <span className="update-available-tag pulse">Update Available</span>
-                                )}
-                              </div>
-                              <div className="item-meta-row">
-                                <span className="mod-provider">{mod.provider}</span>
-                                <span className="mod-separator">•</span>
-                                <span className="mod-size">{formatFileSize(mod.size)}</span>
-                              </div>
-                            </div>
-                          </div>
-                          <div className="item-actions">
-                            <button
-                              className="update-btn-simple"
-                              onClick={(e) => { e.stopPropagation(); handleCheckUpdate(mod); }}
-                              title="Check for updates"
-                              disabled={isUpdating}
-                            >
-                              <RefreshCcw size={14} />
-                            </button>
-                            <button
-                              className="delete-btn-simple"
-                              onClick={(e) => { e.stopPropagation(); handleDelete(mod); }}
-                              title="Delete mod"
-                              disabled={isUpdating}
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </div>
+                          item={mod}
+                          isUpdating={isUpdating}
+                          isSelected={isSelected}
+                          selectionModeActive={selectedMods.length > 0}
+                          versionLabel={versionLabel || 'Unknown version'}
+                          showUpdateBadge={Boolean(updatesFound[mod.project_id])}
+                          authorFallback="Unknown author"
+                          onToggleSelect={handleToggleSelect}
+                          onInfoAction={() => handleCheckUpdate(mod)}
+                          onToggleEnabled={() => handleToggle(mod)}
+                          onDelete={() => handleDelete(mod)}
+                          infoTitle="Open project info"
+                          deleteTitle="Delete mod"
+                          updatingLabel="Updating..."
+                        />
                       );
                     })}
                   </div>
@@ -1552,63 +1621,22 @@ function InstanceMods({
                       const isUpdating = updatingMods.includes(mod.project_id || mod.filename);
                       const isSelected = selectedMods.includes(mod.filename);
                       return (
-                        <div
+                        <InstalledContentRow
                           key={mod.filename}
-                          className={`installed-item ${!mod.enabled ? 'disabled' : ''} ${isUpdating ? 'mod-updating' : ''} ${isSelected ? 'selected' : ''}`}
-                          onClick={() => {
-                            if (selectedMods.length > 0) {
-                              handleToggleSelect(mod.filename);
-                            }
-                          }}
-                        >
-                          {isUpdating && (
-                            <div className="mod-updating-overlay">
-                              <RefreshCcw className="spin-icon" size={20} />
-                              <span>Updating...</span>
-                            </div>
-                          )}
-                          <div className="item-main">
-                            <div className="item-selection" onClick={(e) => { e.stopPropagation(); handleToggleSelect(mod.filename); }}>
-                              <div className={`selection-checkbox ${isSelected ? 'checked' : ''}`}>
-                                {isSelected && <Check size={12} />}
-                              </div>
-                            </div>
-                            <div
-                              className={`item-toggle ${mod.enabled ? 'enabled' : ''}`}
-                              onClick={(e) => { e.stopPropagation(); !isUpdating && handleToggle(mod); }}
-                              title={mod.enabled ? "Disable Mod" : "Enable Mod"}
-                            />
-                            <div className="mod-icon-placeholder">📦</div>
-                            <div
-                              className="item-info clickable"
-                              onClick={(e) => {
-                                if (selectedMods.length > 0) {
-                                  e.stopPropagation();
-                                  handleToggleSelect(mod.filename);
-                                }
-                              }}
-                            >
-                              <div className="item-title-row">
-                                <h4>{mod.name || mod.filename}</h4>
-                              </div>
-                              <div className="item-meta-row">
-                                <span className="mod-provider manual">Manual</span>
-                                <span className="mod-separator">•</span>
-                                <span className="mod-size">{formatFileSize(mod.size)}</span>
-                              </div>
-                            </div>
-                          </div>
-                          <div className="item-actions">
-                            <button
-                              className="delete-btn-simple"
-                              onClick={(e) => { e.stopPropagation(); handleDelete(mod); }}
-                              title="Delete mod"
-                              disabled={isUpdating}
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </div>
+                          item={mod}
+                          isUpdating={isUpdating}
+                          isSelected={isSelected}
+                          selectionModeActive={selectedMods.length > 0}
+                          versionLabel="Unknown version"
+                          platformLabel="Manual"
+                          authorFallback="Manual file"
+                          onToggleSelect={handleToggleSelect}
+                          onToggleEnabled={() => handleToggle(mod)}
+                          onDelete={() => handleDelete(mod)}
+                          infoTitle="Project info unavailable"
+                          deleteTitle="Delete mod"
+                          updatingLabel="Updating..."
+                        />
                       );
                     })}
                   </div>
@@ -1661,20 +1689,14 @@ function InstanceMods({
         <div className="find-mods-section">
           <div className="mods-container">
             <div className="search-controls-refined">
-              <div className="sub-tabs">
-                <button
-                  className={`sub-tab ${findProvider === 'modrinth' ? 'active' : ''}`}
-                  onClick={() => setFindProvider('modrinth')}
-                >
-                  Modrinth
-                </button>
-                <button
-                  className={`sub-tab ${findProvider === 'curseforge' ? 'active' : ''}`}
-                  onClick={() => setFindProvider('curseforge')}
-                >
-                  CurseForge
-                </button>
-              </div>
+              <SubTabs
+                tabs={[
+                  { id: 'modrinth', label: 'Modrinth' },
+                  { id: 'curseforge', label: 'CurseForge' }
+                ]}
+                activeTab={findProvider}
+                onTabChange={setFindProvider}
+              />
               <button
                 className={`filter-btn-modal ${selectedCategories.length > 0 ? 'active' : ''}`}
                 onClick={() => setIsFilterModalOpen(true)}
@@ -1746,7 +1768,10 @@ function InstanceMods({
                 <div className="search-results">
                   {displayMods.map((project, index) => {
                     const installedMod = getInstalledMod(project);
-                    const isDownloading = installing === (project.slug || project.project_id || project.id);
+                    const isDownloading = [project.project_id, project.id, project.slug]
+                      .filter(Boolean)
+                      .map((value) => String(value))
+                      .includes(String(installing || ''));
 
                     return (
                       <div
@@ -1860,6 +1885,12 @@ function InstanceMods({
             setVersionModal({ show: false, project: null, projectId: null, updateMod: null });
             handleInstall(projectItem, selectedV, false, updateModItem);
           }}
+          onReinstall={({ project: modalProject, version, installedItem }) => {
+            const updateModItem = installedItem || versionModal.updateMod;
+            const projectItem = modalProject || versionModal.project;
+            setVersionModal({ show: false, project: null, projectId: null, updateMod: null });
+            handleInstall(projectItem, version, false, updateModItem);
+          }}
           onUninstall={(mod) => {
             setVersionModal({ show: false, project: null, projectId: null, updateMod: null });
             handleDelete(mod);
@@ -1928,7 +1959,7 @@ function InstanceMods({
                       </button>
                     </div>
                     <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                      Adding mods from code will automatically download them from Modrinth.
+                      Adding mods from code will automatically download them from Modrinth or CurseForge.
                     </p>
                   </div>
                 </>

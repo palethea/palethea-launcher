@@ -2548,6 +2548,7 @@ fn is_version_downloaded(version_id: String) -> bool {
 #[tauri::command]
 async fn launch_instance(
     instance_id: String,
+    server_address: Option<String>,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
@@ -2752,6 +2753,7 @@ async fn launch_instance(
         &uuid,
         &app_handle,
         Some(&instance_id),
+        server_address.as_deref(),
     ).await?;
     
     // Store the process ID
@@ -4052,6 +4054,7 @@ async fn install_curseforge_modpack(
 async fn switch_instance_modpack_version(
     instance_id: String,
     target_version_id: String,
+    force_reinstall: Option<bool>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
@@ -4064,7 +4067,8 @@ async fn switch_instance_modpack_version(
 
     let project_id = instance.modpack_project_id.clone();
     let current_version = instance.modpack_version_id.clone().unwrap_or_default();
-    if !current_version.is_empty() && current_version == target_version_id {
+    let should_force_reinstall = force_reinstall.unwrap_or(false);
+    if !should_force_reinstall && !current_version.is_empty() && current_version == target_version_id {
         return Ok(());
     }
 
@@ -4183,6 +4187,8 @@ struct ManualMetadataResolveReport {
     pub unresolved: u32,
     pub skipped: u32,
     pub errors: u32,
+    #[serde(default)]
+    pub both_sources: u32,
 }
 
 impl ManualMetadataResolveReport {
@@ -4193,6 +4199,7 @@ impl ManualMetadataResolveReport {
         self.unresolved += other.unresolved;
         self.skipped += other.skipped;
         self.errors += other.errors;
+        self.both_sources += other.both_sources;
     }
 }
 
@@ -4202,6 +4209,174 @@ struct ManualMetadataCandidate {
     metadata_filename: String,
     file_path: std::path::PathBuf,
     fallback_name: Option<String>,
+}
+
+fn normalize_preferred_source(source: Option<&str>) -> Option<&'static str> {
+    match source.map(|value| value.trim().to_lowercase()) {
+        Some(value) if value == "modrinth" => Some("modrinth"),
+        Some(value) if value == "curseforge" => Some("curseforge"),
+        _ => None,
+    }
+}
+
+fn metadata_candidate_query(candidate: &ManualMetadataCandidate) -> String {
+    let base = candidate
+        .fallback_name
+        .clone()
+        .unwrap_or_else(|| candidate.metadata_filename.clone());
+
+    base
+        .trim_end_matches(".disabled")
+        .trim_end_matches(".jar")
+        .trim_end_matches(".zip")
+        .replace(['_', '-'], " ")
+        .trim()
+        .to_string()
+}
+
+fn metadata_query_candidates(candidate: &ManualMetadataCandidate) -> Vec<String> {
+    let primary = metadata_candidate_query(candidate);
+    if primary.is_empty() {
+        return Vec::new();
+    }
+
+    let mut queries = vec![primary.clone()];
+    let stop_words = [
+        "minecraft",
+        "mc",
+        "fabric",
+        "forge",
+        "neoforge",
+        "quilt",
+        "loader",
+        "api",
+        "mod",
+        "mods",
+        "resourcepack",
+        "resource",
+        "shader",
+        "shaderpack",
+        "datapack",
+    ];
+
+    let filtered_tokens: Vec<&str> = primary
+        .split_whitespace()
+        .filter(|token| {
+            let token = token.trim().trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            if token.is_empty() {
+                return false;
+            }
+            if token.chars().any(|c| c.is_ascii_digit()) {
+                return false;
+            }
+            !stop_words.contains(&token.to_ascii_lowercase().as_str())
+        })
+        .collect();
+
+    if !filtered_tokens.is_empty() {
+        let filtered = filtered_tokens.join(" ");
+        if !filtered.is_empty() && !queries.contains(&filtered) {
+            queries.push(filtered);
+        }
+    }
+
+    queries
+}
+
+fn mod_meta_from_modrinth_project(
+    project: &modrinth::ModrinthProject,
+    version: Option<&modrinth::ModrinthVersion>,
+    fallback_name: Option<String>,
+) -> files::ModMeta {
+    let version_name = version.and_then(|v| {
+        if !v.version_number.trim().is_empty() {
+            Some(v.version_number.clone())
+        } else if !v.name.trim().is_empty() {
+            Some(v.name.clone())
+        } else {
+            None
+        }
+    });
+
+    let categories = if project.categories.is_empty() {
+        None
+    } else {
+        Some(project.categories.clone())
+    };
+
+    files::ModMeta {
+        project_id: project.project_id.clone(),
+        version_id: version.map(|v| v.id.clone()),
+        name: Some(project.title.clone()).or(fallback_name),
+        author: {
+            let trimmed = project.author.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        },
+        icon_url: project.icon_url.clone(),
+        version_name,
+        categories,
+    }
+}
+
+fn mod_meta_from_curseforge_project(
+    project: &curseforge::CurseForgeModpack,
+    version_name: Option<String>,
+    fallback_name: Option<String>,
+) -> files::ModMeta {
+    files::ModMeta {
+        project_id: project.project_id.clone(),
+        version_id: None,
+        name: Some(project.title.clone()).or(fallback_name),
+        author: {
+            let trimmed = project.author.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        },
+        icon_url: project.icon_url.clone(),
+        version_name,
+        categories: if project.categories.is_empty() {
+            None
+        } else {
+            Some(project.categories.clone())
+        },
+    }
+}
+
+async fn resolve_curseforge_version_name(
+    project_id: &str,
+    filename: &str,
+) -> Option<String> {
+    let target = filename.trim().to_lowercase();
+    if target.is_empty() {
+        return None;
+    }
+
+    let versions = curseforge::get_modpack_versions(project_id).await.ok()?;
+    for version in versions {
+        let file_match = version
+            .files
+            .iter()
+            .any(|file| file.filename.trim().to_lowercase() == target);
+        if file_match {
+            let number = version.version_number.trim();
+            if !number.is_empty() {
+                return Some(number.to_string());
+            }
+            let name = version.name.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+
+    None
 }
 
 fn normalize_metadata_file_type(file_type: &str) -> Option<&'static str> {
@@ -4240,6 +4415,8 @@ async fn resolve_manual_modrinth_metadata_internal(
     file_type: &str,
     world_name: Option<&str>,
     filename_filter: Option<&HashSet<String>>,
+    preferred_source: Option<&str>,
+    dry_run: bool,
     app_handle: Option<&AppHandle>,
 ) -> Result<ManualMetadataResolveReport, String> {
     let normalized = normalize_metadata_file_type(file_type)
@@ -4251,7 +4428,7 @@ async fn resolve_manual_modrinth_metadata_internal(
         "mod" => {
             let mods_dir = files::get_mods_dir(instance);
             for item in files::list_mods(instance) {
-                if item.provider == "Modrinth" {
+                if item.provider != "Manual" {
                     continue;
                 }
                 if let Some(filter) = filename_filter {
@@ -4282,7 +4459,7 @@ async fn resolve_manual_modrinth_metadata_internal(
         "resourcepack" => {
             let dir = files::get_resourcepacks_dir(instance);
             for item in files::list_resourcepacks(instance) {
-                if item.provider == "Modrinth" {
+                if item.provider != "Manual" {
                     continue;
                 }
                 if let Some(filter) = filename_filter {
@@ -4305,7 +4482,7 @@ async fn resolve_manual_modrinth_metadata_internal(
         "shader" => {
             let dir = files::get_shaderpacks_dir(instance);
             for item in files::list_shaderpacks(instance) {
-                if item.provider == "Modrinth" {
+                if item.provider != "Manual" {
                     continue;
                 }
                 if let Some(filter) = filename_filter {
@@ -4341,7 +4518,7 @@ async fn resolve_manual_modrinth_metadata_internal(
                     continue;
                 }
                 for item in files::list_datapacks(instance, &world) {
-                    if item.provider == "Modrinth" {
+                    if item.provider != "Manual" {
                         continue;
                     }
                     if let Some(filter) = filename_filter {
@@ -4374,183 +4551,200 @@ async fn resolve_manual_modrinth_metadata_internal(
         return Ok(report);
     }
 
-    let mut matched_entries: Vec<(ManualMetadataCandidate, modrinth::ModrinthVersion)> = Vec::new();
+    let preferred_source = normalize_preferred_source(preferred_source);
+    let curseforge_enabled = secrets::has_curseforge_api_key();
+
     for candidate in candidates {
-        let sha1 = match compute_file_sha1(&candidate.file_path) {
-            Ok(hash) => hash,
-            Err(error) => {
-                report.errors += 1;
-                if let Some(handle) = app_handle {
-                    logger::emit_log(handle, "warn", &format!("Failed to hash file: {}", error));
-                }
-                continue;
-            }
-        };
+        let mut modrinth_meta: Option<files::ModMeta> = None;
+        let mut curseforge_meta: Option<files::ModMeta> = None;
 
-        if let Ok(cache) = MANUAL_METADATA_VERSION_CACHE.lock() {
-            if let Some(cached_version) = cache.get(&sha1).cloned() {
-                match cached_version {
-                    Some(version) => {
-                        report.matched += 1;
-                        matched_entries.push((candidate, version));
+        if candidate.file_path.is_file() {
+            let sha1 = match compute_file_sha1(&candidate.file_path) {
+                Ok(hash) => Some(hash),
+                Err(error) => {
+                    report.errors += 1;
+                    if let Some(handle) = app_handle {
+                        logger::emit_log(handle, "warn", &format!("Failed to hash file: {}", error));
                     }
-                    None => {
-                        report.unresolved += 1;
+                    None
+                }
+            };
+
+            if let Some(sha1) = sha1 {
+                let cached_version = if let Ok(cache) = MANUAL_METADATA_VERSION_CACHE.lock() {
+                    cache.get(&sha1).cloned().flatten()
+                } else {
+                    None
+                };
+
+                if let Some(version) = cached_version {
+                    let project = if let Ok(project_cache) = MANUAL_METADATA_PROJECT_CACHE.lock() {
+                        project_cache.get(&version.project_id).cloned().flatten()
+                    } else {
+                        None
+                    };
+
+                    let resolved_project = if let Some(project) = project {
+                        Some(project)
+                    } else {
+                        match modrinth::get_project(&version.project_id).await {
+                            Ok(project) => {
+                                if let Ok(mut project_cache) = MANUAL_METADATA_PROJECT_CACHE.lock() {
+                                    project_cache.insert(version.project_id.clone(), Some(project.clone()));
+                                }
+                                Some(project)
+                            }
+                            Err(error) => {
+                                if let Some(handle) = app_handle {
+                                    logger::emit_log(
+                                        handle,
+                                        "warn",
+                                        &format!("Failed to fetch Modrinth project {}: {}", version.project_id, error),
+                                    );
+                                }
+                                None
+                            }
+                        }
+                    };
+
+                    if let Some(project) = resolved_project {
+                        modrinth_meta = Some(mod_meta_from_modrinth_project(
+                            &project,
+                            Some(&version),
+                            candidate.fallback_name.clone(),
+                        ));
                     }
                 }
-                continue;
-            }
-        }
 
-        match modrinth::get_version_by_file_sha1(&sha1).await {
-            Ok(Some(version)) => {
-                report.matched += 1;
-                if let Ok(mut cache) = MANUAL_METADATA_VERSION_CACHE.lock() {
-                    cache.insert(sha1.clone(), Some(version.clone()));
-                }
-                matched_entries.push((candidate, version));
-            }
-            Ok(None) => {
-                report.unresolved += 1;
-                if let Ok(mut cache) = MANUAL_METADATA_VERSION_CACHE.lock() {
-                    cache.insert(sha1.clone(), None);
-                }
-            }
-            Err(error) => {
-                report.errors += 1;
-                if let Some(handle) = app_handle {
-                    logger::emit_log(
-                        handle,
-                        "warn",
-                        &format!("Failed Modrinth hash lookup for {}: {}", sha1, error),
-                    );
-                }
-            }
-        }
-    }
+                if modrinth_meta.is_none() {
+                    match modrinth::get_version_by_file_sha1(&sha1).await {
+                        Ok(Some(version)) => {
+                            if let Ok(mut cache) = MANUAL_METADATA_VERSION_CACHE.lock() {
+                                cache.insert(sha1.clone(), Some(version.clone()));
+                            }
 
-    if matched_entries.is_empty() {
-        return Ok(report);
-    }
-
-    let mut project_ids: Vec<String> = matched_entries
-        .iter()
-        .map(|(_, version)| version.project_id.clone())
-        .filter(|id| !id.trim().is_empty())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    project_ids.sort();
-
-    let mut projects_by_id: HashMap<String, modrinth::ModrinthProject> = HashMap::new();
-    let mut missing_project_ids: Vec<String> = Vec::new();
-    if let Ok(cache) = MANUAL_METADATA_PROJECT_CACHE.lock() {
-        for project_id in &project_ids {
-            match cache.get(project_id) {
-                Some(Some(project)) => {
-                    projects_by_id.insert(project_id.clone(), project.clone());
-                }
-                Some(None) => {}
-                None => missing_project_ids.push(project_id.clone()),
-            }
-        }
-    } else {
-        missing_project_ids = project_ids.clone();
-    }
-
-    if !missing_project_ids.is_empty() {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(4),
-            modrinth::get_projects(missing_project_ids.clone()),
-        )
-        .await
-        {
-            Ok(Ok(projects)) => {
-                let fetched_ids: HashSet<String> = projects
-                    .iter()
-                    .map(|project| project.project_id.clone())
-                    .collect();
-
-                if let Ok(mut cache) = MANUAL_METADATA_PROJECT_CACHE.lock() {
-                    for project in projects {
-                        projects_by_id.insert(project.project_id.clone(), project.clone());
-                        cache.insert(project.project_id.clone(), Some(project));
-                    }
-                    for project_id in missing_project_ids {
-                        if !fetched_ids.contains(&project_id) {
-                            cache.insert(project_id, None);
+                            match modrinth::get_project(&version.project_id).await {
+                                Ok(project) => {
+                                    if let Ok(mut project_cache) = MANUAL_METADATA_PROJECT_CACHE.lock() {
+                                        project_cache.insert(project.project_id.clone(), Some(project.clone()));
+                                    }
+                                    modrinth_meta = Some(mod_meta_from_modrinth_project(
+                                        &project,
+                                        Some(&version),
+                                        candidate.fallback_name.clone(),
+                                    ));
+                                }
+                                Err(error) => {
+                                    report.errors += 1;
+                                    if let Some(handle) = app_handle {
+                                        logger::emit_log(
+                                            handle,
+                                            "warn",
+                                            &format!("Failed to fetch Modrinth project details: {}", error),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            if let Ok(mut cache) = MANUAL_METADATA_VERSION_CACHE.lock() {
+                                cache.insert(sha1.clone(), None);
+                            }
+                        }
+                        Err(error) => {
+                            report.errors += 1;
+                            if let Some(handle) = app_handle {
+                                logger::emit_log(
+                                    handle,
+                                    "warn",
+                                    &format!("Failed Modrinth hash lookup for {}: {}", sha1, error),
+                                );
+                            }
                         }
                     }
-                } else {
-                    for project in projects {
-                        projects_by_id.insert(project.project_id.clone(), project);
+                }
+            }
+        }
+
+        let queries = metadata_query_candidates(&candidate);
+        if modrinth_meta.is_none() {
+            for query in &queries {
+                match modrinth::search_projects(query, normalized, None, None, None, 5, 0, None).await {
+                    Ok(results) => {
+                        if let Some(project) = results.hits.into_iter().next() {
+                            modrinth_meta = Some(mod_meta_from_modrinth_project(
+                                &project,
+                                None,
+                                candidate.fallback_name.clone(),
+                            ));
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(handle) = app_handle {
+                            logger::emit_log(
+                                handle,
+                                "debug",
+                                &format!("Modrinth name lookup failed for '{}': {}", query, error),
+                            );
+                        }
                     }
                 }
             }
-            Ok(Err(error)) => {
-                if let Some(handle) = app_handle {
-                    logger::emit_log(
-                        handle,
-                        "warn",
-                        &format!("Failed to fetch Modrinth project details: {}", error),
-                    );
-                }
-            }
-            Err(_) => {
-                if let Some(handle) = app_handle {
-                    logger::emit_log(
-                        handle,
-                        "warn",
-                        "Timed out fetching Modrinth project details during manual metadata resolve",
-                    );
+        }
+
+        if curseforge_enabled {
+            for query in &queries {
+                match curseforge::search_projects(normalized, query, None, 5, 0).await {
+                    Ok(results) => {
+                        if let Some(project) = results.hits.into_iter().next() {
+                            let version_name = resolve_curseforge_version_name(
+                                &project.project_id,
+                                &candidate.metadata_filename,
+                            )
+                            .await;
+                            curseforge_meta = Some(mod_meta_from_curseforge_project(
+                                &project,
+                                version_name,
+                                candidate.fallback_name.clone(),
+                            ));
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(handle) = app_handle {
+                            logger::emit_log(
+                                handle,
+                                "debug",
+                                &format!("CurseForge lookup failed for '{}': {}", query, error),
+                            );
+                        }
+                    }
                 }
             }
         }
-    }
 
-    for (candidate, version) in matched_entries {
-        if version.project_id.trim().is_empty() {
+        if modrinth_meta.is_some() && curseforge_meta.is_some() {
+            report.both_sources += 1;
+        }
+
+        let selected_meta = match preferred_source {
+            Some("curseforge") => curseforge_meta.or(modrinth_meta),
+            Some("modrinth") => modrinth_meta.or(curseforge_meta),
+            _ => modrinth_meta.or(curseforge_meta),
+        };
+
+        let Some(meta) = selected_meta else {
             report.unresolved += 1;
             continue;
+        };
+
+        report.matched += 1;
+
+        if dry_run {
+            report.skipped += 1;
+            continue;
         }
-
-        let project = projects_by_id.get(&version.project_id);
-        let version_name = if !version.version_number.trim().is_empty() {
-            Some(version.version_number.clone())
-        } else if !version.name.trim().is_empty() {
-            Some(version.name.clone())
-        } else {
-            None
-        };
-        let name = project
-            .map(|project| project.title.clone())
-            .or(candidate.fallback_name.clone());
-        let author = project.and_then(|project| {
-            let trimmed = project.author.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        });
-        let icon_url = project.and_then(|project| project.icon_url.clone());
-        let categories = project.and_then(|project| {
-            if project.categories.is_empty() {
-                None
-            } else {
-                Some(project.categories.clone())
-            }
-        });
-
-        let meta = files::ModMeta {
-            project_id: version.project_id.clone(),
-            version_id: Some(version.id.clone()),
-            name,
-            author,
-            icon_url,
-            version_name,
-            categories,
-        };
 
         match files::write_meta_for_entry(&candidate.parent_dir, &candidate.metadata_filename, &meta) {
             Ok(_) => {
@@ -4582,7 +4776,7 @@ async fn resolve_manual_modrinth_metadata_for_instance(
     let mut aggregate = ManualMetadataResolveReport::default();
 
     for target in ["mod", "resourcepack", "shader"] {
-        match resolve_manual_modrinth_metadata_internal(instance, target, None, None, Some(app_handle)).await {
+        match resolve_manual_modrinth_metadata_internal(instance, target, None, None, None, false, Some(app_handle)).await {
             Ok(report) => aggregate.merge(&report),
             Err(error) => logger::emit_log(
                 app_handle,
@@ -4598,6 +4792,8 @@ async fn resolve_manual_modrinth_metadata_for_instance(
             "datapack",
             Some(&world.folder_name),
             None,
+            None,
+            false,
             Some(app_handle),
         )
         .await
@@ -4624,6 +4820,8 @@ async fn resolve_manual_modrinth_metadata(
     file_type: String,
     world_name: Option<String>,
     filenames: Option<Vec<String>>,
+    preferred_source: Option<String>,
+    dry_run: Option<bool>,
 ) -> Result<ManualMetadataResolveReport, String> {
     let instance = instances::get_instance(&instance_id)?;
     let normalized = normalize_metadata_file_type(&file_type)
@@ -4637,6 +4835,8 @@ async fn resolve_manual_modrinth_metadata(
         normalized,
         world_name.as_deref(),
         filename_filter.as_ref(),
+        preferred_source.as_deref(),
+        dry_run.unwrap_or(false),
         Some(&app_handle),
     )
     .await
@@ -4844,6 +5044,110 @@ async fn install_curseforge_file(
     let _ = files::write_meta_for_entry(&dest_dir, &resolved_filename, &meta);
 
     Ok(())
+}
+
+#[tauri::command]
+async fn install_curseforge_world(
+    app_handle: AppHandle,
+    instance_id: String,
+    project_id: String,
+    file_id: String,
+    filename: String,
+    file_url: Option<String>,
+    name: Option<String>,
+) -> Result<String, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    let base_filename = if filename.trim().is_empty() {
+        format!("{}-{}.zip", project_id.trim(), file_id.trim())
+    } else {
+        filename
+    };
+    let resolved_filename = if base_filename.to_ascii_lowercase().ends_with(".zip") {
+        base_filename
+    } else {
+        format!("{}.zip", base_filename)
+    };
+
+    let resolved_url = if let Some(url) = file_url.filter(|value| !value.trim().is_empty()) {
+        url
+    } else {
+        curseforge::get_file_download_url_for_ids(&project_id, &file_id)
+            .await
+            .map_err(|e| format!("Failed to resolve CurseForge download URL: {}", e))?
+    };
+
+    let mut temp_dir = std::env::temp_dir();
+    temp_dir.push("palethea_world_imports");
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp directory: {}", e))?;
+
+    let temp_filename = format!(
+        "{}-{}-{}.zip",
+        project_id.trim(),
+        file_id.trim(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let temp_path = temp_dir.join(temp_filename);
+
+    let client = minecraft::http_client();
+    let response = client
+        .get(&resolved_url)
+        .header("User-Agent", format!("PaletheaLauncher/{}", minecraft::get_launcher_version()))
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("HTTP error: {}", e))?;
+
+    let total_size = response.content_length();
+    let mut file = std::fs::File::create(&temp_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let mut downloaded: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+
+    use futures::StreamExt;
+    let mut stream = response.bytes_stream();
+    while let Some(item) = stream.next().await {
+        let chunk = item.map_err(|e| format!("Download error: {}", e))?;
+        std::io::Write::write_all(&mut file, &chunk).map_err(|e| format!("Write error: {}", e))?;
+        downloaded += chunk.len() as u64;
+
+        if last_emit.elapsed().as_millis() > 100 || total_size.map_or(false, |total| downloaded == total) {
+            let percentage = total_size.map_or(0.0, |total| (downloaded as f32 / total as f32) * 100.0);
+            let _ = app_handle.emit(
+                "download-progress",
+                downloader::DownloadProgress {
+                    stage: format!("Downloading {}...", name.as_ref().unwrap_or(&resolved_filename)),
+                    percentage,
+                    current: 1,
+                    total: 1,
+                    total_bytes: total_size,
+                    downloaded_bytes: Some(downloaded),
+                },
+            );
+            last_emit = std::time::Instant::now();
+        }
+    }
+    std::io::Write::flush(&mut file).map_err(|e| format!("Write error: {}", e))?;
+    drop(file);
+
+    let _ = app_handle.emit(
+        "download-progress",
+        downloader::DownloadProgress {
+            stage: format!("Importing {}...", name.as_ref().unwrap_or(&resolved_filename)),
+            percentage: 100.0,
+            current: 1,
+            total: 1,
+            total_bytes: total_size,
+            downloaded_bytes: total_size.or(Some(downloaded)),
+        },
+    );
+
+    let temp_path_string = temp_path.to_string_lossy().to_string();
+    let import_result = files::import_world(&instance, &temp_path_string)
+        .map_err(|e| format!("Failed to import downloaded world: {}", e));
+
+    let _ = std::fs::remove_file(&temp_path);
+
+    import_result
 }
 
 #[tauri::command]
@@ -5354,6 +5658,15 @@ fn summarize_sources(sources: &[String]) -> String {
     format!("{}, {} and {} more", sources[0], sources[1], sources.len() - 2)
 }
 
+fn normalize_dependency_key(input: &str) -> String {
+    input
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
+}
+
 #[tauri::command]
 async fn scan_mod_conflicts(instance_id: String) -> Result<Vec<ModConflictIssue>, String> {
     let instance = instances::get_instance(&instance_id)?;
@@ -5458,6 +5771,11 @@ async fn scan_mod_conflicts(instance_id: String) -> Result<Vec<ModConflictIssue>
         .iter()
         .map(|m| m.project_id.clone())
         .collect();
+    let installed_name_keys: HashSet<String> = enabled_mods
+        .iter()
+        .map(|m| normalize_dependency_key(&m.display_name))
+        .filter(|key| !key.is_empty())
+        .collect();
 
     let expected_loader = normalize_loader_key(&instance.mod_loader).map(str::to_string);
     let mut missing_dep_sources: HashMap<String, Vec<String>> = HashMap::new();
@@ -5559,6 +5877,15 @@ async fn scan_mod_conflicts(instance_id: String) -> Result<Vec<ModConflictIssue>
         for dep_id in dep_ids {
             let sources = missing_dep_sources.get(&dep_id).cloned().unwrap_or_default();
             let dep_name = dep_titles.get(&dep_id).cloned().unwrap_or_else(|| dep_id.clone());
+
+            let dep_name_key = normalize_dependency_key(&dep_name);
+            let dep_id_key = normalize_dependency_key(&dep_id);
+            if (!dep_name_key.is_empty() && installed_name_keys.contains(&dep_name_key))
+                || (!dep_id_key.is_empty() && installed_name_keys.contains(&dep_id_key))
+            {
+                continue;
+            }
+
             issues.push(ModConflictIssue {
                 id: format!("missing-dependency:{}", dep_id),
                 issue_type: "missing_dependency".to_string(),
@@ -5615,6 +5942,12 @@ fn get_instance_resourcepacks(instance_id: String) -> Result<Vec<files::Resource
 }
 
 #[tauri::command]
+fn toggle_instance_resourcepack(instance_id: String, filename: String) -> Result<bool, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    files::toggle_resourcepack(&instance, &filename)
+}
+
+#[tauri::command]
 fn delete_instance_resourcepack(instance_id: String, filename: String) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
     files::delete_resourcepack(&instance, &filename)
@@ -5624,6 +5957,12 @@ fn delete_instance_resourcepack(instance_id: String, filename: String) -> Result
 fn get_instance_shaderpacks(instance_id: String) -> Result<Vec<files::ShaderPack>, String> {
     let instance = instances::get_instance(&instance_id)?;
     Ok(files::list_shaderpacks(&instance))
+}
+
+#[tauri::command]
+fn toggle_instance_shaderpack(instance_id: String, filename: String) -> Result<bool, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    files::toggle_shaderpack(&instance, &filename)
 }
 
 #[tauri::command]
@@ -5648,6 +5987,12 @@ fn delete_instance_world(instance_id: String, world_name: String) -> Result<(), 
 fn rename_instance_world(instance_id: String, folder_name: String, new_name: String) -> Result<(), String> {
     let instance = instances::get_instance(&instance_id)?;
     files::rename_world(&instance, &folder_name, &new_name)
+}
+
+#[tauri::command]
+fn import_instance_world(instance_id: String, source_path: String) -> Result<String, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    files::import_world(&instance, &source_path)
 }
 
 #[tauri::command]
@@ -5679,6 +6024,12 @@ fn open_instance_datapacks_folder(_app: AppHandle, instance_id: String, world_na
 fn get_world_datapacks(instance_id: String, world_name: String) -> Result<Vec<files::Datapack>, String> {
     let instance = instances::get_instance(&instance_id)?;
     Ok(files::list_datapacks(&instance, &world_name))
+}
+
+#[tauri::command]
+fn toggle_instance_datapack(instance_id: String, world_name: String, filename: String) -> Result<bool, String> {
+    let instance = instances::get_instance(&instance_id)?;
+    files::toggle_datapack(&instance, &world_name, &filename)
 }
 
 #[tauri::command]
@@ -6480,6 +6831,7 @@ pub fn run() {
             switch_instance_modpack_version,
             install_modrinth_file,
             install_curseforge_file,
+            install_curseforge_world,
             resolve_manual_modrinth_metadata,
             save_remote_file,
             // File management commands
@@ -6489,16 +6841,20 @@ pub fn run() {
             toggle_instance_mod,
             delete_instance_mod,
             get_instance_resourcepacks,
+            toggle_instance_resourcepack,
             delete_instance_resourcepack,
             get_instance_shaderpacks,
+            toggle_instance_shaderpack,
             delete_instance_shaderpack,
             get_instance_worlds,
             delete_instance_world,
             rename_instance_world,
+            import_instance_world,
             open_instance_world_folder,
             import_instance_file,
             open_instance_datapacks_folder,
             get_world_datapacks,
+            toggle_instance_datapack,
             delete_instance_datapack,
             get_instance_screenshots,
             delete_instance_screenshot,

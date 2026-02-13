@@ -104,6 +104,8 @@ function InstanceSettings({
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showOptionsEditor, setShowOptionsEditor] = useState(false);
   const [installingLoader, setInstallingLoader] = useState(false);
+  const isManagedModpackInstance = Boolean(instance?.modpack_provider || instance?.modpack_project_id);
+  const effectiveLaunchUpdateCheck = !isManagedModpackInstance && checkModUpdatesOnLaunch;
 
   const loadVersions = useCallback(async () => {
     try {
@@ -474,23 +476,31 @@ function InstanceSettings({
             <div className="launch-account-control">
               <button
                 type="button"
-                className={`instance-setting-toggle-btn ${checkModUpdatesOnLaunch ? 'enabled' : ''}`}
-                onClick={() => setCheckModUpdatesOnLaunch((prev) => !prev)}
+                className={`instance-setting-toggle-btn ${effectiveLaunchUpdateCheck ? 'enabled' : ''}`}
+                onClick={() => {
+                  if (isManagedModpackInstance) return;
+                  setCheckModUpdatesOnLaunch((prev) => !prev);
+                }}
+                disabled={isManagedModpackInstance}
               >
-                <span className={`instance-setting-toggle ${checkModUpdatesOnLaunch ? 'enabled' : ''}`} />
+                <span className={`instance-setting-toggle ${effectiveLaunchUpdateCheck ? 'enabled' : ''}`} />
                 <div className="instance-setting-toggle-copy">
                   <span className="instance-setting-toggle-title">
                     Check updates before launch
                   </span>
                   <span className="instance-setting-toggle-sub">
-                    {checkModUpdatesOnLaunch
-                      ? 'Show launch prompt when mod or loader updates are available'
-                      : 'Skip pre-launch update check for this instance'}
+                    {isManagedModpackInstance
+                      ? 'Disabled for managed modpack instances'
+                      : (checkModUpdatesOnLaunch
+                        ? 'Show launch prompt when mod or loader updates are available'
+                        : 'Skip pre-launch update check for this instance')}
                   </span>
                 </div>
               </button>
               <span className="setting-hint launch-account-hint">
-                You can still run manual checks in the Mods tab at any time.
+                {isManagedModpackInstance
+                  ? 'Managed modpacks skip launch-time auto updates to avoid unsafe version drift.'
+                  : 'You can still run manual checks in the Mods tab at any time.'}
               </span>
             </div>
           </div>
