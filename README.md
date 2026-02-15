@@ -29,16 +29,6 @@ Built with Tauri + React. Currently targeting Windows and Linux.
 - **Clear, focused UI** for high-frequency daily use.
 - **Practical power features** without overcomplicated setup.
 
-## Visual Showcase (Fill In After Upload)
-
-Add your images under `docs/images/` and keep these entries in place.
-
-![Hero - Launcher Overview](docs/images/hero-overview.png)
-![Instance List](docs/images/instance-list.png)
-![Create Instance Flow](docs/images/create-instance.png)
-![Modpack Browser](docs/images/modpack-browser.png)
-![Mod/Pack Details Modal](docs/images/details-modal.png)
-
 ## Community, Support, and Feedback
 
 If you want to:
@@ -51,7 +41,7 @@ Please join the Discord from inside the launcher:
 1. Open the **Updates** tab.
 2. Click **Join Discord for Updates**.
 
-## Existing Screenshots
+## Screenshots
 
 <img width="1099" height="727" alt="Palethea launcher screenshot 1" src="https://github.com/user-attachments/assets/d144e84f-fe97-4c86-92a6-a1c6d59d07a8" />
 <img width="1096" height="726" alt="Palethea launcher screenshot 2" src="https://github.com/user-attachments/assets/333faadd-e7eb-4ec9-95ac-cd84368e9e9e" />
