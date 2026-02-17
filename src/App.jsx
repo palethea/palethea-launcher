@@ -62,6 +62,104 @@ const devError = (...args) => {
 
 const SUPPORTED_LOADER_KEYS = new Set(['fabric', 'forge', 'neoforge']);
 const DEFAULT_INSTANCE_ICON = '/minecraft_logo.png';
+const CATEGORY_LIST_STORAGE_KEY = 'instance-category-list';
+const CATEGORY_LIST_UPDATED_EVENT = 'instance-category-list-updated';
+const OPEN_CATEGORY_MANAGER_EVENT = 'open-instance-category-manager';
+const PREFERRED_SERVER_STORAGE_KEY = 'instance-preferred-server-map';
+
+const normalizeCategoryName = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const loadStoredCategories = () => {
+  try {
+    const raw = localStorage.getItem(CATEGORY_LIST_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    const dedupedMap = new Map();
+    for (const entry of parsed) {
+      const normalized = normalizeCategoryName(entry);
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (!dedupedMap.has(key)) {
+        dedupedMap.set(key, normalized);
+      }
+    }
+    return Array.from(dedupedMap.values());
+  } catch (error) {
+    console.warn('Failed to load stored category list:', error);
+    return [];
+  }
+};
+
+const persistStoredCategories = (categories) => {
+  const dedupedMap = new Map();
+  for (const entry of categories || []) {
+    const normalized = normalizeCategoryName(entry);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (!dedupedMap.has(key)) {
+      dedupedMap.set(key, normalized);
+    }
+  }
+  const normalizedList = Array.from(dedupedMap.values());
+  localStorage.setItem(CATEGORY_LIST_STORAGE_KEY, JSON.stringify(normalizedList));
+  window.dispatchEvent(new CustomEvent(CATEGORY_LIST_UPDATED_EVENT, { detail: { categories: normalizedList } }));
+  return normalizedList;
+};
+
+const buildCategoryPickerModalState = (instances, targetInstance) => {
+  const countsMap = new Map();
+  for (const instance of instances || []) {
+    const category = normalizeCategoryName(instance?.category);
+    if (!category) continue;
+    const key = category.toLowerCase();
+    const existing = countsMap.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      countsMap.set(key, { name: category, count: 1 });
+    }
+  }
+
+  const storedCategories = loadStoredCategories();
+  const seenCategoryKeys = new Set();
+  const categories = [];
+
+  for (const category of storedCategories) {
+    const key = category.toLowerCase();
+    if (seenCategoryKeys.has(key)) continue;
+    seenCategoryKeys.add(key);
+    categories.push(category);
+    if (!countsMap.has(key)) {
+      countsMap.set(key, { name: category, count: 0 });
+    }
+  }
+
+  const discoveredCategories = Array.from(countsMap.values())
+    .map((entry) => entry.name)
+    .filter((entry) => !seenCategoryKeys.has(entry.toLowerCase()))
+    .sort((left, right) => left.localeCompare(right));
+  categories.push(...discoveredCategories);
+
+  const categoryCounts = Object.fromEntries(
+    Array.from(countsMap.entries()).map(([key, value]) => [key, value.count])
+  );
+
+  return {
+    instance: targetInstance,
+    categories,
+    categoryCounts,
+    selectedCategory: normalizeCategoryName(targetInstance?.category),
+    creatingNew: false,
+    newCategoryName: '',
+    editingCategoryKey: '',
+    editingCategoryValue: '',
+    pendingDeleteCategoryKey: '',
+    draggedCategoryKey: '',
+    dragOverCategoryKey: ''
+  };
+};
 
 const compareLooseVersions = (left, right) => {
   const leftParts = String(left || '').match(/\d+/g)?.map(Number) || [];
@@ -136,12 +234,13 @@ function App() {
   const [loadingBytes, setLoadingBytes] = useState({ current: 0, total: 0 });
   const [loadingCount, setLoadingCount] = useState({ current: 0, total: 0 });
   const [loadingTelemetry, setLoadingTelemetry] = useState(EMPTY_DOWNLOAD_TELEMETRY);
-  const [notification, setNotification] = useState(null);
+  const [notifications, setNotifications] = useState([]);
   const [editingInstanceId, setEditingInstanceId] = useState(null);
   const [deletingInstanceIds, setDeletingInstanceIds] = useState([]);
   const [contextMenu, setContextMenu] = useState(null);
   const [showLoginPrompt, setShowLoginPrompt] = useState(false);
   const [confirmModal, setConfirmModal] = useState(null);
+  const [categoryEditorModal, setCategoryEditorModal] = useState(null);
   const [launchUpdatePrompt, setLaunchUpdatePrompt] = useState(null);
   const [runningInstances, setRunningInstances] = useState({}); // { id: { pid, start_time } }
   const [showWelcome, setShowWelcome] = useState(false);
@@ -168,6 +267,9 @@ function App() {
   const deletingInstanceIdsRef = useRef(new Set());
   const deleteQueueRef = useRef(Promise.resolve());
   const instanceSetupByInstanceRef = useRef({});
+  const notificationsRef = useRef([]);
+  const notificationTimersRef = useRef(new Map());
+  const notificationCounterRef = useRef(0);
 
   const handleQueueDownload = useCallback((item) => {
     setDownloadQueue(prev => {
@@ -284,6 +386,10 @@ function App() {
   }, [instanceSetupByInstance]);
 
   useEffect(() => {
+    notificationsRef.current = notifications;
+  }, [notifications]);
+
+  useEffect(() => {
     return () => {
       if (launchUpdatePromptResolveRef.current) {
         launchUpdatePromptResolveRef.current({ action: 'ignore', disableFutureChecks: false });
@@ -292,9 +398,47 @@ function App() {
     };
   }, []);
 
+  const dismissNotification = useCallback((id) => {
+    const target = notificationsRef.current.find((item) => item.id === id);
+    if (!target || target.isLeaving) return;
+
+    setNotifications((prev) => prev.map((item) => (
+      item.id === id ? { ...item, isLeaving: true } : item
+    )));
+
+    const existingTimers = notificationTimersRef.current.get(id) || {};
+    if (existingTimers.autoDismissTimer) {
+      clearTimeout(existingTimers.autoDismissTimer);
+    }
+    if (existingTimers.removeTimer) {
+      clearTimeout(existingTimers.removeTimer);
+    }
+
+    const removeTimer = setTimeout(() => {
+      setNotifications((prev) => prev.filter((item) => item.id !== id));
+      notificationTimersRef.current.delete(id);
+    }, 240);
+
+    notificationTimersRef.current.set(id, { ...existingTimers, removeTimer });
+  }, []);
+
   const showNotification = useCallback((message, type = 'info') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 5000);
+    const id = `toast-${Date.now()}-${notificationCounterRef.current++}`;
+    setNotifications((prev) => [...prev, { id, message, type, isLeaving: false }]);
+
+    const autoDismissTimer = setTimeout(() => {
+      dismissNotification(id);
+    }, 5000);
+
+    notificationTimersRef.current.set(id, { autoDismissTimer });
+  }, [dismissNotification]);
+
+  useEffect(() => () => {
+    notificationTimersRef.current.forEach(({ autoDismissTimer, removeTimer }) => {
+      if (autoDismissTimer) clearTimeout(autoDismissTimer);
+      if (removeTimer) clearTimeout(removeTimer);
+    });
+    notificationTimersRef.current.clear();
   }, []);
 
   const resolveLaunchUpdatePrompt = useCallback((action) => {
@@ -352,6 +496,8 @@ function App() {
   const urlParams = new URLSearchParams(window.location.search);
   const popoutMode = urlParams.get('popout');
   const popoutInstanceId = urlParams.get('instanceId');
+  const sidebarStyleRaw = launcherSettings?.sidebar_style || 'full';
+  const sidebarStyle = (sidebarStyleRaw === 'compact' || sidebarStyleRaw === 'original-slim') ? 'compact' : 'full';
 
   // Show window once initialized
   useEffect(() => {
@@ -432,6 +578,52 @@ function App() {
     }
   }, []);
 
+  const primeAccountSkins = useCallback(async (savedAccounts = []) => {
+    const targets = Array.isArray(savedAccounts)
+      ? savedAccounts.filter(
+        (account) => account?.is_microsoft
+          && account?.uuid
+          && account?.access_token
+          && !localStorage.getItem(`skin_${account.uuid}`)
+      )
+      : [];
+
+    if (targets.length === 0) return;
+
+    const resolvedEntries = await Promise.allSettled(
+      targets.map(async (account) => {
+        const profile = await invoke('get_mc_profile_full_with_token', {
+          accessToken: account.access_token
+        });
+        const activeSkin = profile?.skins?.find((skin) => skin?.state === 'ACTIVE');
+        if (!activeSkin?.url) return null;
+        return { uuid: account.uuid, url: activeSkin.url };
+      })
+    );
+
+    const nextEntries = resolvedEntries
+      .filter((entry) => entry.status === 'fulfilled' && entry.value?.uuid && entry.value?.url)
+      .map((entry) => entry.value);
+
+    if (nextEntries.length === 0) return;
+
+    nextEntries.forEach(({ uuid, url }) => {
+      localStorage.setItem(`skin_${uuid}`, url);
+    });
+
+    setSkinCache((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      nextEntries.forEach(({ uuid, url }) => {
+        if (next[uuid] !== url) {
+          next[uuid] = url;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
   const loadInstances = useCallback(async () => {
     try {
       const result = await invoke('get_instances');
@@ -457,7 +649,14 @@ function App() {
     } catch (error) {
       devError(`[DEBUG] [${getElapsed()}] Failed to load settings:`, error);
       // Set defaults on error
-      setLauncherSettings({ enable_console: false, show_welcome: true, account_preview_mode: 'simple' });
+      setLauncherSettings({
+        enable_console: false,
+        show_welcome: true,
+        account_preview_mode: 'simple',
+        sidebar_style: 'full',
+        instance_header_style: 'glass-top',
+        show_instance_editor_tab_icons: false
+      });
     }
   }, []);
 
@@ -482,6 +681,7 @@ function App() {
       }));
 
       setAccounts(uiAccounts);
+      void primeAccountSkins(savedData.accounts);
 
       // Find active account
       const activeUsername = savedData.active_account || savedData.accounts[0]?.username;
@@ -570,7 +770,7 @@ function App() {
       setShowLoginPrompt(true);
       setActiveAccount({ username: 'Player', isLoggedIn: false, uuid: null });
     }
-  }, [loadSkinForAccount, showNotification]);
+  }, [loadSkinForAccount, primeAccountSkins, showNotification]);
 
   const initializationRef = useRef(false);
 
@@ -2246,9 +2446,23 @@ function App() {
     }
   }, [editingInstanceId, focusExistingPopoutEditor, handleOpenPopoutEditor, launcherSettings, showNotification]);
 
-  const handleContextMenuAction = useCallback(async (action, data) => {
-    const instance = contextMenu?.instance;
+  const handleContextMenuAction = useCallback(async (action) => {
+    const contextTarget = contextMenu?.instance;
+    const isCategoryTarget = Boolean(contextTarget && contextTarget.__kind === 'category');
+    const instance = isCategoryTarget ? null : contextTarget;
+    const categoryName = isCategoryTarget ? normalizeCategoryName(contextTarget?.name) : '';
     setContextMenu(null);
+
+    const openCategoryManagerFromContext = (mode = 'edit') => {
+      if (!isCategoryTarget) return;
+      window.dispatchEvent(new CustomEvent(OPEN_CATEGORY_MANAGER_EVENT, {
+        detail: {
+          mode,
+          categoryName,
+          bucketKey: contextTarget?.bucketKey || ''
+        }
+      }));
+    };
 
     switch (action) {
       case 'play':
@@ -2277,26 +2491,81 @@ function App() {
           handleCloneInstance(instance);
         }
         break;
-      case 'setColor':
-        if (instance && data) {
+      case 'setCategory':
+        if (instance) {
+          setCategoryEditorModal(buildCategoryPickerModalState(instances, instance));
+        }
+        break;
+      case 'clearCategory':
+        if (instance) {
           try {
-            const updated = { ...instance, color_accent: data };
+            const updated = { ...instance, category: null };
             await invoke('update_instance', { instance: updated });
             await loadInstances();
           } catch (error) {
-            console.error('Failed to set color:', error);
+            console.error('Failed to clear category:', error);
           }
         }
         break;
-      case 'clearColor':
-        if (instance) {
-          try {
-            const updated = { ...instance, color_accent: null };
-            await invoke('update_instance', { instance: updated });
-            await loadInstances();
-          } catch (error) {
-            console.error('Failed to clear color:', error);
+      case 'categoryEdit':
+        if (isCategoryTarget) {
+          openCategoryManagerFromContext('edit');
+        }
+        break;
+      case 'categoryRename':
+        if (isCategoryTarget && contextTarget?.bucketKey !== '__uncategorized__' && categoryName) {
+          openCategoryManagerFromContext('rename');
+        }
+        break;
+      case 'categoryDelete':
+        if (isCategoryTarget && contextTarget?.bucketKey !== '__uncategorized__' && categoryName) {
+          openCategoryManagerFromContext('delete');
+        }
+        break;
+      case 'categoryLaunchAll':
+        if (isCategoryTarget) {
+          const isUncategorizedCategory = contextTarget?.bucketKey === '__uncategorized__';
+          const normalizedCategoryKey = categoryName.toLowerCase();
+          const categoryInstances = instances.filter((entry) => {
+            const entryCategory = normalizeCategoryName(entry?.category);
+            if (isUncategorizedCategory) {
+              return !entryCategory;
+            }
+            return entryCategory.toLowerCase() === normalizedCategoryKey;
+          });
+
+          if (categoryInstances.length === 0) {
+            showNotification('No instances in this category to launch.', 'info');
+            break;
           }
+
+          let preferredServerMap = {};
+          try {
+            const rawMap = localStorage.getItem(PREFERRED_SERVER_STORAGE_KEY);
+            const parsedMap = rawMap ? JSON.parse(rawMap) : {};
+            if (parsedMap && typeof parsedMap === 'object') {
+              preferredServerMap = parsedMap;
+            }
+          } catch (error) {
+            console.warn('Failed to read preferred server map for bulk category launch:', error);
+          }
+
+          for (const targetInstance of categoryInstances) {
+            const preferredServerEntry = preferredServerMap?.[targetInstance.id];
+            const preferredServerAddress = typeof preferredServerEntry?.address === 'string'
+              ? preferredServerEntry.address.trim()
+              : '';
+
+            void handleLaunchInstance(
+              targetInstance.id,
+              preferredServerAddress ? { serverAddress: preferredServerAddress } : undefined
+            );
+          }
+
+          showNotification(
+            `Queued launch for ${categoryInstances.length} instance${categoryInstances.length === 1 ? '' : 's'}.`,
+            'info'
+          );
         }
         break;
       // ----------
@@ -2363,7 +2632,209 @@ function App() {
         }
         break;
     }
-  }, [contextMenu, handleLaunchInstance, handleEditInstance, handleDeleteInstance, handleCloneInstance, loadInstances, showNotification]);
+  }, [contextMenu, instances, handleLaunchInstance, handleEditInstance, handleDeleteInstance, handleCloneInstance, loadInstances, showNotification]);
+
+  const handleCreateCategoryFromModal = useCallback(() => {
+    if (!categoryEditorModal) return;
+    const normalized = normalizeCategoryName(categoryEditorModal.newCategoryName);
+    if (!normalized) {
+      showNotification('Enter a category name first.', 'warning');
+      return;
+    }
+
+    const existingMatch = categoryEditorModal.categories.find(
+      (entry) => entry.toLowerCase() === normalized.toLowerCase()
+    );
+    const nextCategoryName = existingMatch || normalized;
+
+    if (!existingMatch) {
+      const nextStorageList = persistStoredCategories([...categoryEditorModal.categories, normalized]);
+
+      setCategoryEditorModal((prev) => (prev ? {
+        ...prev,
+        categories: nextStorageList,
+        categoryCounts: {
+          ...prev.categoryCounts,
+          [normalized.toLowerCase()]: 0
+        },
+        selectedCategory: nextCategoryName,
+        creatingNew: false,
+        newCategoryName: '',
+        editingCategoryKey: '',
+        editingCategoryValue: '',
+        pendingDeleteCategoryKey: '',
+        draggedCategoryKey: '',
+        dragOverCategoryKey: ''
+      } : prev));
+      return;
+    }
+
+    setCategoryEditorModal((prev) => (prev ? {
+      ...prev,
+      selectedCategory: nextCategoryName,
+      creatingNew: false,
+      newCategoryName: '',
+      editingCategoryKey: '',
+      editingCategoryValue: '',
+      pendingDeleteCategoryKey: '',
+      draggedCategoryKey: '',
+      dragOverCategoryKey: ''
+    } : prev));
+  }, [categoryEditorModal, showNotification]);
+
+  const handleStartCategoryRenameFromModal = useCallback((categoryName) => {
+    const normalized = normalizeCategoryName(categoryName);
+    if (!normalized) return;
+    const categoryKey = normalized.toLowerCase();
+    setCategoryEditorModal((prev) => (prev ? {
+      ...prev,
+      editingCategoryKey: categoryKey,
+      editingCategoryValue: categoryName,
+      pendingDeleteCategoryKey: '',
+      draggedCategoryKey: '',
+      dragOverCategoryKey: ''
+    } : prev));
+  }, []);
+
+  const handleCancelCategoryRenameFromModal = useCallback(() => {
+    setCategoryEditorModal((prev) => (prev ? {
+      ...prev,
+      editingCategoryKey: '',
+      editingCategoryValue: '',
+      draggedCategoryKey: '',
+      dragOverCategoryKey: ''
+    } : prev));
+  }, []);
+
+  const handleCommitCategoryRenameFromModal = useCallback(async () => {
+    if (!categoryEditorModal) return;
+
+    const originalKey = normalizeCategoryName(categoryEditorModal.editingCategoryKey).toLowerCase();
+    const renamed = normalizeCategoryName(categoryEditorModal.editingCategoryValue);
+    const renamedKey = renamed.toLowerCase();
+
+    if (!originalKey) return;
+    if (!renamed) {
+      showNotification('Category name cannot be empty.', 'warning');
+      return;
+    }
+
+    const duplicate = categoryEditorModal.categories.some(
+      (entry) => entry.toLowerCase() === renamedKey && entry.toLowerCase() !== originalKey
+    );
+    if (duplicate) {
+      showNotification('Category already exists.', 'warning');
+      return;
+    }
+
+    try {
+      const affectedInstances = instances.filter(
+        (instance) => normalizeCategoryName(instance?.category).toLowerCase() === originalKey
+      );
+
+      for (const instance of affectedInstances) {
+        const updated = { ...instance, category: renamed };
+        await invoke('update_instance', { instance: updated });
+      }
+
+      const renamedCategories = categoryEditorModal.categories.map((entry) => (
+        entry.toLowerCase() === originalKey ? renamed : entry
+      ));
+      const persistedCategories = persistStoredCategories(renamedCategories);
+      const nextCounts = { ...categoryEditorModal.categoryCounts };
+      const movedCount = nextCounts[originalKey] || 0;
+      delete nextCounts[originalKey];
+      nextCounts[renamedKey] = movedCount;
+
+      setCategoryEditorModal((prev) => (prev ? {
+        ...prev,
+        categories: persistedCategories,
+        categoryCounts: nextCounts,
+        selectedCategory: (prev.selectedCategory || '').toLowerCase() === originalKey ? renamed : prev.selectedCategory,
+        editingCategoryKey: '',
+        editingCategoryValue: '',
+        pendingDeleteCategoryKey: '',
+        draggedCategoryKey: '',
+        dragOverCategoryKey: ''
+      } : prev));
+
+      await loadInstances();
+    } catch (error) {
+      console.error('Failed to rename category:', error);
+      showNotification(`Failed to rename category: ${error}`, 'error');
+    }
+  }, [categoryEditorModal, instances, loadInstances, showNotification]);
+
+  const handleDeleteCategoryFromModal = useCallback(async (categoryName) => {
+    if (!categoryEditorModal) return;
+
+    const category = normalizeCategoryName(categoryName);
+    const categoryKey = category.toLowerCase();
+    if (!categoryKey) return;
+
+    try {
+      const affectedInstances = instances.filter(
+        (instance) => normalizeCategoryName(instance?.category).toLowerCase() === categoryKey
+      );
+
+      for (const instance of affectedInstances) {
+        const updated = { ...instance, category: null };
+        await invoke('update_instance', { instance: updated });
+      }
+
+      const remainingCategories = categoryEditorModal.categories.filter(
+        (entry) => entry.toLowerCase() !== categoryKey
+      );
+      const persistedCategories = persistStoredCategories(remainingCategories);
+      const nextCounts = { ...categoryEditorModal.categoryCounts };
+      delete nextCounts[categoryKey];
+
+      setCategoryEditorModal((prev) => (prev ? {
+        ...prev,
+        categories: persistedCategories,
+        categoryCounts: nextCounts,
+        selectedCategory: (prev.selectedCategory || '').toLowerCase() === categoryKey ? '' : prev.selectedCategory,
+        editingCategoryKey: '',
+        editingCategoryValue: '',
+        pendingDeleteCategoryKey: '',
+        draggedCategoryKey: '',
+        dragOverCategoryKey: ''
+      } : prev));
+
+      await loadInstances();
+    } catch (error) {
+      console.error('Failed to delete category:', error);
+      showNotification(`Failed to delete category: ${error}`, 'error');
+    }
+  }, [categoryEditorModal, instances, loadInstances, showNotification]);
+
+  const handleSaveCategoryFromModal = useCallback(async () => {
+    if (!categoryEditorModal?.instance) return;
+
+    const targetInstance = categoryEditorModal.instance;
+    const normalizedCategory = normalizeCategoryName(categoryEditorModal.selectedCategory);
+    if (!normalizedCategory) {
+      showNotification('Pick a category or create a new one.', 'warning');
+      return;
+    }
+
+    const storedCategories = loadStoredCategories();
+    if (!storedCategories.some((entry) => entry.toLowerCase() === normalizedCategory.toLowerCase())) {
+      persistStoredCategories([...storedCategories, normalizedCategory]);
+    } else {
+      persistStoredCategories(storedCategories);
+    }
+    setCategoryEditorModal(null);
+
+    try {
+      const updated = { ...targetInstance, category: normalizedCategory };
+      await invoke('update_instance', { instance: updated });
+      await loadInstances();
+    } catch (error) {
+      console.error('Failed to save category:', error);
+      showNotification(`Failed to save category: ${error}`, 'error');
+    }
+  }, [categoryEditorModal, loadInstances, showNotification]);
 
   const handleCloseEditor = useCallback(() => {
     setEditingInstanceId(null);
@@ -2392,6 +2863,7 @@ function App() {
             onUpdateDownloadStatus={handleUpdateDownloadStatus}
             skinCache={skinCache}
             skinRefreshKey={skinRefreshKey}
+            launcherSettings={launcherSettings}
             onDelete={(id) => {
               performDeleteInstance(id);
               setEditingInstanceId(null);
@@ -2409,6 +2881,7 @@ function App() {
             onLaunch={handleLaunchInstance}
             onStop={handleStopInstance}
             onCreate={() => setActiveTab('create')}
+            onEditInstance={handleEditInstance}
             onContextMenu={handleInstanceContextMenu}
             onInstancesRefresh={loadInstances}
             onShowNotification={showNotification}
@@ -2445,6 +2918,7 @@ function App() {
               loadingBytes={loadingBytes}
               loadingCount={loadingCount}
               loadingTelemetry={loadingTelemetry}
+              launcherSettings={launcherSettings}
               mode="page"
             />
           </Suspense>
@@ -2594,6 +3068,31 @@ function App() {
     );
   };
 
+  const renderNotifications = () => {
+    if (!notifications.length) return null;
+
+    return (
+      <div className="notification-stack" role="status" aria-live="polite">
+        {notifications.map((item) => (
+          <div
+            key={item.id}
+            className={`notification notification-${item.type} ${item.isLeaving ? 'notification-exit' : ''}`}
+          >
+            <span className="notification-message">{item.message}</span>
+            <button
+              type="button"
+              className="notification-close"
+              onClick={() => dismissNotification(item.id)}
+              aria-label="Close notification"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   if (popoutMode === 'editor' && popoutInstanceId) {
     return (
       <div className={`app popout-window bg-${launcherSettings?.background_style || 'gradient'}`} style={{ height: '100vh', width: '100vw' }}>
@@ -2603,6 +3102,7 @@ function App() {
           isPopout={true}
           launcherSettings={launcherSettings}
           instances={instances}
+          accounts={accounts}
           runningInstances={runningInstances}
           onStopInstance={handleStopInstance}
           editingInstanceId={popoutInstanceId}
@@ -2635,6 +3135,7 @@ function App() {
                 onUpdateDownloadStatus={handleUpdateDownloadStatus}
                 skinCache={skinCache}
                 skinRefreshKey={skinRefreshKey}
+                launcherSettings={launcherSettings}
                 onDelete={async (id) => {
                   await performDeleteInstance(id);
                   getCurrentWindow().close();
@@ -2644,11 +3145,7 @@ function App() {
           </main>
         </div>
 
-        {notification && (
-          <div className={`notification notification-${notification.type}`}>
-            {notification.message}
-          </div>
-        )}
+        {renderNotifications()}
 
         {renderLaunchUpdatePromptModal()}
 
@@ -2665,20 +3162,21 @@ function App() {
   }
 
   return (
-    <div className={`app bg-${launcherSettings?.background_style || 'gradient'}`}>
+    <div className={`app bg-${launcherSettings?.background_style || 'gradient'} sidebar-style-${sidebarStyle} sidebar-variant-${sidebarStyleRaw}`}>
       <TitleBar
         activeTab={activeTab}
         onTabChange={setActiveTab}
         launcherSettings={launcherSettings}
         runningInstances={runningInstances}
         instances={instances}
+        accounts={accounts}
         onStopInstance={handleStopInstance}
         editingInstanceId={editingInstanceId}
         downloadQueue={downloadQueue}
         downloadHistory={downloadHistory}
         onClearDownloadHistory={handleClearDownloadHistory}
       />
-      <div className="app-main-layout">
+      <div className={`app-main-layout with-sidebar sidebar-style-${sidebarStyle} sidebar-variant-${sidebarStyleRaw}`}>
         <Sidebar
           activeTab={activeTab}
           onTabChange={(tab) => {
@@ -2704,7 +3202,12 @@ function App() {
           }}
         />
         <main className="main-content">
-          {renderContent()}
+          <div
+            key={editingInstanceId ? `editor-${editingInstanceId}` : `tab-${activeTab}`}
+            className={`main-content-switch ${activeTab === 'instances' && !editingInstanceId ? 'blur-friendly' : ''}`}
+          >
+            {renderContent()}
+          </div>
         </main>
       </div>
 
@@ -2771,11 +3274,7 @@ function App() {
       )}
 
 
-      {notification && (
-        <div className={`notification notification-${notification.type}`}>
-          {notification.message}
-        </div>
-      )}
+      {renderNotifications()}
 
 
       {contextMenu && (
@@ -2784,13 +3283,201 @@ function App() {
           y={contextMenu.y}
           instance={contextMenu.instance}
           isEditing={
-            Boolean(contextMenu.instance)
+            Boolean(contextMenu.instance && contextMenu.instance.__kind !== 'category')
             && (
               editingInstanceId === contextMenu.instance.id
               || openEditors.includes(contextMenu.instance.id)
             )
           }
           onAction={handleContextMenuAction}
+        />
+      )}
+
+      {categoryEditorModal && (
+        <ConfirmModal
+          title={categoryEditorModal.instance ? 'Set Instance Category' : 'Manage Categories'}
+          message={(
+            <div className="instance-category-modal-body">
+              {categoryEditorModal.instance ? (
+                <p>
+                  Category for <strong>{categoryEditorModal.instance?.name}</strong>
+                </p>
+              ) : (
+                <p>Manage existing categories, or create a new one.</p>
+              )}
+              <div className="instance-category-modal-toolbar">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setCategoryEditorModal((prev) => (prev ? { ...prev, creatingNew: !prev.creatingNew } : prev))}
+                >
+                  {categoryEditorModal.creatingNew ? 'Cancel New' : 'Create New'}
+                </button>
+              </div>
+              {categoryEditorModal.creatingNew && (
+                <div className="instance-category-modal-create-row">
+                  <input
+                    type="text"
+                    value={categoryEditorModal.newCategoryName}
+                    onChange={(event) => setCategoryEditorModal((prev) => (prev ? { ...prev, newCategoryName: event.target.value } : prev))}
+                    placeholder="New category name"
+                    autoFocus
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        handleCreateCategoryFromModal();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleCreateCategoryFromModal}
+                  >
+                    Add
+                  </button>
+                </div>
+              )}
+              <div className="instance-category-modal-list">
+                {categoryEditorModal.categories.length === 0 ? (
+                  <div className="instance-category-modal-empty">
+                    No categories are in use yet. Create one to continue.
+                  </div>
+                ) : (
+                  categoryEditorModal.categories.map((categoryName) => {
+                    const isSelectionMode = Boolean(categoryEditorModal.instance);
+                    const categoryKey = categoryName.toLowerCase();
+                    const usageCount = categoryEditorModal.categoryCounts?.[categoryKey] ?? 0;
+                    const isSelected = (categoryEditorModal.selectedCategory || '').toLowerCase() === categoryKey;
+                    const isEditing = categoryEditorModal.editingCategoryKey === categoryKey;
+                    const isPendingDelete = categoryEditorModal.pendingDeleteCategoryKey === categoryKey;
+
+                    if (isSelectionMode) {
+                      return (
+                        <div
+                          key={categoryKey}
+                          className={`instance-category-modal-item selection-mode ${isSelected ? 'selected' : ''}`}
+                        >
+                          <button
+                            type="button"
+                            className="instance-category-modal-item-select instance-category-modal-item-select-full"
+                            onClick={() => setCategoryEditorModal((prev) => (prev ? { ...prev, selectedCategory: categoryName } : prev))}
+                          >
+                            <span className="instance-category-modal-item-name">{categoryName}</span>
+                            <span className="instance-category-modal-item-count">{usageCount}</span>
+                          </button>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div
+                        key={categoryKey}
+                        className={`instance-category-modal-item ${isSelected ? 'selected' : ''}`}
+                      >
+                        <button
+                          type="button"
+                          className="instance-category-modal-item-select"
+                          onClick={() => setCategoryEditorModal((prev) => (prev ? { ...prev, selectedCategory: categoryName } : prev))}
+                        >
+                          <span className="instance-category-modal-item-name">{categoryName}</span>
+                          <span className="instance-category-modal-item-count">{usageCount}</span>
+                        </button>
+                        <div className="instance-category-modal-item-actions">
+                          <button
+                            type="button"
+                            className="instance-category-modal-action-btn"
+                            onClick={() => handleStartCategoryRenameFromModal(categoryName)}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            type="button"
+                            className="instance-category-modal-action-btn danger"
+                            onClick={() => setCategoryEditorModal((prev) => (prev ? {
+                              ...prev,
+                              pendingDeleteCategoryKey: categoryKey,
+                              editingCategoryKey: '',
+                              editingCategoryValue: '',
+                              draggedCategoryKey: '',
+                              dragOverCategoryKey: ''
+                            } : prev))}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                        {isEditing && (
+                          <div className="instance-category-modal-inline-edit">
+                            <input
+                              type="text"
+                              value={categoryEditorModal.editingCategoryValue}
+                              onChange={(event) => setCategoryEditorModal((prev) => (prev ? { ...prev, editingCategoryValue: event.target.value } : prev))}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  handleCommitCategoryRenameFromModal();
+                                }
+                                if (event.key === 'Escape') {
+                                  event.preventDefault();
+                                  handleCancelCategoryRenameFromModal();
+                                }
+                              }}
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              onClick={handleCommitCategoryRenameFromModal}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={handleCancelCategoryRenameFromModal}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                        {isPendingDelete && (
+                          <div className="instance-category-modal-inline-delete">
+                            <p>Delete this category and clear it from all assigned instances?</p>
+                            <div className="instance-category-modal-inline-delete-actions">
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => setCategoryEditorModal((prev) => (prev ? {
+                                  ...prev,
+                                  pendingDeleteCategoryKey: '',
+                                  draggedCategoryKey: '',
+                                  dragOverCategoryKey: ''
+                                } : prev))}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-danger"
+                                onClick={() => handleDeleteCategoryFromModal(categoryName)}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
+          confirmText={categoryEditorModal.instance ? 'Set Category' : 'Done'}
+          cancelText={categoryEditorModal.instance ? 'Cancel' : 'Close'}
+          variant="primary"
+          onConfirm={categoryEditorModal.instance ? handleSaveCategoryFromModal : () => setCategoryEditorModal(null)}
+          onCancel={() => setCategoryEditorModal(null)}
         />
       )}
 

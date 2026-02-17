@@ -333,7 +333,7 @@ function InstanceWorlds({
     if (!worldContextMenu || !worldContextMenuRef.current) return;
 
     const rect = worldContextMenuRef.current.getBoundingClientRect();
-    const margin = 8;
+    const margin = 12;
     const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
     const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
     const clampedX = Math.min(Math.max(worldContextMenu.x, margin), maxX);
@@ -826,6 +826,7 @@ function InstanceWorlds({
         </div>
       </div>
 
+      <div className="worlds-tab-scroll-content">
       {activeSubTab === 'worlds' ? (
         <div className="installed-section worlds-content">
           {loading ? (
@@ -1360,6 +1361,7 @@ function InstanceWorlds({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

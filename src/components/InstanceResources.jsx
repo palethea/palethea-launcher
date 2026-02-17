@@ -1145,6 +1145,7 @@ function InstanceResources({
         </div>
       </div>
 
+      <div className="resources-tab-scroll-content">
       {activeSubTab === 'resourcepacks' && (
         <div className="installed-section">
           {loading ? (
@@ -1808,6 +1809,7 @@ function InstanceResources({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

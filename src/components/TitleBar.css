@@ -5,7 +5,7 @@
   justify-content: space-between;
   align-items: center;
   user-select: none;
-  border-bottom: 1px solid var(--border);
+  border-bottom: none;
   z-index: 9999;
   position: relative;
   border-radius: 10px 10px 0 0;
@@ -440,6 +440,39 @@
   font-size: 13px;
   font-weight: 600;
   color: var(--foreground);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.running-item-name-line {
+  min-width: 0;
+  max-width: 260px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.running-item-title-version {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #aebdd1;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.running-item-title-version .meta-icon {
+  flex-shrink: 0;
+  opacity: 0.75;
+  stroke-width: 2px;
+  width: 14px;
+  height: 14px;
 }
 
 .running-item-time {
@@ -449,14 +482,66 @@
   font-weight: 500;
 }
 
-.running-item-account {
+.running-item-account-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 230px;
+  width: fit-content;
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cfd7e4;
   font-size: 10px;
-  color: var(--muted);
-  font-family: 'JetBrains Mono', monospace;
-  max-width: 190px;
-  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.running-item-account-chip.is-default {
+  color: #b2becf;
+  border-color: rgba(173, 191, 215, 0.22);
+  background: rgba(123, 144, 166, 0.1);
+}
+
+.running-item-account-chip.is-bound {
+  color: #d9e2ef;
+  border-color: rgba(var(--accent-rgb), 0.34);
+  background: rgba(var(--accent-rgb), 0.14);
+}
+
+.running-item-account-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(12, 16, 24, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  flex-shrink: 0;
+}
+
+.running-item-account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: pixelated;
+}
+
+.running-item-account-label {
+  color: #b6c2d4;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+
+.running-item-account-value {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .download-item .running-item-left {

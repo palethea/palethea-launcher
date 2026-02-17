@@ -1251,9 +1251,17 @@ function InstanceMods({
     }
   }, [instance.id, onShowNotification]);
 
+  const isFileLockedError = useCallback((error) => {
+    const message = String(error || '').toLowerCase();
+    return message.includes('os error 32') ||
+      message.includes('used by another process') ||
+      message.includes('bruges af en anden proces');
+  }, []);
+
   const confirmDelete = useCallback(async () => {
     const mod = deleteConfirm.mod;
     setDeleteConfirm({ show: false, mod: null });
+    if (!mod) return;
 
     try {
       await invoke('delete_instance_mod', {
@@ -1261,10 +1269,20 @@ function InstanceMods({
         filename: mod.filename
       });
       await loadInstalledMods();
+      onShowNotification?.(`Deleted "${mod.name || mod.filename}".`, 'success');
     } catch (error) {
       console.error('Failed to delete mod:', error);
+      if (isFileLockedError(error)) {
+        onShowNotification?.(
+          `Could not delete "${mod.name || mod.filename}" because the file is in use. Stop the instance and try again.`,
+          'error'
+        );
+      } else {
+        onShowNotification?.(`Failed to delete "${mod.name || mod.filename}": ${error}`, 'error');
+      }
+      await loadInstalledMods();
     }
-  }, [instance.id, deleteConfirm.mod, loadInstalledMods]);
+  }, [instance.id, deleteConfirm.mod, isFileLockedError, loadInstalledMods, onShowNotification]);
 
   const formatDownloads = useCallback((num) => {
     if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
@@ -1344,21 +1362,43 @@ function InstanceMods({
       variant: 'danger',
       onConfirm: async () => {
         setLoading(true);
-        try {
-          for (const filename of selectedMods) {
+        let deletedCount = 0;
+        let lockedCount = 0;
+        let failedCount = 0;
+
+        for (const filename of selectedMods) {
+          try {
             await invoke('delete_instance_mod', { instanceId: instance.id, filename });
+            deletedCount++;
+          } catch (error) {
+            console.error(`Failed to delete mod ${filename}:`, error);
+            if (isFileLockedError(error)) {
+              lockedCount++;
+            } else {
+              failedCount++;
+            }
           }
-          setSelectedMods([]);
-          await loadInstalledMods();
-          onShowNotification(`Successfully deleted ${selectedMods.length} mods.`, 'success');
-        } catch (error) {
-          console.error('Failed to delete mods:', error);
-          onShowNotification('Failed to delete some mods.', 'error');
+        }
+
+        setSelectedMods([]);
+        await loadInstalledMods();
+
+        if (deletedCount > 0) {
+          onShowNotification?.(`Deleted ${deletedCount} mod${deletedCount === 1 ? '' : 's'}.`, 'success');
+        }
+        if (lockedCount > 0) {
+          onShowNotification?.(
+            `${lockedCount} mod${lockedCount === 1 ? '' : 's'} could not be deleted because the file is in use. Stop the instance and try again.`,
+            'error'
+          );
+        }
+        if (failedCount > 0) {
+          onShowNotification?.(`Failed to delete ${failedCount} mod${failedCount === 1 ? '' : 's'}.`, 'error');
         }
         setLoading(false);
       }
     });
-  }, [selectedMods, instance.id, onShowConfirm, loadInstalledMods, onShowNotification]);
+  }, [selectedMods, instance.id, onShowConfirm, isFileLockedError, loadInstalledMods, onShowNotification]);
 
   const handleToggleSelected = useCallback(async (enable) => {
     if (selectedMods.length === 0) return;
@@ -1392,15 +1432,12 @@ function InstanceMods({
     );
   }
 
-  const matchesAllSelectedCategories = useCallback((project) => {
+  const matchesAllSelectedCategories = (project) => {
     if (findProvider === 'curseforge') return true;
     return matchesSelectedCategories(project, appliedFindCategories);
-  }, [findProvider, appliedFindCategories]);
+  };
 
-  const displayMods = useMemo(
-    () => searchResults.filter(matchesAllSelectedCategories),
-    [searchResults, matchesAllSelectedCategories]
-  );
+  const displayMods = searchResults.filter(matchesAllSelectedCategories);
   const hasAppliedFindFilters = appliedFindQuery.trim().length > 0 || appliedFindCategories.length > 0;
 
   return (
@@ -1432,6 +1469,7 @@ function InstanceMods({
         </div>
       </div>
 
+      <div className="mods-tab-scroll-content">
       <FilterModal
         isOpen={isFilterModalOpen}
         onClose={() => setIsFilterModalOpen(false)}
@@ -2092,6 +2130,7 @@ function InstanceMods({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

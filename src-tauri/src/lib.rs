@@ -114,6 +114,54 @@ fn terminate_pid(pid: u32) -> Result<(), String> {
     Err(format!("Process {} still running after kill attempt", pid))
 }
 
+fn request_graceful_pid_stop(pid: u32) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let status = std::process::Command::new("taskkill")
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["/PID", &pid.to_string()])
+            .status()
+            .map_err(|e| format!("Failed to request graceful stop for process {}: {}", pid, e))?;
+        if !status.success() {
+            return Err(format!("Graceful taskkill request failed for PID {}", pid));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let status = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
+            .map_err(|e| format!("Failed to request graceful stop for process {}: {}", pid, e))?;
+        if !status.success() {
+            return Err(format!("kill -TERM failed for PID {}", pid));
+        }
+    }
+
+    Ok(())
+}
+
+fn stop_pid_with_fallback(pid: u32) -> Result<bool, String> {
+    if !instances::is_process_running(pid) {
+        return Ok(false);
+    }
+
+    let graceful_result = request_graceful_pid_stop(pid);
+    if graceful_result.is_ok() {
+        // Allow enough time for in-game saves/shutdown hooks before forcing termination.
+        for _ in 0..300 {
+            if !instances::is_process_running(pid) {
+                return Ok(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    } else if !instances::is_process_running(pid) {
+        return Ok(false);
+    }
+
+    terminate_pid(pid)?;
+    Ok(true)
+}
+
 fn has_running_processes() -> bool {
     RUNNING_PROCESSES
         .lock()
@@ -450,7 +498,7 @@ fn stop_running_instance(instance_id: &str, app_handle: &AppHandle) -> Result<St
 
     match process_info {
         Some(info) => {
-            terminate_pid(info.pid)?;
+            let forced = stop_pid_with_fallback(info.pid)?;
 
             {
                 let mut processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
@@ -461,7 +509,11 @@ fn stop_running_instance(instance_id: &str, app_handle: &AppHandle) -> Result<St
             refresh_tray_menu(app_handle);
             let _ = app_handle.emit("refresh-instances", ());
 
-            Ok(format!("Killed game for instance {}", instance_id))
+            if forced {
+                Ok(format!("Instance {} did not close gracefully, so it was force-stopped", instance_id))
+            } else {
+                Ok(format!("Stopped instance {}", instance_id))
+            }
         }
         None => Err("Instance is not running".to_string()),
     }
@@ -694,6 +746,7 @@ async fn clone_instance(instance_id: String, new_name: String, app_handle: AppHa
     cloned.console_auto_update = source.console_auto_update;
     cloned.logo_filename = source.logo_filename.clone();
     cloned.color_accent = source.color_accent.clone();
+    cloned.category = source.category.clone();
     cloned.preferred_account = source.preferred_account.clone();
     cloned.check_mod_updates_on_launch = source.check_mod_updates_on_launch;
     
@@ -1780,6 +1833,7 @@ async fn export_instance_zip(instance_id: String, destination_path: String, app_
         "resolution_width": instance.resolution_width,
         "resolution_height": instance.resolution_height,
         "color_accent": instance.color_accent,
+        "category": instance.category,
         "exported_at": SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -2198,6 +2252,14 @@ async fn import_instance_zip(zip_path: String, custom_name: Option<String>, app_
     }
     if let Some(color) = metadata["color_accent"].as_str() {
         new_instance.color_accent = Some(color.to_string());
+    }
+    if let Some(category) = metadata["category"].as_str() {
+        let trimmed = category.trim();
+        new_instance.category = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
     }
     
     // Extract game files to the new instance's minecraft directory
@@ -3312,6 +3374,18 @@ async fn get_mc_profile_full(state: State<'_, AppState>) -> Result<auth::FullPro
 }
 
 #[tauri::command]
+async fn get_mc_profile_full_with_token(access_token: String) -> Result<auth::FullProfile, String> {
+    let token = access_token.trim();
+    if token.is_empty() || token == "0" {
+        return Err("Not logged in".to_string());
+    }
+
+    auth::get_full_profile(token)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn upload_skin(state: State<'_, AppState>, file_path: String, variant: String) -> Result<(), String> {
     let token = state.access_token.lock().map_err(|_| "Auth state corrupted")?.clone();
     if token == "0" {
@@ -4379,6 +4453,26 @@ async fn resolve_curseforge_version_name(
     None
 }
 
+async fn resolve_modrinth_version_by_filename(
+    project_id: &str,
+    filename: &str,
+) -> Option<modrinth::ModrinthVersion> {
+    let target = filename.trim().to_lowercase();
+    if target.is_empty() {
+        return None;
+    }
+
+    let versions = modrinth::get_project_versions(project_id, None, None)
+        .await
+        .ok()?;
+    versions.into_iter().find(|version| {
+        version
+            .files
+            .iter()
+            .any(|file| file.filename.trim().to_lowercase() == target)
+    })
+}
+
 fn normalize_metadata_file_type(file_type: &str) -> Option<&'static str> {
     match file_type.trim().to_lowercase().as_str() {
         "mod" | "mods" => Some("mod"),
@@ -4671,12 +4765,22 @@ async fn resolve_manual_modrinth_metadata_internal(
             for query in &queries {
                 match modrinth::search_projects(query, normalized, None, None, None, 5, 0, None).await {
                     Ok(results) => {
-                        if let Some(project) = results.hits.into_iter().next() {
-                            modrinth_meta = Some(mod_meta_from_modrinth_project(
-                                &project,
-                                None,
-                                candidate.fallback_name.clone(),
-                            ));
+                        for project in results.hits {
+                            let matched_version = resolve_modrinth_version_by_filename(
+                                &project.project_id,
+                                &candidate.metadata_filename,
+                            )
+                            .await;
+                            if let Some(version) = matched_version {
+                                modrinth_meta = Some(mod_meta_from_modrinth_project(
+                                    &project,
+                                    Some(&version),
+                                    candidate.fallback_name.clone(),
+                                ));
+                                break;
+                            }
+                        }
+                        if modrinth_meta.is_some() {
                             break;
                         }
                     }
@@ -4697,17 +4801,22 @@ async fn resolve_manual_modrinth_metadata_internal(
             for query in &queries {
                 match curseforge::search_projects(normalized, query, None, 5, 0).await {
                     Ok(results) => {
-                        if let Some(project) = results.hits.into_iter().next() {
+                        for project in results.hits {
                             let version_name = resolve_curseforge_version_name(
                                 &project.project_id,
                                 &candidate.metadata_filename,
                             )
                             .await;
-                            curseforge_meta = Some(mod_meta_from_curseforge_project(
-                                &project,
-                                version_name,
-                                candidate.fallback_name.clone(),
-                            ));
+                            if version_name.is_some() {
+                                curseforge_meta = Some(mod_meta_from_curseforge_project(
+                                    &project,
+                                    version_name,
+                                    candidate.fallback_name.clone(),
+                                ));
+                                break;
+                            }
+                        }
+                        if curseforge_meta.is_some() {
                             break;
                         }
                     }
@@ -6797,6 +6906,7 @@ pub fn run() {
             refresh_account,
             switch_account,
             get_mc_profile_full,
+            get_mc_profile_full_with_token,
             upload_skin,
             reset_skin,
             // User commands

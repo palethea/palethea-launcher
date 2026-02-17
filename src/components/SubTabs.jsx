@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, memo } from 'react';
+import { useLayoutEffect, useRef, useState, useEffect, memo } from 'react';
 
 function SubTabs({ tabs, activeTab, onTabChange, className = '' }) {
   const containerRef = useRef(null);
@@ -34,15 +34,31 @@ function SubTabs({ tabs, activeTab, onTabChange, className = '' }) {
     return () => window.removeEventListener('resize', updateIndicator);
   }, [activeTab, tabs]);
 
+  useEffect(() => {
+    const container = containerRef.current;
+    const activeButton = tabButtonRefs.current[activeTab];
+    if (!container || !activeButton || container.scrollWidth <= container.clientWidth) {
+      return;
+    }
+
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    activeButton.scrollIntoView({
+      behavior: prefersReducedMotion ? 'auto' : 'smooth',
+      block: 'nearest',
+      inline: 'nearest'
+    });
+  }, [activeTab]);
+
   return (
     <div className={`sub-tabs ${className}`.trim()} ref={containerRef}>
-      {tabs.map((tab) => (
+      {tabs.map((tab, index) => (
         <button
           key={tab.id}
           ref={(el) => {
             if (el) tabButtonRefs.current[tab.id] = el;
           }}
           className={`sub-tab ${activeTab === tab.id ? 'active' : ''}`}
+          style={{ '--sub-tab-enter-index': index }}
           onClick={() => onTabChange(tab.id)}
         >
           <span className="sub-tab-label">{tab.label}</span>

@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect, useCallback, memo } from 'react';
+import { useState, useRef, useEffect, useCallback, useLayoutEffect, memo } from 'react';
 import { open } from '@tauri-apps/plugin-shell';
 import { 
   User, 
   HelpCircle, 
   Info, 
-  List, 
+  House, 
   Shirt, 
   BarChart3, 
   RefreshCcw, 
@@ -44,7 +44,7 @@ const SkinHead2D = memo(({ src, size = 32 }) => (
 ));
 
 const SIDEBAR_TABS = [
-  { id: 'instances', label: 'Instances', icon: List },
+  { id: 'instances', label: 'Instances', icon: House },
   { id: 'skins', label: 'Skins', icon: Shirt },
   { id: 'stats', label: 'Stats', icon: BarChart3 },
   { id: 'updates', label: 'Updates', icon: RefreshCcw },
@@ -70,7 +70,43 @@ function Sidebar({
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [failedImages, setFailedImages] = useState({});
   const accountMenuRef = useRef(null);
+  const navRef = useRef(null);
+  const navButtonRefs = useRef({});
+  const [tabIndicatorStyle, setTabIndicatorStyle] = useState({ top: 0, height: 0, visible: false });
   const isAdvancedAccountPreview = launcherSettings?.account_preview_mode === 'advanced';
+  const sidebarStyleRaw = launcherSettings?.sidebar_style || 'full';
+  const sidebarStyle = (sidebarStyleRaw === 'compact' || sidebarStyleRaw === 'original-slim') ? 'compact' : 'full';
+  const isCompactSidebar = sidebarStyle === 'compact';
+  const sidebarHeadSize = 32;
+
+  const updateTabIndicator = useCallback(() => {
+    const nav = navRef.current;
+    const activeButton = navButtonRefs.current[activeTab];
+
+    if (!nav || !activeButton) {
+      setTabIndicatorStyle((prev) => ({ ...prev, visible: false }));
+      return;
+    }
+
+    const navRect = nav.getBoundingClientRect();
+    const buttonRect = activeButton.getBoundingClientRect();
+    const top = buttonRect.top - navRect.top;
+    const height = buttonRect.height;
+
+    setTabIndicatorStyle({ top, height, visible: true });
+  }, [activeTab, sidebarStyle]);
+
+  useLayoutEffect(() => {
+    updateTabIndicator();
+    const rafId = window.requestAnimationFrame(updateTabIndicator);
+    const handleResize = () => updateTabIndicator();
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [updateTabIndicator, sidebarStyle]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -111,17 +147,32 @@ function Sidebar({
   }, []);
 
   return (
-    <aside className="sidebar">
-      <nav className="sidebar-nav">
+    <aside className={`sidebar sidebar-style-${sidebarStyle} sidebar-variant-${sidebarStyleRaw}`}>
+      <nav className="sidebar-nav" ref={navRef}>
+        <div
+          className="sidebar-nav-indicator"
+          style={{
+            transform: `translateY(${tabIndicatorStyle.top}px)`,
+            height: `${tabIndicatorStyle.height}px`,
+            opacity: tabIndicatorStyle.visible ? 1 : 0
+          }}
+        />
         {SIDEBAR_TABS.map((tab) => {
           const isDisabled = tab.id === 'skins' && !activeAccount?.isLoggedIn;
           return (
             <button
               key={tab.id}
+              ref={(el) => {
+                if (el) {
+                  navButtonRefs.current[tab.id] = el;
+                }
+              }}
               className={`nav-item ${activeTab === tab.id ? 'active' : ''} ${isDisabled ? 'disabled' : ''}`}
               onClick={() => !isDisabled && onTabChange(tab.id)}
+              title={tab.label}
+              aria-label={tab.label}
             >
-              {tab.icon && <tab.icon size={18} className="nav-icon" />}
+              {tab.icon && <tab.icon size={isCompactSidebar ? 22 : 18} className="nav-icon" />}
               <span className="nav-label">{tab.label}</span>
               {isDisabled && (
                 <div 
@@ -147,7 +198,7 @@ function Sidebar({
 
       <div className="sidebar-footer" ref={accountMenuRef}>
         <div
-          className={`account-viewer ${showAccountMenu ? 'expanded' : ''}`}
+          className={`account-viewer ${showAccountMenu ? 'expanded' : ''} ${isCompactSidebar ? 'compact' : ''}`}
           onClick={() => {
             if (isAdvancedAccountPreview) {
               setShowAccountMenu(false);
@@ -156,10 +207,12 @@ function Sidebar({
               setShowAccountMenu(!showAccountMenu);
             }
           }}
+          title={activeAccount?.username || 'Player'}
+          aria-label={isAdvancedAccountPreview ? 'Open account manager' : 'Open account menu'}
         >
           <div className="user-avatar">
             {currentSkinTexture ? (
-              <SkinHead2D src={currentSkinTexture} size={32} />
+              <SkinHead2D src={currentSkinTexture} size={sidebarHeadSize} />
             ) : activeAccount?.isLoggedIn ? (
               <img
                 src={getSkinUrl(activeAccount?.uuid, activeAccount?.isLoggedIn)}
@@ -176,13 +229,17 @@ function Sidebar({
               </div>
             )}
           </div>
-          <div className="user-details">
-            <span className="user-name">{activeAccount?.username || 'Player'}</span>
-            <span className="user-status">{activeAccount?.isLoggedIn ? 'Microsoft' : 'Offline'}</span>
-          </div>
-          <span className={`account-expand ${isAdvancedAccountPreview ? 'advanced-icon' : 'simple-icon'} ${showAccountMenu ? 'expanded' : ''}`}>
-            {isAdvancedAccountPreview ? <ExternalLink size={16} /> : <ChevronDown size={16} />}
-          </span>
+          {!isCompactSidebar && (
+            <>
+              <div className="user-details">
+                <span className="user-name">{activeAccount?.username || 'Player'}</span>
+                <span className="user-status">{activeAccount?.isLoggedIn ? 'Microsoft' : 'Offline'}</span>
+              </div>
+              <span className={`account-expand ${isAdvancedAccountPreview ? 'advanced-icon' : 'simple-icon'} ${showAccountMenu ? 'expanded' : ''}`}>
+                {isAdvancedAccountPreview ? <ExternalLink size={16} /> : <ChevronDown size={16} />}
+              </span>
+            </>
+          )}
         </div>
 
         {showAccountMenu && (

@@ -2,13 +2,15 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { join } from '@tauri-apps/api/path';
-import { Box, ChevronDown, ChevronUp, Cpu, Save, Trash2, Check, Minus, Plus, User, X } from 'lucide-react';
+import { Box, ChevronDown, ChevronUp, Cpu, Save, Trash2, Check, Minus, Plus, User, X, Server, ServerOff } from 'lucide-react';
 import VersionSelector from './VersionSelector';
 import IconPicker from './IconPicker';
 import OptionsEditorModal from './OptionsEditorModal';
+import SubTabs from './SubTabs';
 
 const STEVE_HEAD_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAARklEQVQI12NgoAbghLD+I4kwBqOjo+O/f/8YGBj+MzD8Z2D4z8Dwnwmq7P9/BoYL5y8g0/8hHP7/x0b/Y2D4D5b5/58ZAME2EVcxlvGVAAAAAElFTkSuQmCC';
 const ACCOUNT_AVATAR_SIZE = 34;
+const PREFERRED_SERVER_STORAGE_KEY = 'instance-preferred-server-map';
 
 function SkinHead2D({ src, size = 28 }) {
   return (
@@ -75,7 +77,7 @@ function InstanceSettings({
 
   const [name, setName] = useState(instance.name);
   const [versionId, setVersionId] = useState(instance.version_id);
-  const [colorAccent, setColorAccent] = useState(instance.color_accent || '#ffffff');
+  const [category, setCategory] = useState((instance.category || '').trim());
   const [modLoader, setModLoader] = useState(instance.mod_loader || 'Vanilla');
   const [modLoaderVersion, setModLoaderVersion] = useState(instance.mod_loader_version || '');
   const [javaPath, setJavaPath] = useState(instance.java_path || '');
@@ -87,10 +89,15 @@ function InstanceSettings({
   const [memory, setMemory] = useState(instance.memory_max || 4096);
   const [jvmArgs, setJvmArgs] = useState(instance.jvm_args || '');
   const [preferredAccount, setPreferredAccount] = useState(instance.preferred_account || '');
+  const [preferredServer, setPreferredServer] = useState('');
+  const [initialPreferredServer, setInitialPreferredServer] = useState('');
   const [checkModUpdatesOnLaunch, setCheckModUpdatesOnLaunch] = useState(instance.check_mod_updates_on_launch !== false);
   const [savedAccounts, setSavedAccounts] = useState([]);
+  const [savedServers, setSavedServers] = useState([]);
   const [activeAccountUsername, setActiveAccountUsername] = useState('');
   const [showAccountModal, setShowAccountModal] = useState(false);
+  const [showServerModal, setShowServerModal] = useState(false);
+  const [loadingServers, setLoadingServers] = useState(false);
   const [failedImages, setFailedImages] = useState({});
   const [versions, setVersions] = useState([]);
   const [loaderVersions, setLoaderVersions] = useState([]);
@@ -104,6 +111,8 @@ function InstanceSettings({
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showOptionsEditor, setShowOptionsEditor] = useState(false);
   const [installingLoader, setInstallingLoader] = useState(false);
+  const [activeSettingsSubTab, setActiveSettingsSubTab] = useState('general');
+  const [settingsSubTabsScrolled, setSettingsSubTabsScrolled] = useState(false);
   const isManagedModpackInstance = Boolean(instance?.modpack_provider || instance?.modpack_project_id);
   const effectiveLaunchUpdateCheck = !isManagedModpackInstance && checkModUpdatesOnLaunch;
 
@@ -130,6 +139,20 @@ function InstanceSettings({
     }
   }, []);
 
+  const loadSavedServers = useCallback(async () => {
+    setLoadingServers(true);
+    try {
+      const servers = await invoke('get_instance_servers', { instanceId: instance.id });
+      setSavedServers(Array.isArray(servers) ? servers : []);
+    } catch (error) {
+      console.error('Failed to load saved servers for instance settings:', error);
+      setSavedServers([]);
+      onShowNotification?.(`Failed to load servers: ${error}`, 'error');
+    } finally {
+      setLoadingServers(false);
+    }
+  }, [instance.id, onShowNotification]);
+
   useEffect(() => {
     loadAccounts();
   }, [loadAccounts, instance.id, instance.preferred_account]);
@@ -150,12 +173,53 @@ function InstanceSettings({
   }, [showAccountModal]);
 
   useEffect(() => {
+    if (!showServerModal) return undefined;
+
+    const handleEsc = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setShowServerModal(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleEsc, true);
+    return () => window.removeEventListener('keydown', handleEsc, true);
+  }, [showServerModal]);
+
+  useEffect(() => {
     setPreferredAccount(instance.preferred_account || '');
   }, [instance.id, instance.preferred_account]);
 
   useEffect(() => {
+    setCategory((instance.category || '').trim());
+  }, [instance.id, instance.category]);
+
+  useEffect(() => {
+    let parsedMap = {};
+    try {
+      const stored = localStorage.getItem(PREFERRED_SERVER_STORAGE_KEY);
+      parsedMap = stored ? JSON.parse(stored) || {} : {};
+    } catch (error) {
+      console.error('Failed to parse preferred server map in instance settings:', error);
+    }
+
+    const savedValue = parsedMap?.[instance.id];
+    const savedAddress = typeof savedValue === 'string'
+      ? savedValue
+      : (savedValue?.address || '');
+    setPreferredServer(savedAddress);
+    setInitialPreferredServer(savedAddress);
+  }, [instance.id]);
+
+  useEffect(() => {
     setCheckModUpdatesOnLaunch(instance.check_mod_updates_on_launch !== false);
   }, [instance.id, instance.check_mod_updates_on_launch]);
+
+  useEffect(() => {
+    setActiveSettingsSubTab('general');
+    setSettingsSubTabsScrolled(false);
+  }, [instance.id]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -205,16 +269,17 @@ function InstanceSettings({
     const changed =
       name !== instance.name ||
       versionId !== instance.version_id ||
-      colorAccent !== (instance.color_accent || '#ffffff') ||
+      category !== ((instance.category || '').trim()) ||
       modLoader !== (instance.mod_loader || 'Vanilla') ||
       modLoaderVersion !== (instance.mod_loader_version || '') ||
       javaPath !== (instance.java_path || '') ||
       memory !== (instance.memory_max || 4096) ||
       jvmArgs !== (instance.jvm_args || '') ||
       preferredAccount !== (instance.preferred_account || '') ||
+      preferredServer !== initialPreferredServer ||
       checkModUpdatesOnLaunch !== (instance.check_mod_updates_on_launch !== false);
     setHasChanges(changed);
-  }, [name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, checkModUpdatesOnLaunch, instance]);
+  }, [name, versionId, category, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, preferredServer, initialPreferredServer, checkModUpdatesOnLaunch, instance]);
 
   useEffect(() => {
     checkChanges();
@@ -250,7 +315,7 @@ function InstanceSettings({
         ...instance,
         name,
         version_id: versionId,
-        color_accent: colorAccent || null,
+        category: category.trim() || null,
         mod_loader: modLoader,
         mod_loader_version: modLoaderVersion || null,
         java_path: javaPath || null,
@@ -261,13 +326,38 @@ function InstanceSettings({
       };
       const success = await onSave(updatedInstance);
       if (success) {
+        let parsedMap = {};
+        try {
+          const stored = localStorage.getItem(PREFERRED_SERVER_STORAGE_KEY);
+          parsedMap = stored ? JSON.parse(stored) || {} : {};
+        } catch (error) {
+          console.error('Failed to parse preferred server map while saving instance settings:', error);
+        }
+
+        const normalizedPreferredServer = preferredServer.trim();
+        if (normalizedPreferredServer) {
+          const matchingServer = savedServers.find(
+            (server) => (server?.ip || '').trim() === normalizedPreferredServer
+          );
+          parsedMap[instance.id] = {
+            address: normalizedPreferredServer,
+            name: matchingServer?.name || normalizedPreferredServer,
+            icon: typeof matchingServer?.icon === 'string' ? matchingServer.icon : null,
+          };
+        } else {
+          delete parsedMap[instance.id];
+        }
+        localStorage.setItem(PREFERRED_SERVER_STORAGE_KEY, JSON.stringify(parsedMap));
+        window.dispatchEvent(new CustomEvent('preferred-server-map-updated', { detail: { instanceId: instance.id } }));
+        setInitialPreferredServer(normalizedPreferredServer);
+        setPreferredServer(normalizedPreferredServer);
         setHasChanges(false);
       }
     } catch (error) {
       console.error('Failed to save:', error);
     }
     setSaving(false);
-  }, [instance, name, versionId, colorAccent, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, checkModUpdatesOnLaunch, onSave]);
+  }, [instance, name, versionId, category, modLoader, modLoaderVersion, javaPath, memory, jvmArgs, preferredAccount, preferredServer, savedServers, checkModUpdatesOnLaunch, onSave]);
 
   const handleDownloadJava = useCallback(async () => {
     setJavaDownloading(true);
@@ -403,9 +493,18 @@ function InstanceSettings({
     [savedAccounts, preferredAccount]
   );
 
+  const selectedPreferredServer = useMemo(
+    () => savedServers.find((server) => (server?.ip || '').trim() === preferredServer.trim()) || null,
+    [savedServers, preferredServer]
+  );
+
   const launchAccountSummary = preferredAccount
     ? `${preferredAccount} (${selectedPreferredAccount?.is_microsoft ? 'Microsoft' : 'Offline'})`
     : (activeAccountUsername ? `Use Active Account (${activeAccountUsername})` : 'Use Active Account');
+
+  const launchServerSummary = preferredServer
+    ? `${selectedPreferredServer?.name || preferredServer} (${preferredServer})`
+    : 'No auto-join server';
 
   const activeAccountForDefault = useMemo(
     () => savedAccounts.find((account) => account.username === activeAccountUsername) || null,
@@ -424,19 +523,49 @@ function InstanceSettings({
     setShowAccountModal(true);
   }, [loadAccounts]);
 
+  const handleOpenServerModal = useCallback(async () => {
+    await loadSavedServers();
+    setShowServerModal(true);
+  }, [loadSavedServers]);
+
   const loaders = ['Vanilla', 'Fabric', 'Forge', 'NeoForge'];
+  const settingsSubTabs = [
+    { id: 'general', label: 'General' },
+    { id: 'versions', label: 'Versions' },
+    { id: 'java', label: 'Java Settings' }
+  ];
 
   return (
     <div className="settings-tab">
-      <div className="settings-scroll-content">
-        <div className="settings-section">
-          <h2>General</h2>
+      <div className={`sub-tabs-row settings-subtabs-row ${settingsSubTabsScrolled ? 'scrolled' : ''}`}>
+        <SubTabs
+          tabs={settingsSubTabs}
+          activeTab={activeSettingsSubTab}
+          onTabChange={setActiveSettingsSubTab}
+          className="settings-subtabs"
+        />
+      </div>
+
+      <div
+        className="settings-scroll-content settings-subtab-content"
+        onScroll={(e) => setSettingsSubTabsScrolled(e.currentTarget.scrollTop > 8)}
+      >
+        <div className={`settings-section settings-subtab-panel ${activeSettingsSubTab === 'general' ? 'active' : ''}`}>
           <div className="setting-row">
             <label>Instance Name</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div className="setting-row">
+            <label>Category</label>
+            <input
+              type="text"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              placeholder="e.g. Vanilla, Modded, SMP"
             />
           </div>
           <div className="setting-row">
@@ -472,6 +601,28 @@ function InstanceSettings({
             </div>
           </div>
           <div className="setting-row">
+            <label>Preferred Server</label>
+            <div className="launch-account-control">
+              <button
+                className="launch-account-picker-btn"
+                onClick={handleOpenServerModal}
+              >
+                <div className="launch-account-picker-main">
+                  <span className="launch-account-picker-value">{launchServerSummary}</span>
+                  <span className="launch-account-picker-sub">
+                    {preferredServer
+                      ? 'Launch now auto-connects to this server'
+                      : 'No auto-connect server selected for launch'}
+                  </span>
+                </div>
+                <ChevronDown size={16} />
+              </button>
+              <span className="setting-hint launch-account-hint">
+                Add the server first in-game (Minecraft &gt; Multiplayer &gt; Add Server), then select it here and press Save Changes.
+              </span>
+            </div>
+          </div>
+          <div className="setting-row">
             <label>Update Check</label>
             <div className="launch-account-control">
               <button
@@ -503,32 +654,6 @@ function InstanceSettings({
                   : 'You can still run manual checks in the Mods tab at any time.'}
               </span>
             </div>
-          </div>
-          <div className="setting-row-vertical">
-            <label>Game Version</label>
-            <div
-              className={`version-changer-preview ${showVersionSelector ? 'open' : ''}`}
-              onClick={() => setShowVersionSelector(!showVersionSelector)}
-            >
-              <div className="version-changer-info">
-                <Box size={16} />
-                <span className="version-changer-label">Minecraft {versionId}</span>
-              </div>
-              {showVersionSelector ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-            </div>
-
-            {showVersionSelector && (
-              <div className="version-selector-expanded">
-                <VersionSelector
-                  versions={versions}
-                  selectedVersion={versionId}
-                  onSelect={(vid) => {
-                    setVersionId(vid);
-                  }}
-                  onRefresh={loadVersions}
-                />
-              </div>
-            )}
           </div>
           <div className="setting-row-vertical logo-row">
             <label>Instance Logo</label>
@@ -567,8 +692,34 @@ function InstanceSettings({
           </div>
         </div>
 
-        <div className="settings-section">
-          <h2>Mod Loader</h2>
+        <div className={`settings-section settings-subtab-panel ${activeSettingsSubTab === 'versions' ? 'active' : ''}`}>
+          <div className="setting-row-vertical">
+            <label>Game Version</label>
+            <div
+              className={`version-changer-preview ${showVersionSelector ? 'open' : ''}`}
+              onClick={() => setShowVersionSelector(!showVersionSelector)}
+            >
+              <div className="version-changer-info">
+                <Box size={16} />
+                <span className="version-changer-label">Minecraft {versionId}</span>
+              </div>
+              {showVersionSelector ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </div>
+
+            {showVersionSelector && (
+              <div className="version-selector-expanded">
+                <VersionSelector
+                  versions={versions}
+                  selectedVersion={versionId}
+                  onSelect={(vid) => {
+                    setVersionId(vid);
+                  }}
+                  onRefresh={loadVersions}
+                />
+              </div>
+            )}
+          </div>
+
           <div className="mod-loader-section">
             <div className="setting-row-vertical">
               <label>Loader Type</label>
@@ -648,8 +799,7 @@ function InstanceSettings({
           </div>
         </div>
 
-        <div className="settings-section">
-          <h2>Java Settings</h2>
+        <div className={`settings-section settings-subtab-panel ${activeSettingsSubTab === 'java' ? 'active' : ''}`}>
           <div className="setting-row">
             <label>Quick Java Install</label>
             <div className="java-download-actions">
@@ -753,8 +903,6 @@ function InstanceSettings({
           </div>
         </div>
       </div>
-
-
       <div className="settings-footer-bar">
         <button className="save-changes-btn" onClick={handleSave} disabled={!hasChanges || saving}>
           <Save size={18} />
@@ -780,6 +928,85 @@ function InstanceSettings({
           onClose={() => setShowOptionsEditor(false)}
           onShowNotification={onShowNotification}
         />
+      )}
+      {showServerModal && (
+        <div className="instance-account-modal-overlay" onClick={() => setShowServerModal(false)}>
+          <div className="instance-account-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="instance-account-modal-header">
+              <div>
+                <h3>Choose Preferred Server</h3>
+                <p>Select a saved server to auto-connect when you press Launch for this instance.</p>
+              </div>
+              <button
+                className="instance-account-modal-close"
+                onClick={() => setShowServerModal(false)}
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="instance-account-modal-list">
+              <button
+                className={`instance-account-option ${preferredServer === '' ? 'selected' : ''}`}
+                onClick={() => {
+                  setPreferredServer('');
+                  setShowServerModal(false);
+                }}
+              >
+                <div className="instance-account-option-avatar">
+                  <ServerOff size={18} />
+                </div>
+                <div className="instance-account-option-body">
+                  <div className="instance-account-option-title">No auto-join server</div>
+                  <div className="instance-account-option-sub">Launch this instance without automatically joining a server.</div>
+                </div>
+                {preferredServer === '' && <Check size={16} className="instance-account-option-check" />}
+              </button>
+
+              {loadingServers ? (
+                <div className="instance-server-picker-empty">Loading saved servers...</div>
+              ) : savedServers.length > 0 ? (
+                savedServers.map((server) => {
+                  const serverAddress = (server?.ip || '').trim();
+                  const isSelected = preferredServer === serverAddress;
+                  const hasIcon = Boolean(server?.icon);
+                  return (
+                    <button
+                      key={server.id || `${server.name || 'server'}-${serverAddress}`}
+                      className={`instance-account-option ${isSelected ? 'selected' : ''}`}
+                      onClick={() => {
+                        setPreferredServer(serverAddress);
+                        setShowServerModal(false);
+                      }}
+                    >
+                      <div className="instance-account-option-avatar">
+                        {hasIcon ? (
+                          <img
+                            src={`data:image/png;base64,${server.icon}`}
+                            alt=""
+                            className="instance-server-picker-avatar-img"
+                          />
+                        ) : (
+                          <Server size={18} />
+                        )}
+                      </div>
+                      <div className="instance-account-option-body">
+                        <div className="instance-account-option-title">{server.name || serverAddress}</div>
+                        <div className="instance-account-option-sub">{serverAddress || 'Missing server address'}</div>
+                      </div>
+                      {isSelected && <Check size={16} className="instance-account-option-check" />}
+                    </button>
+                  );
+                })
+              ) : (
+                <div className="instance-server-picker-empty">
+                  No saved servers found for this instance yet. Add one in Minecraft first (Multiplayer &gt; Add Server), then reopen this picker.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
       {showAccountModal && (
         <div className="instance-account-modal-overlay" onClick={() => setShowAccountModal(false)}>

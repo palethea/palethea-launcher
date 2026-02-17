@@ -515,8 +515,8 @@ function ProjectDetailsEntityModal({
         <div
           className="gallery-context-menu"
           style={{
-            left: Math.min(galleryContextMenu.x, window.innerWidth - 160),
-            top: Math.min(galleryContextMenu.y, window.innerHeight - 100)
+            left: Math.max(12, Math.min(galleryContextMenu.x, window.innerWidth - 172)),
+            top: Math.max(12, Math.min(galleryContextMenu.y, window.innerHeight - 112))
           }}
           onClick={(event) => event.stopPropagation()}
         >

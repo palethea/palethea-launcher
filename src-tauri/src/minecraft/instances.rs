@@ -74,6 +74,8 @@ pub struct Instance {
     #[serde(default)]
     pub color_accent: Option<String>,
     #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
     pub preferred_account: Option<String>,
     #[serde(default = "default_true")]
     pub check_mod_updates_on_launch: bool,
@@ -113,6 +115,7 @@ impl Instance {
             playtime_seconds: 0,
             total_launches: 0,
             color_accent: None,
+            category: None,
             preferred_account: None,
             check_mod_updates_on_launch: true,
             modpack_provider: None,
@@ -290,6 +293,7 @@ pub fn clone_instance(instance_id: &str, new_name: String) -> Result<Instance, S
         playtime_seconds: 0, // Reset playtime for clone
         total_launches: 0,
         color_accent: source.color_accent.clone(),
+        category: source.category.clone(),
         preferred_account: source.preferred_account.clone(),
         check_mod_updates_on_launch: source.check_mod_updates_on_launch,
         modpack_provider: source.modpack_provider.clone(),

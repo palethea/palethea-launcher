@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { ArrowLeft, Play, Box, Cpu, FolderOpen, Square, X, ExternalLink } from 'lucide-react';
+import {
+  ArrowLeft, Play, FolderOpen, Square, X, ExternalLink, User, Server, Tag, Boxes,
+  Cog, SquareTerminal, Puzzle, Archive, Earth, Image as ImageIcon
+} from 'lucide-react';
 import './InstanceEditor.css';
 import InstanceSettings from './InstanceSettings';
 import InstanceMods from './InstanceMods';
@@ -11,6 +14,49 @@ import InstanceServers from './InstanceServers';
 import InstanceScreenshots from './InstanceScreenshots';
 import InstanceConsole from './InstanceConsole';
 import ConfirmModal from './ConfirmModal';
+
+const PREFERRED_SERVER_STORAGE_KEY = 'instance-preferred-server-map';
+
+function getPreferredServerAddress(instanceId) {
+  try {
+    const stored = localStorage.getItem(PREFERRED_SERVER_STORAGE_KEY);
+    const parsedMap = stored ? JSON.parse(stored) || {} : {};
+    const savedValue = parsedMap?.[instanceId];
+    const serverAddress = typeof savedValue === 'string'
+      ? savedValue
+      : (savedValue?.address || '');
+    return serverAddress.trim() || null;
+  } catch (error) {
+    console.error('Failed to parse preferred server map in instance editor:', error);
+    return null;
+  }
+}
+
+function getPreferredServerSelection(instanceId) {
+  try {
+    const stored = localStorage.getItem(PREFERRED_SERVER_STORAGE_KEY);
+    const parsedMap = stored ? JSON.parse(stored) || {} : {};
+    const savedValue = parsedMap?.[instanceId];
+    const address = typeof savedValue === 'string'
+      ? savedValue.trim()
+      : (typeof savedValue?.address === 'string' ? savedValue.address.trim() : '');
+    const name = typeof savedValue?.name === 'string'
+      ? savedValue.name.trim()
+      : '';
+    const icon = typeof savedValue?.icon === 'string'
+      ? savedValue.icon.trim()
+      : '';
+
+    return {
+      address: address || null,
+      name: name || null,
+      icon: icon || null
+    };
+  } catch (error) {
+    console.error('Failed to parse preferred server selection in instance editor:', error);
+    return { address: null, name: null, icon: null };
+  }
+}
 
 function InstanceEditor({
   instanceId,
@@ -26,7 +72,8 @@ function InstanceEditor({
   onDequeueDownload,
   onUpdateDownloadStatus,
   skinCache = {},
-  skinRefreshKey = 0
+  skinRefreshKey = 0,
+  launcherSettings = null
 }) {
   const [instance, setInstance] = useState(null);
   const [activeTab, setActiveTab] = useState('settings');
@@ -34,6 +81,8 @@ function InstanceEditor({
   const [confirmModal, setConfirmModal] = useState(null);
   const [launching, setLaunching] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [savedAccounts, setSavedAccounts] = useState([]);
+  const [preferredAccountSkinFailed, setPreferredAccountSkinFailed] = useState(false);
   const [tabIndicatorStyle, setTabIndicatorStyle] = useState({ left: 0, width: 0, visible: false });
   const tabsContainerRef = useRef(null);
   const tabButtonRefs = useRef({});
@@ -63,6 +112,25 @@ function InstanceEditor({
   useEffect(() => {
     loadInstance();
   }, [loadInstance]);
+
+  useEffect(() => {
+    let mounted = true;
+    invoke('get_saved_accounts')
+      .then((result) => {
+        if (!mounted) return;
+        const accounts = Array.isArray(result)
+          ? result
+          : (Array.isArray(result?.accounts) ? result.accounts : []);
+        setSavedAccounts(accounts);
+      })
+      .catch((error) => {
+        console.error('Failed to load saved accounts for editor header:', error);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [instanceId]);
 
   useEffect(() => {
     const unlisten = listen('refresh-instances', () => {
@@ -194,10 +262,14 @@ function InstanceEditor({
     }
 
     if (onLaunch && instance) {
+      const normalizedServerAddress = typeof serverAddress === 'string'
+        ? serverAddress.trim()
+        : '';
+      const resolvedServerAddress = normalizedServerAddress || getPreferredServerAddress(instance.id);
       setLaunching(true);
       setConsoleClearKey(prev => prev + 1); // Trigger console clear
       setActiveTab('console');
-      await onLaunch(instance.id, { serverAddress });
+      await onLaunch(instance.id, { serverAddress: resolvedServerAddress });
       setLaunching(false);
     }
   };
@@ -214,13 +286,13 @@ function InstanceEditor({
   };
 
   const tabs = [
-    { id: 'settings', label: 'Settings' },
-    { id: 'console', label: 'Console' },
-    { id: 'mods', label: 'Mods' },
-    { id: 'resources', label: 'Resources' },
-    { id: 'worlds', label: 'Worlds' },
-    { id: 'servers', label: 'Servers' },
-    { id: 'screenshots', label: 'Screenshots' },
+    { id: 'settings', label: 'Settings', icon: Cog },
+    { id: 'console', label: 'Console', icon: SquareTerminal },
+    { id: 'mods', label: 'Mods', icon: Puzzle },
+    { id: 'resources', label: 'Resources', icon: Archive },
+    { id: 'worlds', label: 'Worlds', icon: Earth },
+    { id: 'servers', label: 'Servers', icon: Server },
+    { id: 'screenshots', label: 'Screenshots', icon: ImageIcon },
   ];
 
   const renderTabContent = () => {
@@ -282,6 +354,90 @@ function InstanceEditor({
     }
   };
 
+  const preferredAccount = (instance?.preferred_account || '').trim();
+  const preferredAccountNormalized = preferredAccount.toLowerCase();
+  const rawLoader = (instance?.mod_loader || '').trim();
+  const loaderLabel = rawLoader ? (rawLoader.toLowerCase() === 'vanilla' ? 'Vanilla' : rawLoader) : 'Vanilla';
+  const loaderClass = loaderLabel.toLowerCase().replace(/\s+/g, '-');
+  const preferredServer = getPreferredServerSelection(instance?.id || instanceId);
+  const preferredAccountData = preferredAccount
+    ? savedAccounts.find((account) => (account?.username || '').trim().toLowerCase() === preferredAccountNormalized) || null
+    : null;
+  const preferredAccountUuid = preferredAccountData?.uuid || null;
+  const preferredAccountSkinUrl = preferredAccountUuid
+    ? `https://minotar.net/helm/${preferredAccountUuid.replace(/-/g, '')}/64.png?t=${skinRefreshKey}`
+    : null;
+  const preferredServerSummary = preferredServer.address
+    ? (preferredServer.name && preferredServer.name !== preferredServer.address
+      ? `${preferredServer.name} (${preferredServer.address})`
+      : preferredServer.address)
+    : 'No auto-join server';
+  const showMainTabIcons = launcherSettings?.show_instance_editor_tab_icons === true;
+  const preferredServerIconSrc = preferredServer.icon
+    ? (preferredServer.icon.startsWith('data:')
+      ? preferredServer.icon
+      : `data:image/png;base64,${preferredServer.icon}`)
+    : null;
+
+  useEffect(() => {
+    setPreferredAccountSkinFailed(false);
+  }, [preferredAccountSkinUrl, preferredAccount]);
+
+  useEffect(() => {
+    if (!instance?.id || !preferredServer.address || preferredServer.icon) return;
+
+    let cancelled = false;
+
+    const hydratePreferredServerIcon = async () => {
+      try {
+        const servers = await invoke('get_instance_servers', { instanceId: instance.id });
+        if (cancelled || !Array.isArray(servers)) return;
+
+        const normalizedAddress = preferredServer.address.trim();
+        const match = servers.find(
+          (server) => (server?.ip || '').trim() === normalizedAddress
+            && typeof server?.icon === 'string'
+            && server.icon.trim().length > 0
+        );
+
+        if (!match) return;
+
+        let parsedMap = {};
+        try {
+          const raw = localStorage.getItem(PREFERRED_SERVER_STORAGE_KEY);
+          parsedMap = raw ? JSON.parse(raw) || {} : {};
+        } catch (error) {
+          console.error('Failed to parse preferred server map while hydrating icon:', error);
+        }
+
+        const current = parsedMap?.[instance.id];
+        parsedMap[instance.id] = {
+          address: normalizedAddress,
+          name: (
+            (typeof current?.name === 'string' && current.name.trim())
+            || (typeof match?.name === 'string' && match.name.trim())
+            || normalizedAddress
+          ),
+          icon: match.icon.trim()
+        };
+
+        localStorage.setItem(PREFERRED_SERVER_STORAGE_KEY, JSON.stringify(parsedMap));
+
+        if (!cancelled) {
+          setInstance((prev) => (prev ? { ...prev } : prev));
+        }
+      } catch (error) {
+        console.error('Failed to hydrate preferred server icon in editor header:', error);
+      }
+    };
+
+    void hydratePreferredServerIcon();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [instance?.id, preferredServer.address, preferredServer.icon]);
+
   if (loading) {
     return (
       <div className="instance-editor">
@@ -302,51 +458,98 @@ function InstanceEditor({
     <div className="instance-editor">
       <div className="editor-header">
         <div className="header-left">
-          <button className={`back-btn icon-only ${isPopout ? 'popout-close-btn' : ''}`} onClick={onClose} title={isPopout ? 'Close' : 'Back'}>
+          <button
+            className={`header-icon-btn back-btn icon-only ${isPopout ? 'popout-close-btn' : ''}`}
+            onClick={onClose}
+            title={isPopout ? 'Close' : 'Back'}
+            aria-label={isPopout ? 'Close editor' : 'Back to instance list'}
+          >
             {isPopout ? <X size={18} /> : <ArrowLeft size={18} />}
           </button>
-          <button className="folder-btn icon-only" onClick={handleOpenFolder} title="Open Instance Folder">
+          <button
+            className="header-icon-btn folder-btn icon-only"
+            onClick={handleOpenFolder}
+            title="Open Instance Folder"
+            aria-label="Open instance folder"
+          >
             <FolderOpen size={18} />
           </button>
           {!isPopout && onPopout && (
-            <button className="popout-btn icon-only" onClick={onPopout} title="Open in Pop-out Window">
+            <button
+              className="header-icon-btn popout-btn icon-only"
+              onClick={onPopout}
+              title="Open in Pop-out Window"
+              aria-label="Open in popout window"
+            >
               <ExternalLink size={18} />
             </button>
           )}
         </div>
 
-        <div className="header-separator" />
-
         <div className="header-title-container">
-          <div className="info-row">
-            <span className="info-badge version-badge">
-              <Box size={12} />
-              {instance.version_id}
-            </span>
-            {instance.mod_loader && instance.mod_loader !== 'Vanilla' && (
-              <span className={`info-badge loader-badge ${(instance.mod_loader || '').toLowerCase()}`}>
-                <Cpu size={12} />
-                {instance.mod_loader}
+          <div className="title-row">
+            <h1>{instance.name}</h1>
+            <div className="editor-title-meta">
+              <span className="editor-title-version" title={`Minecraft version ${instance.version_id}`}>
+                <Tag className="meta-icon" size={12} />
+                {instance.version_id}
               </span>
-            )}
+              <span className={`editor-loader-inline ${loaderClass}`} title={`Mod loader ${loaderLabel}`}>
+                <Boxes className="meta-icon" size={12} />
+                {loaderLabel}
+              </span>
+            </div>
+          </div>
+          <div className="launch-pref-row">
+            <span className={`launch-pref-chip ${preferredAccount ? 'is-bound' : 'is-default'}`}>
+              <span className="launch-pref-account-avatar">
+                {preferredAccount && preferredAccountSkinUrl && !preferredAccountSkinFailed ? (
+                  <img
+                    src={preferredAccountSkinUrl}
+                    alt={`${preferredAccount} skin`}
+                    onError={() => setPreferredAccountSkinFailed(true)}
+                  />
+                ) : (
+                  <User size={12} />
+                )}
+              </span>
+              <span className="launch-pref-label">Account</span>
+              <span className="launch-pref-value">{preferredAccount || 'Active account'}</span>
+            </span>
+            <span className={`launch-pref-chip ${preferredServer.address ? 'is-bound' : 'is-default'}`}>
+              <span className="launch-pref-server-avatar">
+                {preferredServerIconSrc ? (
+                  <img src={preferredServerIconSrc} alt="" />
+                ) : (
+                  <Server size={12} />
+                )}
+              </span>
+              <span className="launch-pref-label">Auto-join</span>
+              <span className="launch-pref-value">{preferredServerSummary}</span>
+            </span>
           </div>
         </div>
         <div className="header-right">
           <button
-            className={`launch-btn-large ${isRunning ? 'stop-mode' : ''}`}
+            className={`instance-list-play-btn editor-launch-btn ${isRunning ? 'is-running' : ''} ${launching && !isRunning ? 'is-launching' : ''}`}
             onClick={handleLaunch}
             disabled={launching}
+            title={isRunning ? 'Stop instance' : (launching ? 'Launching instance' : 'Launch instance')}
+            aria-label={isRunning ? 'Stop instance' : (launching ? 'Launching instance' : 'Launch instance')}
           >
             {launching ? (
-              'Launching...'
+              <>
+                <Play size={15} />
+                <span>Launching...</span>
+              </>
             ) : isRunning ? (
               <>
-                <Square size={18} fill="currentColor" />
+                <Square size={15} fill="currentColor" />
                 <span>Stop</span>
               </>
             ) : (
               <>
-                <Play size={18} fill="currentColor" />
+                <Play size={15} fill="currentColor" />
                 <span>Launch</span>
               </>
             )}
@@ -355,23 +558,34 @@ function InstanceEditor({
       </div>
 
       <div className="editor-tabs" ref={tabsContainerRef}>
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            ref={(el) => {
-              if (el) {
-                tabButtonRefs.current[tab.id] = el;
-                if (tab.id === activeTab) {
-                  scheduleMainTabIndicatorUpdate(8);
+        {tabs.map((tab, index) => {
+          const TabIcon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              ref={(el) => {
+                if (el) {
+                  tabButtonRefs.current[tab.id] = el;
+                  if (tab.id === activeTab) {
+                    scheduleMainTabIndicatorUpdate(8);
+                  }
                 }
-              }
-            }}
-            className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            <span className="tab-btn-label">{tab.label}</span>
-          </button>
-        ))}
+              }}
+              className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+              style={{ '--tab-enter-index': index }}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <span className="tab-btn-content">
+                {showMainTabIcons && (
+                  <span className="tab-btn-icon" aria-hidden="true">
+                    <TabIcon size={14} />
+                  </span>
+                )}
+                <span className="tab-btn-label">{tab.label}</span>
+              </span>
+            </button>
+          );
+        })}
         <div
           className="main-tab-indicator"
           style={{
@@ -382,7 +596,7 @@ function InstanceEditor({
         />
       </div>
 
-      <div className={`editor-content ${activeTab === 'console' ? 'console-active' : ''}`} onScroll={handleScroll}>
+      <div className={`editor-content ${activeTab === 'console' ? 'console-active' : ''} ${activeTab === 'settings' ? 'settings-active' : ''} ${['mods', 'resources', 'worlds'].includes(activeTab) ? 'has-subtabs' : ''}`} onScroll={handleScroll}>
         <div key={activeTab} className={`editor-tab-panel ${activeTab === 'console' ? 'console-panel' : ''}`}>
           {renderTabContent()}
         </div>

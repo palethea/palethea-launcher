@@ -164,7 +164,7 @@ function InstanceServers({ instance, onShowNotification, isScrolled, onLaunchIns
     if (!contextMenu || !contextMenuRef.current) return;
 
     const rect = contextMenuRef.current.getBoundingClientRect();
-    const margin = 8;
+    const margin = 12;
     const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
     const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
     const clampedX = Math.min(Math.max(contextMenu.x, margin), maxX);

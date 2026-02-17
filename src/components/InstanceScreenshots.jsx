@@ -50,7 +50,7 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
     if (!screenshotContextMenu || !screenshotContextMenuRef.current) return;
 
     const rect = screenshotContextMenuRef.current.getBoundingClientRect();
-    const margin = 8;
+    const margin = 12;
     const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
     const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
     const clampedX = Math.min(Math.max(screenshotContextMenu.x, margin), maxX);
@@ -136,12 +136,21 @@ function InstanceScreenshots({ instance, onShowNotification, isScrolled }) {
       // Create ClipboardItem with a Promise for the blob. 
       // This preserves user activation context which is often lost on Linux/WebKit 
       // when awaiting fetch/blob before calling the clipboard API.
-      const item = new ClipboardItem({
-        'image/png': (async () => {
-          const response = await fetch(srcUrl);
+      const clipboardBlobPromise = fetch(srcUrl)
+        .then((response) => {
           if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
-          return await response.blob();
-        })()
+          return response.blob();
+        })
+        .catch((fetchError) => {
+          debugLog('ERROR: Screenshot fetch failed', {
+            message: fetchError.message,
+            name: fetchError.name
+          });
+          throw fetchError;
+        });
+
+      const item = new ClipboardItem({
+        'image/png': clipboardBlobPromise
       });
 
       await navigator.clipboard.write([item]);

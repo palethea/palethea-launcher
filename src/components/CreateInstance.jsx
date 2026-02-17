@@ -73,7 +73,8 @@ function CreateInstance({
   loadingBytes = { current: 0, total: 0 },
   loadingCount = { current: 0, total: 0 },
   loadingTelemetry = { stageLabel: '', currentItem: '', speedBps: 0, etaSeconds: null },
-  mode = 'page'
+  mode = 'page',
+  launcherSettings = null
 }) {
   // 1. State Hooks
   const [creationMode, setCreationMode] = useState('version'); // 'version', 'modpack', 'import', or 'share-code'
@@ -129,6 +130,7 @@ function CreateInstance({
 
   // Version loading state
   const [loadingVersions, setLoadingVersions] = useState(true);
+  const [isEntering, setIsEntering] = useState(true);
 
   // 2. Ref Hooks
   const modpackLoadLockRef = useRef(false);
@@ -592,6 +594,16 @@ function CreateInstance({
   }, [step, selectedJava, creationMode]);
 
   useEffect(() => {
+    const enterTimer = window.setTimeout(() => {
+      setIsEntering(false);
+    }, 640);
+
+    return () => {
+      window.clearTimeout(enterTimer);
+    };
+  }, []);
+
+  useEffect(() => {
     // When selected version changes, update recommended java
     let mcVersion = null;
     if (creationMode === 'version') {
@@ -610,9 +622,13 @@ function CreateInstance({
   }, [selectedVersion, selectedModpackVersion, decodedShareData, importInfo, creationMode, getRecommendedJava]);
 
   const isPage = mode === 'page';
+  const instanceHeaderStyleRaw = launcherSettings?.instance_header_style;
+  const isBottomBarStyle = instanceHeaderStyleRaw === 'glass-bottom' || instanceHeaderStyleRaw === 'glass-bottom-icons' || instanceHeaderStyleRaw === 'simple-left-corner';
+  const createBarDirection = isBottomBarStyle ? 'bottom' : 'top';
+  const createContainerClass = `${isPage ? 'create-page' : 'modal'} create-bar-${createBarDirection} ${isEntering ? 'is-entering' : ''}`;
 
   const content = (
-    <div className={isPage ? 'create-page' : 'modal'} onClick={(e) => e.stopPropagation()}>
+    <div className={createContainerClass} onClick={(e) => e.stopPropagation()}>
       <FilterModal 
         isOpen={isFilterModalOpen}
         onClose={() => setIsFilterModalOpen(false)}

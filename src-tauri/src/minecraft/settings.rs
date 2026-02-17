@@ -21,8 +21,11 @@ pub struct LauncherSettings {
     pub accent_color: Option<String>,
     pub background_style: Option<String>,
     pub edit_mode_preference: Option<String>,
+    pub sidebar_style: Option<String>,
+    pub instance_header_style: Option<String>,
     pub enable_instance_animations: Option<bool>,
     pub show_fps_counter: Option<bool>,
+    pub show_instance_editor_tab_icons: Option<bool>,
 }
 
 fn default_update_channel() -> Option<String> {
@@ -42,8 +45,11 @@ impl Default for LauncherSettings {
             accent_color: Some("#E89C88".to_string()),
             background_style: Some("gradient".to_string()),
             edit_mode_preference: Some("ask".to_string()),
+            sidebar_style: Some("full".to_string()),
+            instance_header_style: Some("glass-top".to_string()),
             enable_instance_animations: Some(true),
             show_fps_counter: Some(false),
+            show_instance_editor_tab_icons: Some(false),
         }
     }
 }

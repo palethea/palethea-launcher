@@ -2,9 +2,11 @@ import { useState, useEffect, useCallback, memo, useRef, useMemo } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { sep } from '@tauri-apps/api/path';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { X, Minus, Maximize, Minimize2, Terminal, ChevronDown, Square, List, Shirt, BarChart3, RefreshCcw, Wallpaper, Settings, Download, Trash2, Play } from 'lucide-react';
+import { X, Minus, Maximize, Minimize2, Terminal, ChevronDown, Square, List, Shirt, BarChart3, RefreshCcw, Wallpaper, Settings, Download, Trash2, Play, User, Tag } from 'lucide-react';
 import { clampProgress, formatBytes, formatSpeed } from '../utils/downloadTelemetry';
 import './TitleBar.css';
+
+const STEVE_HEAD_DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAARklEQVQI12NgoAbghLD+I4kwBqOjo+O/f/8YGBj+MzD8Z2D4z8Dwnwmq7P9/BoYL5y8g0/8hHP7/x0b/Y2D4D5b5/58ZAME2EVcxlvGVAAAAAElFTkSuQmCC';
 
 function handleLogoImageError(event) {
   const image = event.currentTarget;
@@ -44,6 +46,7 @@ function TitleBar({
   launcherSettings, 
   runningInstances = {}, 
   instances = [],
+  accounts = [],
   onStopInstance,
   editingInstanceId = null,
   downloadQueue = [],
@@ -57,6 +60,7 @@ function TitleBar({
   const [isClosing, setIsClosing] = useState(false);
   const [isDownloadClosing, setIsDownloadClosing] = useState(false);
   const [logoMap, setLogoMap] = useState({});
+  const [failedAccountHeads, setFailedAccountHeads] = useState({});
   const dropdownRef = useRef(null);
   const downloadRef = useRef(null);
   const appWindow = useMemo(() => getCurrentWindow(), []);
@@ -70,6 +74,15 @@ function TitleBar({
     [runningIdsKey]
   );
   const hasRunning = runningIds.length > 0;
+  const accountByUsername = useMemo(() => {
+    const map = new Map();
+    for (const account of accounts) {
+      const username = (account?.username || '').trim();
+      if (!username) continue;
+      map.set(username.toLowerCase(), account);
+    }
+    return map;
+  }, [accounts]);
 
   const TABS_CONFIG = {
     instances: { label: 'Instances', icon: List },
@@ -219,6 +232,14 @@ function TitleBar({
     return `${s}s`;
   };
 
+  const getAccountHeadUrl = useCallback((account) => {
+    if (!account?.uuid) return null;
+    const isMicrosoft = Boolean(account.isLoggedIn ?? account.is_microsoft);
+    if (!isMicrosoft) return null;
+    if (failedAccountHeads[account.uuid]) return STEVE_HEAD_DATA;
+    return `https://minotar.net/helm/${account.uuid.replace(/-/g, '')}/64.png`;
+  }, [failedAccountHeads]);
+
   const handleMinimize = useCallback(() => appWindow.minimize(), [appWindow]);
   const handleMaximize = useCallback(async () => {
     try {
@@ -314,6 +335,11 @@ function TitleBar({
                     const instance = instances.find(i => i.id === id);
                     if (!instance) return null;
                     const info = runningInstances[id];
+                    const launchUsername = (info?.launch_username || '').trim();
+                    const launchAccount = launchUsername ? (accountByUsername.get(launchUsername.toLowerCase()) || null) : null;
+                    const accountHeadUrl = getAccountHeadUrl(launchAccount);
+                    const accountDisplay = launchUsername || 'Unknown';
+                    const hasBoundAccount = Boolean(launchUsername);
                     
                     return (
                       <div key={id} className="running-item">
@@ -335,17 +361,39 @@ function TitleBar({
                             </div>
                           </div>
                           <div className="running-item-info">
-                            <div className="running-item-name">{instance.name}</div>
+                            <div className="running-item-name-line">
+                              <div className="running-item-name">{instance.name}</div>
+                              <span className="running-item-title-version" title={`Minecraft version ${instance.version_id || 'Unknown'}`}>
+                                <Tag className="meta-icon" size={12} />
+                                {instance.version_id || 'Unknown'}
+                              </span>
+                            </div>
                             <div className="running-item-time">{formatRuntime(info?.start_time || 0)}</div>
-                            <div className="running-item-account">
-                              {info?.launch_username ? `Account: ${info.launch_username}` : 'Account: Unknown'}
+                            <div className={`running-item-account-chip ${hasBoundAccount ? 'is-bound' : 'is-default'}`}>
+                              <span className="running-item-account-avatar">
+                                {accountHeadUrl ? (
+                                  <img
+                                    src={accountHeadUrl}
+                                    alt={`${accountDisplay} skin`}
+                                    onError={() => {
+                                      if (launchAccount?.uuid) {
+                                        setFailedAccountHeads((prev) => ({ ...prev, [launchAccount.uuid]: true }));
+                                      }
+                                    }}
+                                  />
+                                ) : (
+                                  <User size={10} />
+                                )}
+                              </span>
+                              <span className="running-item-account-label">Account</span>
+                              <span className="running-item-account-value">{accountDisplay}</span>
                             </div>
                           </div>
                         </div>
                         <button 
                           className="stop-instance-btn"
                           onClick={() => onStopInstance(id)}
-                          title="Force Stop"
+                          title="Stop instance"
                         >
                           <Square size={14} fill="currentColor" />
                         </button>
