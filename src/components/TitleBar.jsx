@@ -95,6 +95,7 @@ function TitleBar({
 
   const currentTabInfo = TABS_CONFIG[activeTab];
   const editingInstance = editingInstanceId ? instances.find(i => i.id === editingInstanceId) : null;
+  const showTitlebarLocation = launcherSettings?.titlebar_location_next_to_logo !== false;
 
   // Create a stable key that only changes when logos actually change
   const logoKey = useMemo(
@@ -260,15 +261,117 @@ function TitleBar({
     }
   }, [appWindow]);
 
+  const renderDownloadQueueControl = (extraClass = '') => (
+    <div className={`download-queue-container ${extraClass}`.trim()} ref={downloadRef}>
+      <button 
+        className={`download-queue-btn ${showDownloadDropdown ? 'active' : ''}`}
+        onClick={toggleDownloadDropdown}
+        title="Download Queue"
+      >
+        <Download size={18} />
+        {downloadQueue.length > 0 && <span className="download-count">{downloadQueue.length}</span>}
+      </button>
+
+      {showDownloadDropdown && (
+        <div className={`running-dropdown download-dropdown ${isDownloadClosing ? 'closing' : ''}`}>
+          <div className="dropdown-header">
+            <span>Downloads</span>
+            {downloadHistory.length > 0 && (
+              <button 
+                className="clear-history-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClearDownloadHistory?.();
+                }}
+                title="Clear History"
+              >
+                <Trash2 size={12} />
+                <span>Clear</span>
+              </button>
+            )}
+          </div>
+          <div className="dropdown-list">
+            {downloadQueue.length === 0 && downloadHistory.length === 0 ? (
+              <div className="dropdown-empty">No downloads</div>
+            ) : (
+              <>
+                {/* Active Downloads */}
+                {downloadQueue.map((item, index) => (
+                  <div key={`active-${item.id || index}`} className="running-item download-item">
+                    <div className="running-item-left">
+                      <div className="running-item-logo">
+                        {getDownloadItemIcon(item) ? (
+                          <img src={getDownloadItemIcon(item)} alt="" referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className="logo-fallback">📦</div>
+                        )}
+                      </div>
+                      <div className="running-item-info">
+                        <div className="running-item-name">{item.name}</div>
+                        <div className="running-item-time">{item.stageLabel || item.status || 'Pending...'}</div>
+                        {item.currentItem && <div className="download-item-current">{item.currentItem}</div>}
+                        {typeof item.progress === 'number' && (
+                          <div className="download-item-progress">
+                            <div className="download-item-progress-fill" style={{ width: `${clampProgress(item.progress)}%` }} />
+                          </div>
+                        )}
+                        {(item.totalBytes > 0 || item.totalCount > 0 || item.speedBps > 0) && (
+                          <div className="download-item-metrics">
+                            {item.totalCount > 0 && <span>{item.currentCount || 0}/{item.totalCount} files</span>}
+                            {item.totalBytes > 0 && <span>{formatBytes(item.downloadedBytes || 0)}/{formatBytes(item.totalBytes)}</span>}
+                            {item.speedBps > 0 && <span>{formatSpeed(item.speedBps)}</span>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Separator if both exist */}
+                {downloadQueue.length > 0 && downloadHistory.length > 0 && (
+                  <div className="download-separator">
+                    <div className="separator-line"></div>
+                    <span>Recent</span>
+                    <div className="separator-line"></div>
+                  </div>
+                )}
+
+                {/* History */}
+                {downloadHistory.map((item, index) => (
+                  <div key={`history-${item.id || index}`} className="running-item items-history">
+                    <div className="running-item-left">
+                      <div className="running-item-logo">
+                        {getDownloadItemIcon(item) ? (
+                          <img src={getDownloadItemIcon(item)} alt="" referrerPolicy="no-referrer" style={{ opacity: 0.6 }} />
+                        ) : (
+                          <div className="logo-fallback" style={{ opacity: 0.6 }}>📦</div>
+                        )}
+                      </div>
+                      <div className="running-item-info" style={{ opacity: 0.6 }}>
+                        <div className="running-item-name">{item.name}</div>
+                        <div className="running-item-time">Installed</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div 
-      className="titlebar" 
+      className={`titlebar ${isPopout ? '' : 'with-sidebar'}`} 
       onMouseDown={handleMouseDown}
       onDoubleClick={handleMaximize}
     >
       <div className="titlebar-left">
         {/* <img src="/logoPL.png" className="titlebar-logo" alt="" /> */}
         <span className="titlebar-text">Palethea</span>
+        {renderDownloadQueueControl('titlebar-left-download')}
         
         {!isPopout && launcherSettings?.enable_console && (
           <button 
@@ -282,8 +385,8 @@ function TitleBar({
       </div>
 
       <div className="titlebar-center">
-        {editingInstance && (
-          <div className="titlebar-center-tab titlebar-editing-info">
+        {showTitlebarLocation && editingInstance && (
+          <div className="titlebar-center-tab titlebar-editing-info titlebar-location-tab">
             <div className="editing-logo">
               {logoMap[editingInstanceId] ? (
                 <>
@@ -304,8 +407,8 @@ function TitleBar({
             <span>{editingInstance.name}</span>
           </div>
         )}
-        {!isPopout && !editingInstance && currentTabInfo && (
-          <div className="titlebar-center-tab">
+        {showTitlebarLocation && !isPopout && !editingInstance && currentTabInfo && (
+          <div className="titlebar-center-tab titlebar-location-tab">
             <currentTabInfo.icon size={16} />
             <span>{currentTabInfo.label}</span>
           </div>
@@ -400,105 +503,6 @@ function TitleBar({
                       </div>
                     );
                   })
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="download-queue-container" ref={downloadRef}>
-          <button 
-            className={`download-queue-btn ${showDownloadDropdown ? 'active' : ''}`}
-            onClick={toggleDownloadDropdown}
-            title="Download Queue"
-          >
-            <Download size={18} />
-            {downloadQueue.length > 0 && <span className="download-count">{downloadQueue.length}</span>}
-          </button>
-
-          {showDownloadDropdown && (
-            <div className={`running-dropdown download-dropdown ${isDownloadClosing ? 'closing' : ''}`}>
-              <div className="dropdown-header">
-                <span>Downloads</span>
-                {downloadHistory.length > 0 && (
-                  <button 
-                    className="clear-history-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onClearDownloadHistory?.();
-                    }}
-                    title="Clear History"
-                  >
-                    <Trash2 size={12} />
-                    <span>Clear</span>
-                  </button>
-                )}
-              </div>
-              <div className="dropdown-list">
-                {downloadQueue.length === 0 && downloadHistory.length === 0 ? (
-                  <div className="dropdown-empty">No downloads</div>
-                ) : (
-                  <>
-                    {/* Active Downloads */}
-                    {downloadQueue.map((item, index) => (
-                      <div key={`active-${item.id || index}`} className="running-item download-item">
-                        <div className="running-item-left">
-                          <div className="running-item-logo">
-                            {getDownloadItemIcon(item) ? (
-                              <img src={getDownloadItemIcon(item)} alt="" referrerPolicy="no-referrer" />
-                            ) : (
-                              <div className="logo-fallback">📦</div>
-                            )}
-                          </div>
-                          <div className="running-item-info">
-                            <div className="running-item-name">{item.name}</div>
-                            <div className="running-item-time">{item.stageLabel || item.status || 'Pending...'}</div>
-                            {item.currentItem && <div className="download-item-current">{item.currentItem}</div>}
-                            {typeof item.progress === 'number' && (
-                              <div className="download-item-progress">
-                                <div className="download-item-progress-fill" style={{ width: `${clampProgress(item.progress)}%` }} />
-                              </div>
-                            )}
-                            {(item.totalBytes > 0 || item.totalCount > 0 || item.speedBps > 0) && (
-                              <div className="download-item-metrics">
-                                {item.totalCount > 0 && <span>{item.currentCount || 0}/{item.totalCount} files</span>}
-                                {item.totalBytes > 0 && <span>{formatBytes(item.downloadedBytes || 0)}/{formatBytes(item.totalBytes)}</span>}
-                                {item.speedBps > 0 && <span>{formatSpeed(item.speedBps)}</span>}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Separator if both exist */}
-                    {downloadQueue.length > 0 && downloadHistory.length > 0 && (
-                      <div className="download-separator">
-                        <div className="separator-line"></div>
-                        <span>Recent</span>
-                        <div className="separator-line"></div>
-                      </div>
-                    )}
-
-                    {/* History */}
-                    {downloadHistory.map((item, index) => (
-                      <div key={`history-${item.id || index}`} className="running-item items-history">
-                        <div className="running-item-left">
-                          <div className="running-item-logo">
-                            {getDownloadItemIcon(item) ? (
-                              <img src={getDownloadItemIcon(item)} alt="" referrerPolicy="no-referrer" style={{ opacity: 0.6 }} />
-                            ) : (
-                              <div className="logo-fallback" style={{ opacity: 0.6 }}>📦</div>
-                            )}
-                          </div>
-                          <div className="running-item-info" style={{ opacity: 0.6 }}>
-                            <div className="running-item-name">{item.name}</div>
-                            <div className="running-item-time">Installed</div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </>
                 )}
               </div>
             </div>

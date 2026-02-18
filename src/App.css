@@ -68,6 +68,20 @@ body,
     inset -1px -1px 0 rgba(0, 0, 0, 0.3);
 }
 
+/*
+  When the center-dock header style is active, allow the dock connector
+  (inside instance-list-wrapper, pulled up by margin-top: -2px) to visually
+  overlay the border-top. We DON'T remove the border — we just let overflow
+  be visible so the connector can reach up to the border line.
+*/
+.app-main-layout > .sidebar + .main-content.instance-header-style-center-dock-fold-icons {
+  overflow: visible;
+}
+
+.main-content.instance-header-style-center-dock-fold-icons .main-content-switch {
+  overflow: visible;
+}
+
 /* Original sidebar variants use the classic straight split without connected corner bubble */
 .app-main-layout.with-sidebar.sidebar-variant-original::before,
 .app-main-layout.with-sidebar.sidebar-variant-original-slim::before {
@@ -81,6 +95,9 @@ body,
   border-top-left-radius: 0;
   box-shadow: none;
 }
+
+/* In original variants, restore a top edge only for center-dock so the dock
+   has the same 2px mixed border surface to blend into as other layouts. */
 
 .app.sidebar-variant-original .sidebar,
 .app.sidebar-variant-original-slim .sidebar {
@@ -1514,6 +1531,13 @@ body,
   -webkit-backdrop-filter: blur(8.7px);
   background: rgba(20, 20, 22, 0.62);
   border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.platform-linux .instance-header-center-toggle,
+.platform-linux .instance-header-center-actions {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgba(20, 20, 22, 0.9);
 }
 
 .platform-linux .instance-card.deleting > :not(.deleting-overlay) {

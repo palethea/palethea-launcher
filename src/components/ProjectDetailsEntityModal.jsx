@@ -28,6 +28,7 @@ const formatCategory = (value) => {
 
 function ProjectDetailsEntityModal({
   onClose,
+  isClosing = false,
   loading = false,
   error = null,
   header = {},
@@ -58,6 +59,7 @@ function ProjectDetailsEntityModal({
   const [selectedGalleryMedia, setSelectedGalleryMedia] = useState(null);
   const [galleryContextMenu, setGalleryContextMenu] = useState(null);
   const showSkeleton = loading && !error;
+  const contentLoaded = !showSkeleton && !error;
 
   const hasDependenciesTab = showDependenciesTab || dependenciesLoading || dependencies.length > 0;
 
@@ -99,97 +101,162 @@ function ProjectDetailsEntityModal({
     tabs.push({ id: 'dependencies', label: 'Dependencies', icon: <Box size={16} />, count: dependencies.length });
   }
 
-  const sidebarSections = [
-    platformLabel ? {
-      key: 'platform',
-      label: 'Platform',
-      content: (
-        <div className="sidebar-status-box">
-          <div className="platform-value">{platformLabel}</div>
-        </div>
-      )
-    } : null,
-    {
-      key: 'details',
-      label: 'Details',
-      content: (
-        <div className="sidebar-stats">
-          <div className="stat-item">
-            <User size={14} />
-            {showSkeleton ? (
-              <span className="skeleton-line skeleton-text-sm"></span>
-            ) : (
-              <span>{details.author || 'Unknown creator'}</span>
-            )}
+  const sidebarSections = showSkeleton
+    ? [
+      {
+        key: 'platform',
+        label: 'Platform',
+        className: 'is-skeleton',
+        content: (
+          <div className="sidebar-status-box">
+            <span className="skeleton-line skeleton-platform-value"></span>
           </div>
-          <div className="stat-item">
-            <Download size={14} />
-            {showSkeleton ? (
+        )
+      },
+      {
+        key: 'details',
+        label: 'Details',
+        className: 'is-skeleton',
+        content: (
+          <div className="sidebar-stats">
+            <div className="stat-item">
+              <User size={14} />
               <span className="skeleton-line skeleton-text-sm"></span>
-            ) : (
-              <span>{details.downloadsText || `${formatNumber(details.downloads || 0)} downloads`}</span>
-            )}
-          </div>
-          <div className="stat-item">
-            <Info size={14} />
-            {showSkeleton ? (
+            </div>
+            <div className="stat-item">
+              <Download size={14} />
+              <span className="skeleton-line skeleton-text-sm"></span>
+            </div>
+            <div className="stat-item">
+              <Info size={14} />
               <span className="skeleton-line skeleton-text-xs"></span>
-            ) : (
-              <span className="monospace">{details.projectId || 'unknown'}</span>
-            )}
+            </div>
           </div>
-        </div>
-      )
-    },
-    loaders.length > 0 ? {
-      key: 'loaders',
-      label: 'Loaders',
-      content: (
-        <div className="platform-tags">
-          {loaders.map((loader) => (
-            <span key={loader} className={`platform-tag loader-${String(loader).toLowerCase()}`}>
-              {String(loader).charAt(0).toUpperCase() + String(loader).slice(1)}
-            </span>
-          ))}
-        </div>
-      )
-    } : null,
-    compatibilityInfo.displayVersions.length > 0 ? {
-      key: 'compatibility',
-      label: 'Compatibility',
-      content: (
-        <div className="compatibility-info">
-          <span className="compatibility-sublabel">Minecraft: Java Edition</span>
-          <div className="compatibility-tags">
-            {compatibilityInfo.displayVersions.map((version) => (
-              <span key={version} className="compatibility-tag">{version}</span>
+        )
+      },
+      {
+        key: 'loaders',
+        label: 'Loaders',
+        className: 'is-skeleton',
+        content: (
+          <div className="platform-tags">
+            <span className="skeleton-line skeleton-chip"></span>
+            <span className="skeleton-line skeleton-chip"></span>
+            <span className="skeleton-line skeleton-chip"></span>
+          </div>
+        )
+      },
+      {
+        key: 'compatibility',
+        label: 'Compatibility',
+        className: 'is-skeleton',
+        content: (
+          <div className="compatibility-info">
+            <span className="skeleton-line skeleton-text-xs"></span>
+            <div className="compatibility-tags">
+              <span className="skeleton-line skeleton-chip"></span>
+              <span className="skeleton-line skeleton-chip"></span>
+              <span className="skeleton-line skeleton-chip"></span>
+            </div>
+          </div>
+        )
+      },
+      {
+        key: 'categories',
+        label: 'Categories',
+        className: 'is-skeleton',
+        content: (
+          <div className="category-tags">
+            <span className="skeleton-line skeleton-chip wide"></span>
+            <span className="skeleton-line skeleton-chip"></span>
+            <span className="skeleton-line skeleton-chip"></span>
+          </div>
+        )
+      }
+    ]
+    : [
+      platformLabel ? {
+        key: 'platform',
+        label: 'Platform',
+        content: (
+          <div className="sidebar-status-box">
+            <div className="platform-value content-appear">{platformLabel}</div>
+          </div>
+        )
+      } : null,
+      {
+        key: 'details',
+        label: 'Details',
+        content: (
+          <div className="sidebar-stats">
+            <div className="stat-item">
+              <User size={14} />
+              <span className="content-appear" style={{ animationDelay: '18ms' }}>{details.author || 'Unknown creator'}</span>
+            </div>
+            <div className="stat-item">
+              <Download size={14} />
+              <span className="content-appear" style={{ animationDelay: '28ms' }}>{details.downloadsText || `${formatNumber(details.downloads || 0)} downloads`}</span>
+            </div>
+            <div className="stat-item">
+              <Info size={14} />
+              <span className="monospace content-appear" style={{ animationDelay: '38ms' }}>{details.projectId || 'unknown'}</span>
+            </div>
+          </div>
+        )
+      },
+      loaders.length > 0 ? {
+        key: 'loaders',
+        label: 'Loaders',
+        content: (
+          <div className="platform-tags">
+            {loaders.map((loader, index) => (
+              <span
+                key={loader}
+                className={`platform-tag loader-${String(loader).toLowerCase()} content-appear`}
+                style={{ animationDelay: `${20 + (index * 12)}ms` }}
+              >
+                {String(loader).charAt(0).toUpperCase() + String(loader).slice(1)}
+              </span>
             ))}
-            {!showAllCompatibility && compatibilityInfo.hasMore && (
-              <span className="compatibility-tag more clickable" onClick={() => setShowAllCompatibility(true)}>
-                +{compatibilityInfo.moreCount} more
-              </span>
-            )}
-            {showAllCompatibility && compatibilityInfo.hasMore && (
-              <span className="compatibility-tag more clickable" onClick={() => setShowAllCompatibility(false)}>
-                show less
-              </span>
-            )}
           </div>
-        </div>
-      )
-    } : null,
-    resolvedCategories.length > 0 ? {
-      key: 'categories',
-      label: 'Categories',
-      content: (
-        <div className="category-tags">
-          {resolvedCategories.map((category) => (
-            <span key={category} className="category-tag">{category}</span>
-          ))}
-        </div>
-      )
-    } : null
-  ].filter(Boolean);
+        )
+      } : null,
+      compatibilityInfo.displayVersions.length > 0 ? {
+        key: 'compatibility',
+        label: 'Compatibility',
+        content: (
+          <div className="compatibility-info">
+            <span className="compatibility-sublabel content-appear" style={{ animationDelay: '18ms' }}>Minecraft: Java Edition</span>
+            <div className="compatibility-tags">
+              {compatibilityInfo.displayVersions.map((version, index) => (
+                <span key={version} className="compatibility-tag content-appear" style={{ animationDelay: `${28 + (index * 12)}ms` }}>{version}</span>
+              ))}
+              {!showAllCompatibility && compatibilityInfo.hasMore && (
+                <span className="compatibility-tag more clickable content-appear" style={{ animationDelay: '52ms' }} onClick={() => setShowAllCompatibility(true)}>
+                  +{compatibilityInfo.moreCount} more
+                </span>
+              )}
+              {showAllCompatibility && compatibilityInfo.hasMore && (
+                <span className="compatibility-tag more clickable content-appear" style={{ animationDelay: '52ms' }} onClick={() => setShowAllCompatibility(false)}>
+                  show less
+                </span>
+              )}
+            </div>
+          </div>
+        )
+      } : null,
+      resolvedCategories.length > 0 ? {
+        key: 'categories',
+        label: 'Categories',
+        content: (
+          <div className="category-tags">
+            {resolvedCategories.map((category, index) => (
+              <span key={category} className="category-tag content-appear" style={{ animationDelay: `${24 + (index * 12)}ms` }}>{category}</span>
+            ))}
+          </div>
+        )
+      } : null
+    ].filter(Boolean);
 
   const renderDescription = () => {
     if (showSkeleton) {
@@ -409,7 +476,7 @@ function ProjectDetailsEntityModal({
       <span className="skeleton-line skeleton-meta-downloads"></span>
     </div>
   ) : (
-    <div className="header-meta-row">
+    <div className="header-meta-row content-appear" style={{ animationDelay: '20ms' }}>
       <span className="header-author">by {header.author || details.author || 'Unknown creator'}</span>
       <span className="header-separator">|</span>
       <span className="header-downloads">{header.downloadsText || details.downloadsText || `${formatNumber(details.downloads || 0)} downloads`}</span>
@@ -417,29 +484,47 @@ function ProjectDetailsEntityModal({
   );
 
   const versionsContentNode = showSkeleton ? (
-    <div className="versions-small-list">
-      {Array.from({ length: 6 }).map((_, index) => (
-        <div key={`version-skeleton-${index}`} className="version-mini-item">
-          <div className="mini-item-top">
-            <span className="skeleton-line skeleton-text-sm"></span>
+    <div className="versions-small-list-wrap">
+      <div className="versions-filter-toggle-row">
+        <span className="skeleton-line skeleton-versions-filter-toggle"></span>
+      </div>
+      <div className="versions-small-list">
+        {Array.from({ length: 5 }).map((_, index) => (
+          <div key={`version-skeleton-${index}`} className="version-mini-item">
+            <div className="mini-item-top">
+              <div className="mini-title-block">
+                <span className="skeleton-line skeleton-mini-title"></span>
+                <span className="skeleton-line skeleton-mini-subtitle"></span>
+              </div>
+              <div className="mini-item-tags">
+                <span className="skeleton-line skeleton-mini-pill"></span>
+              </div>
+            </div>
+            <div className="mini-item-bottom">
+              <div className="mini-meta-row">
+                <span className="skeleton-line skeleton-mini-chip"></span>
+                <span className="skeleton-line skeleton-mini-chip"></span>
+              </div>
+              <span className="skeleton-line skeleton-mini-date"></span>
+            </div>
           </div>
-          <div className="mini-item-bottom">
-            <span className="skeleton-line skeleton-text-xs"></span>
-            <span className="skeleton-line skeleton-text-xs"></span>
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   ) : versionsContent;
 
   return (
     <ProjectDetailsModal
       onClose={onClose}
+      isClosing={isClosing}
+      contentLoaded={contentLoaded}
       headerIconUrl={header.iconUrl}
       headerFallback={header.fallback || 'PK'}
       headerTitle={showSkeleton ? <span className="skeleton-line skeleton-title"></span> : (header.title || 'Loading...')}
       headerMeta={headerMetaNode}
-      headerDescription={showSkeleton ? '' : header.description}
+      headerDescription={showSkeleton
+        ? <span className="skeleton-line skeleton-header-description"></span>
+        : header.description}
       sidebarSections={sidebarSections}
       tabs={tabs}
       activeTab={activeTab}

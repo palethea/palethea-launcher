@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, memo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { ExternalLink, RotateCcw, Trash2 } from 'lucide-react';
@@ -15,6 +15,8 @@ const getFullSizeUrl = (img) => {
   const clean = url.split('?')[0];
   return clean.replace(/_\d+\.(webp|png|jpg|jpeg|gif)$/i, '.$1');
 };
+
+const MODAL_CLOSE_ANIMATION_MS = 220;
 
 const LOADER_CATEGORIES = [
   'fabric',
@@ -311,6 +313,25 @@ function ModVersionModal({
   const [loading, setLoading] = useState(true);
   const [loadingDeps, setLoadingDeps] = useState(false);
   const [error, setError] = useState(null);
+  const [isClosing, setIsClosing] = useState(false);
+  const closeTimeoutRef = useRef(null);
+
+  const requestClose = useCallback(() => {
+    if (isClosing) return;
+    setIsClosing(true);
+    if (closeTimeoutRef.current) {
+      clearTimeout(closeTimeoutRef.current);
+    }
+    closeTimeoutRef.current = setTimeout(() => {
+      onClose();
+    }, MODAL_CLOSE_ANIMATION_MS);
+  }, [isClosing, onClose]);
+
+  useEffect(() => () => {
+    if (closeTimeoutRef.current) {
+      clearTimeout(closeTimeoutRef.current);
+    }
+  }, []);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -668,7 +689,8 @@ function ModVersionModal({
 
   return (
     <ProjectDetailsEntityModal
-      onClose={onClose}
+      onClose={requestClose}
+      isClosing={isClosing}
       loading={loading}
       error={error}
       header={{
@@ -735,7 +757,7 @@ function ModVersionModal({
               <span>Uninstall</span>
             </button>
           )}
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-secondary" onClick={requestClose}>Cancel</button>
         </>
       )}
       galleryActions={{

@@ -29,5 +29,6 @@ src-tauri/.env.*
 *.sln
 *.sw?
 
+tmpclaude-*
 # Sensitive scripts
 scripts/

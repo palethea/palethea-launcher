@@ -64,6 +64,7 @@ const SUPPORTED_LOADER_KEYS = new Set(['fabric', 'forge', 'neoforge']);
 const DEFAULT_INSTANCE_ICON = '/minecraft_logo.png';
 const CATEGORY_LIST_STORAGE_KEY = 'instance-category-list';
 const CATEGORY_LIST_UPDATED_EVENT = 'instance-category-list-updated';
+const SIDEBAR_STYLE_CACHE_KEY = 'sidebar_style_cache';
 const OPEN_CATEGORY_MANAGER_EVENT = 'open-instance-category-manager';
 const PREFERRED_SERVER_STORAGE_KEY = 'instance-preferred-server-map';
 
@@ -219,6 +220,7 @@ function FpsCounter() {
 }
 
 function App() {
+  const cachedSidebarStyle = useMemo(() => localStorage.getItem(SIDEBAR_STYLE_CACHE_KEY), []);
   const [activeTab, setActiveTab] = useState('instances');
   const [instances, setInstances] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -496,7 +498,7 @@ function App() {
   const urlParams = new URLSearchParams(window.location.search);
   const popoutMode = urlParams.get('popout');
   const popoutInstanceId = urlParams.get('instanceId');
-  const sidebarStyleRaw = launcherSettings?.sidebar_style || 'full';
+  const sidebarStyleRaw = launcherSettings?.sidebar_style || cachedSidebarStyle || 'full';
   const sidebarStyle = (sidebarStyleRaw === 'compact' || sidebarStyleRaw === 'original-slim') ? 'compact' : 'full';
 
   // Show window once initialized
@@ -526,6 +528,12 @@ function App() {
       }
     }
   }, [launcherSettings]);
+
+  useEffect(() => {
+    const styleValue = launcherSettings?.sidebar_style;
+    if (!styleValue) return;
+    localStorage.setItem(SIDEBAR_STYLE_CACHE_KEY, styleValue);
+  }, [launcherSettings?.sidebar_style]);
 
   useEffect(() => {
     // Load all cached skins on startup
@@ -651,6 +659,7 @@ function App() {
       // Set defaults on error
       setLauncherSettings({
         enable_console: false,
+        titlebar_location_next_to_logo: true,
         show_welcome: true,
         account_preview_mode: 'simple',
         sidebar_style: 'full',

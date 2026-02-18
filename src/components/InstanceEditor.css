@@ -12,6 +12,40 @@
   }
 }
 
+@keyframes editor-header-shell-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.988);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes editor-header-piece-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes editor-header-gloss-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 0.56;
+  }
+}
+
 .instance-editor {
   --tabs-bar-bg: var(--background);
   --tabs-bar-border: rgba(255, 255, 255, 0.12);
@@ -19,6 +53,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  position: relative;
   background: transparent;
 }
 
@@ -40,6 +75,8 @@
     0 8px 22px rgba(0, 0, 0, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
   overflow: hidden;
+  transform-origin: center top;
+  animation: editor-header-shell-in 420ms cubic-bezier(0.2, 0.78, 0.22, 1) both;
 }
 
 .editor-header::before {
@@ -51,6 +88,7 @@
     linear-gradient(90deg, rgba(var(--accent-rgb), 0.22), rgba(var(--accent-rgb), 0) 24%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0));
   opacity: 0.56;
+  animation: editor-header-gloss-in 520ms cubic-bezier(0.2, 0.78, 0.22, 1) both;
 }
 
 .editor-header::after {
@@ -67,6 +105,39 @@
     rgba(var(--accent-rgb), 0.58) 50%,
     rgba(var(--accent-rgb), 0.08)
   );
+}
+
+.editor-header .header-left,
+.editor-header .header-title-container,
+.editor-header .header-right {
+  opacity: 0;
+  animation: editor-header-piece-in 360ms cubic-bezier(0.22, 0.7, 0.2, 1) both;
+}
+
+.editor-header .header-left {
+  animation-delay: 70ms;
+}
+
+.editor-header .header-title-container {
+  animation-delay: 120ms;
+}
+
+.editor-header .header-right {
+  animation-delay: 170ms;
+}
+
+.editor-header .title-row,
+.editor-header .launch-pref-row {
+  opacity: 0;
+  animation: editor-header-piece-in 340ms cubic-bezier(0.22, 0.7, 0.2, 1) both;
+}
+
+.editor-header .title-row {
+  animation-delay: 150ms;
+}
+
+.editor-header .launch-pref-row {
+  animation-delay: 195ms;
 }
 
 .header-left {
@@ -619,6 +690,18 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .editor-header,
+  .editor-header .header-left,
+  .editor-header .header-title-container,
+  .editor-header .header-right,
+  .editor-header .title-row,
+  .editor-header .launch-pref-row,
+  .editor-header::before {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
   .editor-tab-panel {
     animation: none;
   }
@@ -2056,8 +2139,8 @@
   overflow-x: hidden;
   overscroll-behavior: contain;
   scroll-behavior: auto;
-  mask-image: linear-gradient(to bottom, transparent, black 18px);
-  -webkit-mask-image: linear-gradient(to bottom, transparent, black 18px);
+  mask-image: none;
+  -webkit-mask-image: none;
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -2219,8 +2302,8 @@
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  mask-image: linear-gradient(to bottom, transparent, black 18px);
-  -webkit-mask-image: linear-gradient(to bottom, transparent, black 18px);
+  mask-image: none;
+  -webkit-mask-image: none;
 }
 
 .console-settings-panel h4 {

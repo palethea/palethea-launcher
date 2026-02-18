@@ -17,6 +17,8 @@ const CATEGORY_FILTER_UNCATEGORIZED = '__uncategorized__';
 const CATEGORY_LIST_STORAGE_KEY = 'instance-category-list';
 const CATEGORY_LIST_UPDATED_EVENT = 'instance-category-list-updated';
 const OPEN_CATEGORY_MANAGER_EVENT = 'open-instance-category-manager';
+const INSTANCE_HEADER_DOCK_OPEN_KEY = 'instance_header_center_dock_open';
+const INSTANCE_HEADER_STYLE_CACHE_KEY = 'instance_header_style_cache';
 const SORT_OPTIONS = new Set(['name', 'age', 'playtime']);
 const toCategoryKey = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
 
@@ -114,6 +116,12 @@ function InstanceList({
   const [preferredServerMap, setPreferredServerMap] = useState({});
   const [openImportInfoByTask, setOpenImportInfoByTask] = useState({});
   const [collapsedSetupTasks, setCollapsedSetupTasks] = useState({});
+  const [isCenterDockExpanded, setIsCenterDockExpanded] = useState(() => localStorage.getItem(INSTANCE_HEADER_DOCK_OPEN_KEY) !== '0');
+  const [dockAnimationState, setDockAnimationState] = useState('');
+  const cachedInstanceHeaderStyle = useMemo(
+    () => localStorage.getItem(INSTANCE_HEADER_STYLE_CACHE_KEY),
+    []
+  );
   const sortRef = useRef(null);
   const categoryFilterRef = useRef(null);
   const bulkCategoryDropdownRef = useRef(null);
@@ -134,6 +142,49 @@ function InstanceList({
   const activeViewModeAnimationsRef = useRef(new Map());
   const categoryAssignmentOptionsRef = useRef([]);
   const pendingDeletedCategoryKeysRef = useRef(new Set());
+  const dockAnimationTimerRef = useRef(null);
+
+  // Apply overflow helper class before paint so the dock doesn't jump after mount.
+  useLayoutEffect(() => {
+    const mainContent = document.querySelector('.main-content');
+    if (!mainContent) return;
+    const sidebarStyle = launcherSettings?.sidebar_style || 'full';
+    const isOriginalSidebarStyle = sidebarStyle === 'original' || sidebarStyle === 'original-slim';
+    const rawStyleValue = launcherSettings?.instance_header_style || cachedInstanceHeaderStyle || 'glass-top';
+    const normalizedStyleValue = rawStyleValue === 'simple-left-corner'
+      ? 'glass-bottom-icons'
+      : rawStyleValue === 'glass-dark'
+        ? 'glass-bottom'
+        : rawStyleValue;
+    const resolvedStyleValue = isOriginalSidebarStyle && normalizedStyleValue === 'center-dock-fold-icons'
+      ? 'glass-top-icons'
+      : normalizedStyleValue;
+    const isCenterDock = resolvedStyleValue === 'center-dock-fold-icons';
+    if (isCenterDock) {
+      mainContent.classList.add('instance-header-style-center-dock-fold-icons');
+    } else {
+      mainContent.classList.remove('instance-header-style-center-dock-fold-icons');
+    }
+    return () => {
+      mainContent.classList.remove('instance-header-style-center-dock-fold-icons');
+    };
+  }, [launcherSettings?.instance_header_style, launcherSettings?.sidebar_style, cachedInstanceHeaderStyle]);
+
+  useEffect(() => {
+    const rawStyleValue = launcherSettings?.instance_header_style;
+    if (!rawStyleValue) return;
+    const sidebarStyle = launcherSettings?.sidebar_style || 'full';
+    const isOriginalSidebarStyle = sidebarStyle === 'original' || sidebarStyle === 'original-slim';
+    const normalizedStyleValue = rawStyleValue === 'simple-left-corner'
+      ? 'glass-bottom-icons'
+      : rawStyleValue === 'glass-dark'
+        ? 'glass-bottom'
+        : rawStyleValue;
+    const resolvedStyleValue = isOriginalSidebarStyle && normalizedStyleValue === 'center-dock-fold-icons'
+      ? 'glass-top-icons'
+      : normalizedStyleValue;
+    localStorage.setItem(INSTANCE_HEADER_STYLE_CACHE_KEY, resolvedStyleValue);
+  }, [launcherSettings?.instance_header_style, launcherSettings?.sidebar_style]);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -1219,6 +1270,14 @@ function InstanceList({
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (dockAnimationTimerRef.current) {
+        window.clearTimeout(dockAnimationTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const activeAnimations = activeCategoryReorderAnimationsRef.current;
     return () => {
       activeAnimations.forEach((animation) => {
@@ -1239,6 +1298,29 @@ function InstanceList({
   const switchToGridView = useCallback(() => {
     animateViewModeChange('grid');
   }, [animateViewModeChange]);
+
+  const setCenterDockExpanded = useCallback((nextExpanded) => {
+    setIsCenterDockExpanded(nextExpanded);
+    localStorage.setItem(INSTANCE_HEADER_DOCK_OPEN_KEY, nextExpanded ? '1' : '0');
+    if (!nextExpanded) {
+      setIsSortOpen(false);
+      setIsCategoryFilterOpen(false);
+    }
+  }, []);
+
+  const toggleCenterDockExpanded = useCallback(() => {
+    const nextExpanded = !isCenterDockExpanded;
+    setDockAnimationState(nextExpanded ? 'dock-anim-opening' : 'dock-anim-closing');
+    setCenterDockExpanded(nextExpanded);
+
+    if (dockAnimationTimerRef.current) {
+      window.clearTimeout(dockAnimationTimerRef.current);
+    }
+    dockAnimationTimerRef.current = window.setTimeout(() => {
+      setDockAnimationState('');
+      dockAnimationTimerRef.current = null;
+    }, nextExpanded ? 360 : 300);
+  }, [isCenterDockExpanded, setCenterDockExpanded]);
 
   const handleOpenModpackInfo = useCallback((event, instance) => {
     event.preventDefault();
@@ -1293,17 +1375,26 @@ function InstanceList({
       return '';
     })()
     : '';
-  const instanceHeaderStyleRaw = launcherSettings?.instance_header_style;
-  const instanceHeaderStyle = instanceHeaderStyleRaw === 'glass-top'
+  const sidebarStyleRaw = launcherSettings?.sidebar_style || 'full';
+  const isOriginalSidebarStyle = sidebarStyleRaw === 'original' || sidebarStyleRaw === 'original-slim';
+  const instanceHeaderStyleRaw = launcherSettings?.instance_header_style || cachedInstanceHeaderStyle || 'glass-top';
+  const normalizedInstanceHeaderStyle = instanceHeaderStyleRaw === 'glass-top'
     || instanceHeaderStyleRaw === 'glass-top-icons'
     || instanceHeaderStyleRaw === 'glass-bottom'
     || instanceHeaderStyleRaw === 'glass-bottom-icons'
+    || instanceHeaderStyleRaw === 'center-dock-fold-icons'
     ? instanceHeaderStyleRaw
     : instanceHeaderStyleRaw === 'simple-left-corner'
       ? 'glass-bottom-icons'
-      : 'glass-top';
+      : instanceHeaderStyleRaw === 'glass-dark'
+        ? 'glass-bottom'
+        : 'glass-top';
+  const instanceHeaderStyle = isOriginalSidebarStyle && normalizedInstanceHeaderStyle === 'center-dock-fold-icons'
+    ? 'glass-top-icons'
+    : normalizedInstanceHeaderStyle;
+  const isCenterDockHeaderStyle = instanceHeaderStyle === 'center-dock-fold-icons';
   const isIconHeaderStyle = instanceHeaderStyle === 'glass-bottom-icons' || instanceHeaderStyle === 'glass-top-icons';
-  const openHeaderDropdownUpwards = instanceHeaderStyle === 'glass-bottom' || instanceHeaderStyle === 'glass-bottom-icons';
+  const openHeaderDropdownUpwards = !isCenterDockHeaderStyle && (instanceHeaderStyle === 'glass-bottom' || instanceHeaderStyle === 'glass-bottom-icons');
   const renderInstanceCard = (instance, enterIndex) => {
     const rawLoader = (instance.mod_loader || '').trim();
     const loaderLabel = rawLoader ? (rawLoader.toLowerCase() === 'vanilla' ? 'Vanilla' : rawLoader) : 'Vanilla';
@@ -1641,137 +1732,176 @@ function InstanceList({
     );
   };
 
-  return (
-    <div className={`instance-list-wrapper ${viewMode === 'list' ? 'list-mode' : 'grid-mode'} header-style-${instanceHeaderStyle} ${isEntering ? 'is-entering' : ''}`}>
-      {instances.length > 0 && (
-          <div className={`instance-header instance-header-style-${instanceHeaderStyle}`}>
-            {isIconHeaderStyle ? (
-              <div className="header-actions header-actions-icon">
-                <div className="header-icon-group">
-                  <button
-                    type="button"
-                    className={`instance-controls-filter-btn ${sortBy === 'name' ? 'active' : ''}`}
-                    onClick={() => handleSortChange({ target: { value: 'name' } })}
-                    title="Sort by Name"
-                    aria-label="Sort by Name"
-                  >
-                    <List size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    className={`instance-controls-filter-btn ${sortBy === 'age' ? 'active' : ''}`}
-                    onClick={() => handleSortChange({ target: { value: 'age' } })}
-                    title="Sort by Creation Date"
-                    aria-label="Sort by Creation Date"
-                  >
-                    <CalendarDays size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    className={`instance-controls-filter-btn ${sortBy === 'playtime' ? 'active' : ''}`}
-                    onClick={() => handleSortChange({ target: { value: 'playtime' } })}
-                    title="Sort by Playtime"
-                    aria-label="Sort by Playtime"
-                  >
-                    <Clock size={16} />
-                  </button>
-                  <div className="p-dropdown instance-category-filter-dropdown" ref={categoryFilterRef}>
-                    <button
-                      type="button"
-                      className={`instance-controls-filter-btn ${categoryFilter !== CATEGORY_FILTER_ALL ? 'active' : ''}`}
-                      onClick={() => {
-                        setIsCategoryFilterOpen((prev) => !prev);
-                        setIsSortOpen(false);
-                      }}
-                      title={`Filter by Category: ${activeCategoryFilterLabel}`}
-                      aria-label={`Filter by Category: ${activeCategoryFilterLabel}`}
-                    >
-                      <Tag size={16} />
-                    </button>
-                    {isCategoryFilterOpen && (
-                      <div className={`p-dropdown-menu ${openHeaderDropdownUpwards ? 'instance-header-dropdown-menu-upwards' : ''}`}>
-                        <div
-                          className={`p-dropdown-item ${categoryFilter === CATEGORY_FILTER_ALL ? 'selected' : ''}`}
-                          onClick={() => {
-                            handleCategoryFilterChange(CATEGORY_FILTER_ALL);
-                            setIsCategoryFilterOpen(false);
-                          }}
-                        >
-                          <span className="item-label">All categories</span>
-                          {categoryFilter === CATEGORY_FILTER_ALL && <Check size={14} className="selected-icon" />}
-                        </div>
-                        <div
-                          className={`p-dropdown-item ${categoryFilter === CATEGORY_FILTER_UNCATEGORIZED ? 'selected' : ''}`}
-                          onClick={() => {
-                            handleCategoryFilterChange(CATEGORY_FILTER_UNCATEGORIZED);
-                            setIsCategoryFilterOpen(false);
-                          }}
-                        >
-                          <span className="item-label">Uncategorized</span>
-                          {categoryFilter === CATEGORY_FILTER_UNCATEGORIZED && <Check size={14} className="selected-icon" />}
-                        </div>
-                        {availableCategoryOptions.map((category) => (
-                          <div
-                            key={category}
-                            className={`p-dropdown-item ${categoryFilter.toLowerCase() === category.toLowerCase() ? 'selected' : ''}`}
-                            onClick={() => {
-                              handleCategoryFilterChange(category);
-                              setIsCategoryFilterOpen(false);
-                            }}
-                          >
-                            <span className="item-label">{category}</span>
-                            {categoryFilter.toLowerCase() === category.toLowerCase() && <Check size={14} className="selected-icon" />}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <span className="header-divider" aria-hidden="true" />
-
-                <div className="view-controls header-view-controls-icon">
-                  <button
-                    className={`view-btn ${viewMode === 'list' ? 'active' : ''}`}
-                    onClick={switchToListView}
-                    title="List View"
-                  >
-                    <List size={18} />
-                  </button>
-                  <button
-                    className={`view-btn ${viewMode === 'grid' ? 'active' : ''}`}
-                    onClick={switchToGridView}
-                    title="Grid View"
-                  >
-                    <LayoutGrid size={18} />
-                  </button>
-                </div>
-
-                <span className="header-divider" aria-hidden="true" />
-
-                <button
-                  type="button"
-                  className="instance-controls-filter-btn"
-                  onClick={() => setShowCategoryManagerModal(true)}
-                  title="Manage Categories"
-                  aria-label="Manage Categories"
-                >
-                  <Boxes size={16} />
-                </button>
-
-                <span className="header-divider" aria-hidden="true" />
-
-                <button
-                  type="button"
-                  className="instance-controls-create-btn"
-                  onClick={onCreate}
-                  disabled={isLoading}
-                  title="Create New Instance"
-                  aria-label="Create New Instance"
-                >
-                  <Plus size={18} />
-                </button>
+  const renderIconHeaderActions = (extraClassName = '') => (
+    <div className={`header-actions header-actions-icon ${extraClassName}`.trim()}>
+      <div className="header-icon-group">
+        <button
+          type="button"
+          className={`instance-controls-filter-btn ${sortBy === 'name' ? 'active' : ''}`}
+          onClick={() => handleSortChange({ target: { value: 'name' } })}
+          title="Sort by Name"
+          aria-label="Sort by Name"
+        >
+          <List size={16} />
+        </button>
+        <button
+          type="button"
+          className={`instance-controls-filter-btn ${sortBy === 'age' ? 'active' : ''}`}
+          onClick={() => handleSortChange({ target: { value: 'age' } })}
+          title="Sort by Creation Date"
+          aria-label="Sort by Creation Date"
+        >
+          <CalendarDays size={16} />
+        </button>
+        <button
+          type="button"
+          className={`instance-controls-filter-btn ${sortBy === 'playtime' ? 'active' : ''}`}
+          onClick={() => handleSortChange({ target: { value: 'playtime' } })}
+          title="Sort by Playtime"
+          aria-label="Sort by Playtime"
+        >
+          <Clock size={16} />
+        </button>
+        <div className="p-dropdown instance-category-filter-dropdown" ref={categoryFilterRef}>
+          <button
+            type="button"
+            className={`instance-controls-filter-btn ${categoryFilter !== CATEGORY_FILTER_ALL ? 'active' : ''}`}
+            onClick={() => {
+              setIsCategoryFilterOpen((prev) => !prev);
+              setIsSortOpen(false);
+            }}
+            title={`Filter by Category: ${activeCategoryFilterLabel}`}
+            aria-label={`Filter by Category: ${activeCategoryFilterLabel}`}
+          >
+            <Tag size={16} />
+          </button>
+          {isCategoryFilterOpen && (
+            <div className={`p-dropdown-menu ${openHeaderDropdownUpwards ? 'instance-header-dropdown-menu-upwards' : ''}`}>
+              <div
+                className={`p-dropdown-item ${categoryFilter === CATEGORY_FILTER_ALL ? 'selected' : ''}`}
+                onClick={() => {
+                  handleCategoryFilterChange(CATEGORY_FILTER_ALL);
+                  setIsCategoryFilterOpen(false);
+                }}
+              >
+                <span className="item-label">All categories</span>
+                {categoryFilter === CATEGORY_FILTER_ALL && <Check size={14} className="selected-icon" />}
               </div>
+              <div
+                className={`p-dropdown-item ${categoryFilter === CATEGORY_FILTER_UNCATEGORIZED ? 'selected' : ''}`}
+                onClick={() => {
+                  handleCategoryFilterChange(CATEGORY_FILTER_UNCATEGORIZED);
+                  setIsCategoryFilterOpen(false);
+                }}
+              >
+                <span className="item-label">Uncategorized</span>
+                {categoryFilter === CATEGORY_FILTER_UNCATEGORIZED && <Check size={14} className="selected-icon" />}
+              </div>
+              {availableCategoryOptions.map((category) => (
+                <div
+                  key={category}
+                  className={`p-dropdown-item ${categoryFilter.toLowerCase() === category.toLowerCase() ? 'selected' : ''}`}
+                  onClick={() => {
+                    handleCategoryFilterChange(category);
+                    setIsCategoryFilterOpen(false);
+                  }}
+                >
+                  <span className="item-label">{category}</span>
+                  {categoryFilter.toLowerCase() === category.toLowerCase() && <Check size={14} className="selected-icon" />}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <span className="header-divider" aria-hidden="true" />
+
+      <div className="view-controls header-view-controls-icon">
+        <button
+          className={`view-btn ${viewMode === 'list' ? 'active' : ''}`}
+          onClick={switchToListView}
+          title="List View"
+        >
+          <List size={18} />
+        </button>
+        <button
+          className={`view-btn ${viewMode === 'grid' ? 'active' : ''}`}
+          onClick={switchToGridView}
+          title="Grid View"
+        >
+          <LayoutGrid size={18} />
+        </button>
+      </div>
+
+      <span className="header-divider" aria-hidden="true" />
+
+      <button
+        type="button"
+        className="instance-controls-filter-btn"
+        onClick={() => setShowCategoryManagerModal(true)}
+        title="Manage Categories"
+        aria-label="Manage Categories"
+      >
+        <Boxes size={16} />
+      </button>
+
+      <span className="header-divider" aria-hidden="true" />
+
+      <button
+        type="button"
+        className="instance-controls-create-btn"
+        onClick={onCreate}
+        disabled={isLoading}
+        title="Create New Instance"
+        aria-label="Create New Instance"
+      >
+        <Plus size={18} />
+      </button>
+    </div>
+  );
+
+  return (
+    <div className={`instance-list-wrapper ${viewMode === 'list' ? 'list-mode' : 'grid-mode'} header-style-${instanceHeaderStyle} ${isCenterDockHeaderStyle ? (isCenterDockExpanded ? 'dock-open' : 'dock-collapsed') : ''} ${dockAnimationState} ${isEntering ? 'is-entering' : ''}`}>
+      {instances.length > 0 && (
+        <>
+          {isCenterDockHeaderStyle && (
+            <div className={`instance-header-dock-connector ${isCenterDockExpanded ? 'expanded' : 'collapsed'}`} aria-hidden="true">
+              <span className="instance-header-dock-line instance-header-dock-line-left" />
+              <span className="instance-header-dock-notch instance-header-dock-notch-left" />
+              <span className="instance-header-dock-notch-bottom" />
+              <span className="instance-header-dock-notch instance-header-dock-notch-right" />
+              <span className="instance-header-dock-line instance-header-dock-line-right" />
+            </div>
+          )}
+          <div className={`instance-header instance-header-style-${instanceHeaderStyle}`}>
+            {isCenterDockHeaderStyle ? (
+              <div className={`instance-header-center-dock ${isCenterDockExpanded ? 'expanded' : 'collapsed'}`}>
+                {!isCenterDockExpanded && (
+                  <button
+                    type="button"
+                    className="instance-header-center-toggle collapsed"
+                    title="Expand instance controls"
+                    aria-label="Expand instance controls"
+                    aria-expanded={false}
+                    onClick={toggleCenterDockExpanded}
+                  />
+                )}
+                <div className={`instance-header-center-actions-wrap ${isCenterDockExpanded ? 'expanded' : 'collapsed'}`}>
+                  {renderIconHeaderActions('instance-header-center-actions')}
+                </div>
+                {isCenterDockExpanded && (
+                  <button
+                    type="button"
+                    className="instance-header-center-collapse-tab"
+                    title="Collapse instance controls"
+                    aria-label="Collapse instance controls"
+                    onClick={toggleCenterDockExpanded}
+                  />
+                )}
+              </div>
+            ) : isIconHeaderStyle ? (
+              renderIconHeaderActions()
             ) : (
               <div className="header-actions">
                 <div className="sort-controls">
@@ -1909,6 +2039,7 @@ function InstanceList({
               </div>
             )}
           </div>
+        </>
       )}
       <div className={`instance-list`} onContextMenu={handleContainerContextMenu}>
 

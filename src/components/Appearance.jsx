@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { ChevronDown, Check } from 'lucide-react';
 import CustomColorPicker from './CustomColorPicker';
 import './Settings.css'; // Reuse settings styles for consistency
+const INSTANCE_HEADER_STYLE_CACHE_KEY = 'instance_header_style_cache';
+const SIDEBAR_STYLE_CACHE_KEY = 'sidebar_style_cache';
 
 function Appearance({ launcherSettings, onSettingsUpdated }) {
   const [showColorPicker, setShowColorPicker] = useState(false);
@@ -43,7 +45,8 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
     { id: 'glass-top', label: 'Glass Top (Text)' },
     { id: 'glass-top-icons', label: 'Glass Top (Icons)' },
     { id: 'glass-bottom', label: 'Glass Bottom (Text)' },
-    { id: 'glass-bottom-icons', label: 'Glass Bottom (Icons)' }
+    { id: 'glass-bottom-icons', label: 'Glass Bottom (Icons)' },
+    { id: 'center-dock-fold-icons', label: 'Center Dock (Foldable Icons)' }
   ];
 
   const activeBackgroundStyle = launcherSettings?.background_style || 'gradient';
@@ -56,14 +59,21 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
   const activeSidebarStyle = sidebarStyleOptions.some((opt) => opt.id === activeSidebarStyleRaw)
     ? activeSidebarStyleRaw
     : 'full';
+  const isOriginalSidebarStyle = activeSidebarStyle === 'original' || activeSidebarStyle === 'original-slim';
   const activeSidebarStyleLabel = sidebarStyleOptions.find((opt) => opt.id === activeSidebarStyle)?.label || 'Connected (Full Sidebar)';
   const activeInstanceHeaderStyleRaw = launcherSettings?.instance_header_style || 'glass-top';
   const activeInstanceHeaderStyle = activeInstanceHeaderStyleRaw === 'glass-dark'
     ? 'glass-bottom'
     : activeInstanceHeaderStyleRaw === 'simple-left-corner'
       ? 'glass-bottom-icons'
-    : activeInstanceHeaderStyleRaw;
-  const activeInstanceHeaderStyleLabel = instanceHeaderStyleOptions.find((opt) => opt.id === activeInstanceHeaderStyle)?.label || 'Glass Top (Text)';
+      : activeInstanceHeaderStyleRaw;
+  const resolvedInstanceHeaderStyle = isOriginalSidebarStyle && activeInstanceHeaderStyle === 'center-dock-fold-icons'
+    ? 'glass-top-icons'
+    : activeInstanceHeaderStyle;
+  const availableInstanceHeaderStyleOptions = isOriginalSidebarStyle
+    ? instanceHeaderStyleOptions.filter((opt) => opt.id !== 'center-dock-fold-icons')
+    : instanceHeaderStyleOptions;
+  const activeInstanceHeaderStyleLabel = instanceHeaderStyleOptions.find((opt) => opt.id === resolvedInstanceHeaderStyle)?.label || 'Glass Top (Text)';
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -231,9 +241,15 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
                         key={opt.id}
                         className={`p-dropdown-item ${activeSidebarStyle === opt.id ? 'selected' : ''}`}
                         onClick={async () => {
+                          const forceGlassTopIcons = opt.id === 'original' || opt.id === 'original-slim';
+                          if (forceGlassTopIcons) {
+                            localStorage.setItem(INSTANCE_HEADER_STYLE_CACHE_KEY, 'glass-top-icons');
+                          }
+                          localStorage.setItem(SIDEBAR_STYLE_CACHE_KEY, opt.id);
                           const updated = {
                             ...launcherSettings,
-                            sidebar_style: opt.id
+                            sidebar_style: opt.id,
+                            ...(forceGlassTopIcons ? { instance_header_style: 'glass-top-icons' } : {})
                           };
                           await invoke('save_settings', { newSettings: updated });
                           onSettingsUpdated();
@@ -352,11 +368,12 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
 
                 {showInstanceHeaderDropdown && (
                   <div className="p-dropdown-menu">
-                    {instanceHeaderStyleOptions.map((opt) => (
+                    {availableInstanceHeaderStyleOptions.map((opt) => (
                       <div
                         key={opt.id}
-                        className={`p-dropdown-item ${activeInstanceHeaderStyle === opt.id ? 'selected' : ''}`}
+                        className={`p-dropdown-item ${resolvedInstanceHeaderStyle === opt.id ? 'selected' : ''}`}
                         onClick={async () => {
+                          localStorage.setItem(INSTANCE_HEADER_STYLE_CACHE_KEY, opt.id);
                           const updated = {
                             ...launcherSettings,
                             instance_header_style: opt.id
@@ -367,7 +384,7 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
                         }}
                       >
                         <span>{opt.label}</span>
-                        {activeInstanceHeaderStyle === opt.id && <Check size={14} className="selected-icon" />}
+                        {resolvedInstanceHeaderStyle === opt.id && <Check size={14} className="selected-icon" />}
                       </div>
                     ))}
                   </div>
@@ -375,7 +392,7 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
               </div>
             </div>
             <p className="setting-hint">
-              Select the visual style for the floating Instances control bar.
+              Select the visual style for the Instances control bar. Center Dock is disabled on Original sidebar styles.
             </p>
           </div>
 
@@ -398,6 +415,28 @@ function Appearance({ launcherSettings, onSettingsUpdated }) {
             </div>
             <p className="setting-hint">
               Show a dedicated console button in the title bar for debugging and logs.
+            </p>
+          </div>
+
+          <div className="setting-item">
+            <div className="checkbox-row">
+              <label>Show Titlebar Location Value</label>
+              <input
+                type="checkbox"
+                className="ios-switch"
+                checked={launcherSettings?.titlebar_location_next_to_logo !== false}
+                onChange={async (e) => {
+                  const updated = {
+                    ...launcherSettings,
+                    titlebar_location_next_to_logo: e.target.checked
+                  };
+                  await invoke('save_settings', { newSettings: updated });
+                  onSettingsUpdated();
+                }}
+              />
+            </div>
+            <p className="setting-hint">
+              Toggle the centered location label (Instances, Appearance, instance name in editor, etc.).
             </p>
           </div>
 

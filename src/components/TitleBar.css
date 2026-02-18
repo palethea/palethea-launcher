@@ -90,6 +90,10 @@
   pointer-events: none;
 }
 
+.titlebar.with-sidebar .titlebar-center {
+  left: calc(50% + (var(--sidebar-width, 0px) / 2));
+}
+
 .titlebar-center-tab {
   display: flex;
   align-items: center;
@@ -103,6 +107,12 @@
   border-radius: 6px;
   opacity: 0.8;
   pointer-events: auto;
+}
+
+.titlebar-location-tab {
+  margin-left: 6px;
+  opacity: 0.9;
+  pointer-events: none;
 }
 
 .titlebar-editing-info {
@@ -205,6 +215,24 @@
 .download-dropdown {
   right: 0;
   width: 360px;
+}
+
+.titlebar-left-download {
+  margin-left: 8px;
+}
+
+.titlebar-left-download .download-dropdown {
+  right: auto;
+  left: 0;
+}
+
+.titlebar-center-download {
+  pointer-events: auto;
+}
+
+.titlebar-center-download .download-dropdown {
+  right: auto;
+  left: calc(50% - 180px);
 }
 
 .download-separator {

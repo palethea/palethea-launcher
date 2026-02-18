@@ -1,5 +1,9 @@
+import { createPortal } from 'react-dom';
+
 function ProjectDetailsModal({
   onClose,
+  isClosing = false,
+  contentLoaded = false,
   headerIconUrl,
   headerFallback = 'PK',
   headerTitle,
@@ -16,9 +20,9 @@ function ProjectDetailsModal({
   footerContent,
   children
 }) {
-  return (
-    <div className="version-modal-overlay" onClick={onClose}>
-      <div className="version-modal rich-modal" onClick={(event) => event.stopPropagation()}>
+  const modalContent = (
+    <div className={`version-modal-overlay ${isClosing ? 'is-closing' : ''}`} onClick={onClose}>
+      <div className={`version-modal rich-modal ${isClosing ? 'is-closing' : ''} ${contentLoaded ? 'content-loaded' : ''}`} onClick={(event) => event.stopPropagation()}>
         <div className="version-modal-header">
           <div className="header-info">
             {headerIconUrl ? (
@@ -27,8 +31,10 @@ function ProjectDetailsModal({
               <div className="project-icon-large project-icon-placeholder">{headerFallback}</div>
             )}
             <div className="header-text">
-              <h3>{headerTitle}</h3>
-              {headerMeta}
+              <div className="header-title-row">
+                <h3>{headerTitle}</h3>
+                {headerMeta}
+              </div>
               {headerDescription && <p className="header-description">{headerDescription}</p>}
             </div>
           </div>
@@ -38,7 +44,7 @@ function ProjectDetailsModal({
         <div className="rich-modal-content">
           <div className="rich-modal-sidebar">
             {sidebarSections.map((section) => (
-              <div key={section.key || section.label} className="sidebar-section">
+              <div key={section.key || section.label} className={`sidebar-section ${section.className || ''}`}>
                 <label>{section.label}</label>
                 {section.content}
               </div>
@@ -83,6 +89,25 @@ function ProjectDetailsModal({
       {children}
     </div>
   );
+
+  if (typeof document === 'undefined') {
+    return modalContent;
+  }
+
+  const activeMainContent = document.activeElement?.closest?.('.main-content');
+  const editorMainContent = document.querySelector('.instance-editor')?.closest?.('.main-content');
+  const sidebarLayoutMainContent = document.querySelector('.app-main-layout.with-sidebar > .main-content');
+  const popoutMainContent = document.querySelector('.app-main-layout > .main-content');
+  const modalHost = activeMainContent
+    || editorMainContent
+    || sidebarLayoutMainContent
+    || popoutMainContent
+    || document.querySelector('.instance-editor');
+  if (!modalHost) {
+    return modalContent;
+  }
+
+  return createPortal(modalContent, modalHost);
 }
 
 export default ProjectDetailsModal;
