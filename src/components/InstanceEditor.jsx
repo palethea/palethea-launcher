@@ -318,6 +318,7 @@ function InstanceEditor({
       case 'mods':
         return <InstanceMods
           instance={instance}
+          isInstanceRunning={isRunning}
           onShowConfirm={handleShowConfirm}
           onShowNotification={onShowNotification}
           isScrolled={scrolled}

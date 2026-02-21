@@ -231,6 +231,7 @@ function App() {
   const [launchingInstanceIds, setLaunchingInstanceIds] = useState([]);
   const [launchProgressByInstance, setLaunchProgressByInstance] = useState({});
   const [stoppingInstanceIds, setStoppingInstanceIds] = useState([]);
+  const [forceStoppingInstanceIds, setForceStoppingInstanceIds] = useState([]);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingBytes, setLoadingBytes] = useState({ current: 0, total: 0 });
@@ -260,18 +261,21 @@ function App() {
   const [downloadHistory, setDownloadHistory] = useState([]); // Array of last 10 finished downloads
   const activeQueueDownloadIdRef = useRef(null);
   const launchUpdatePromptResolveRef = useRef(null);
+  const launchUpdatePromptTailRef = useRef(Promise.resolve());
   const transferStatsRef = useRef({ lastBytes: null, lastTs: 0, speedBps: 0 });
   const instanceTransferStatsRef = useRef({});
   const launchingInstanceIdsRef = useRef([]);
   const handleLaunchInstanceRef = useRef(null);
   const activeLaunchingInstanceIdRef = useRef(null);
   const stoppingInstanceIdsRef = useRef([]);
+  const forceStoppingInstanceIdsRef = useRef([]);
   const deletingInstanceIdsRef = useRef(new Set());
   const deleteQueueRef = useRef(Promise.resolve());
   const instanceSetupByInstanceRef = useRef({});
   const notificationsRef = useRef([]);
   const notificationTimersRef = useRef(new Map());
   const notificationCounterRef = useRef(0);
+  const isMountedRef = useRef(true);
 
   const handleQueueDownload = useCallback((item) => {
     setDownloadQueue(prev => {
@@ -384,6 +388,10 @@ function App() {
   }, [stoppingInstanceIds]);
 
   useEffect(() => {
+    forceStoppingInstanceIdsRef.current = forceStoppingInstanceIds;
+  }, [forceStoppingInstanceIds]);
+
+  useEffect(() => {
     instanceSetupByInstanceRef.current = instanceSetupByInstance;
   }, [instanceSetupByInstance]);
 
@@ -392,7 +400,9 @@ function App() {
   }, [notifications]);
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       if (launchUpdatePromptResolveRef.current) {
         launchUpdatePromptResolveRef.current({ action: 'ignore', disableFutureChecks: false });
         launchUpdatePromptResolveRef.current = null;
@@ -481,17 +491,31 @@ function App() {
       }))
     ];
 
-    return new Promise((resolve) => {
-      launchUpdatePromptResolveRef.current = resolve;
-      setLaunchUpdatePrompt({
-        instanceId: instance.id,
-        instanceName: instance.name,
-        modUpdates: normalizedMods,
-        loaderUpdate,
-        entries,
-        disableFutureChecks: false
-      });
-    });
+    const queuedPrompt = launchUpdatePromptTailRef.current
+      .catch(() => undefined)
+      .then(() => new Promise((resolve) => {
+        if (!isMountedRef.current) {
+          resolve({ action: 'ignore', disableFutureChecks: false });
+          return;
+        }
+
+        launchUpdatePromptResolveRef.current = resolve;
+        setLaunchUpdatePrompt({
+          instanceId: instance.id,
+          instanceName: instance.name,
+          modUpdates: normalizedMods,
+          loaderUpdate,
+          entries,
+          disableFutureChecks: false
+        });
+      }));
+
+    launchUpdatePromptTailRef.current = queuedPrompt.then(
+      () => undefined,
+      () => undefined
+    );
+
+    return queuedPrompt;
   }, []);
 
   // Check if we are running in a pop-out window
@@ -2224,6 +2248,10 @@ function App() {
       showNotification("Instance is already stopping", "info");
       return;
     }
+    if (forceStoppingInstanceIdsRef.current.includes(instanceId)) {
+      showNotification("Force stop is already in progress", "info");
+      return;
+    }
 
     setStoppingInstanceIds((prev) => (prev.includes(instanceId) ? prev : [...prev, instanceId]));
 
@@ -2247,6 +2275,44 @@ function App() {
       });
     }
   }, [showNotification, loadRunningInstances, loadInstances]);
+
+  const handleForceStopInstance = useCallback(async (instanceId) => {
+    if (forceStoppingInstanceIdsRef.current.includes(instanceId)) {
+      showNotification("Force stop is already in progress", "info");
+      return;
+    }
+
+    setForceStoppingInstanceIds((prev) => (prev.includes(instanceId) ? prev : [...prev, instanceId]));
+
+    try {
+      const result = await invoke('force_kill_game', { instanceId });
+      showNotification(result, 'success');
+      void loadRunningInstances();
+      window.setTimeout(() => {
+        void loadInstances();
+      }, 100);
+    } catch (error) {
+      showNotification(`Failed to force stop: ${error}`, 'error');
+    } finally {
+      setForceStoppingInstanceIds((prev) => {
+        const next = prev.filter((id) => id !== instanceId);
+        forceStoppingInstanceIdsRef.current = next;
+        return next;
+      });
+    }
+  }, [showNotification, loadRunningInstances, loadInstances]);
+
+  const handleStopAllInstances = useCallback(() => {
+    const runningIds = Object.keys(runningInstances);
+    if (runningIds.length === 0) return;
+    const idsToStop = runningIds.filter((id) => (
+      !stoppingInstanceIdsRef.current.includes(id)
+      && !forceStoppingInstanceIdsRef.current.includes(id)
+    ));
+    idsToStop.forEach((id) => {
+      void handleStopInstance(id);
+    });
+  }, [runningInstances, handleStopInstance]);
 
   const handleSetUsername = useCallback(async (newUsername) => {
     try {
@@ -3113,7 +3179,11 @@ function App() {
           instances={instances}
           accounts={accounts}
           runningInstances={runningInstances}
+          stoppingInstanceIds={stoppingInstanceIds}
+          forceStoppingInstanceIds={forceStoppingInstanceIds}
           onStopInstance={handleStopInstance}
+          onForceStopInstance={handleForceStopInstance}
+          onStopAllInstances={handleStopAllInstances}
           editingInstanceId={popoutInstanceId}
           downloadQueue={downloadQueue}
           downloadHistory={downloadHistory}
@@ -3177,9 +3247,13 @@ function App() {
         onTabChange={setActiveTab}
         launcherSettings={launcherSettings}
         runningInstances={runningInstances}
+        stoppingInstanceIds={stoppingInstanceIds}
+        forceStoppingInstanceIds={forceStoppingInstanceIds}
         instances={instances}
         accounts={accounts}
         onStopInstance={handleStopInstance}
+        onForceStopInstance={handleForceStopInstance}
+        onStopAllInstances={handleStopAllInstances}
         editingInstanceId={editingInstanceId}
         downloadQueue={downloadQueue}
         downloadHistory={downloadHistory}

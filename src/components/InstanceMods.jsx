@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { Trash2, RefreshCcw, Plus, Upload, Copy, Code, Loader2, ChevronDown, Check, ListFilterPlus, Play, Square, X, TriangleAlert, ShieldCheck, Wand2 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -12,6 +13,7 @@ import useModrinthSearch from '../hooks/useModrinthSearch';
 import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
 import { maybeShowCurseForgeBlockedDownloadModal } from '../utils/curseforgeInstallError';
 import { formatInstalledVersionLabel, withVersionPrefix } from '../utils/versionDisplay';
+import { resolveModalHost } from '../utils/modalHost';
 import './FilterModal.css';
 
 const MODRINTH_MOD_CATEGORIES = [
@@ -130,6 +132,7 @@ const getUpdateRowLatestVersion = (row) => {
 
 function InstanceMods({
   instance,
+  isInstanceRunning = false,
   onShowConfirm,
   onShowNotification,
   isScrolled,
@@ -168,10 +171,16 @@ function InstanceMods({
   const [isResolvingManualMods, setIsResolvingManualMods] = useState(false);
   const [sourceChoiceModal, setSourceChoiceModal] = useState({ show: false, bothCount: 0, scopeLabel: 'selected files' });
   const isManagedModpackInstance = Boolean(instance?.modpack_provider || instance?.modpack_project_id);
+  const isModMutationLocked = Boolean(isInstanceRunning);
+  const modMutationLockedMessage = 'Stop the instance before disabling or deleting mods.';
 
   const installedSearchRef = useRef(null);
   const findSearchRef = useRef(null);
   const sourceChoiceResolverRef = useRef(null);
+
+  const notifyModMutationLocked = useCallback(() => {
+    onShowNotification?.(modMutationLockedMessage, 'info');
+  }, [onShowNotification]);
 
   const modLoaderForSearch =
     instance.mod_loader?.toLowerCase() !== 'vanilla'
@@ -753,6 +762,10 @@ function InstanceMods({
   ]);
 
   const handleToggle = useCallback(async (mod) => {
+    if (isModMutationLocked) {
+      notifyModMutationLocked();
+      return;
+    }
     try {
       await invoke('toggle_instance_mod', {
         instanceId: instance.id,
@@ -762,7 +775,7 @@ function InstanceMods({
     } catch (error) {
       console.error('Failed to toggle mod:', error);
     }
-  }, [instance.id, loadInstalledMods]);
+  }, [isModMutationLocked, notifyModMutationLocked, instance.id, loadInstalledMods]);
 
   const scanConflicts = useCallback(async ({ silent = false } = {}) => {
     setScanningConflicts(true);
@@ -803,6 +816,12 @@ function InstanceMods({
     if (!issue || !issue.fix_action) return false;
 
     if (issue.fix_action === 'disable_duplicates' && issue.project_id) {
+      if (isModMutationLocked) {
+        if (notify) {
+          notifyModMutationLocked();
+        }
+        return false;
+      }
       const duplicateMods = installedMods.filter((m) => m.enabled && m.project_id === issue.project_id);
       for (const mod of duplicateMods.slice(1)) {
         await invoke('toggle_instance_mod', {
@@ -842,7 +861,7 @@ function InstanceMods({
     }
 
     return false;
-  }, [installedMods, instance.id, instance.version_id, instance.mod_loader, handleInstall, onShowNotification]);
+  }, [isModMutationLocked, notifyModMutationLocked, installedMods, instance.id, instance.version_id, instance.mod_loader, handleInstall, onShowNotification]);
 
   const handleFixConflict = useCallback(async (issue) => {
     if (!issue || !issue.fix_action) return;
@@ -915,9 +934,13 @@ function InstanceMods({
   }, []);
 
   const handleDelete = useCallback(async (mod) => {
+    if (isModMutationLocked) {
+      notifyModMutationLocked();
+      return;
+    }
     setDeleteConfirm({ show: false, mod }); // Close if open
     setDeleteConfirm({ show: true, mod });
-  }, []);
+  }, [isModMutationLocked, notifyModMutationLocked]);
 
   const handleImportFile = useCallback(async () => {
     try {
@@ -1259,6 +1282,11 @@ function InstanceMods({
   }, []);
 
   const confirmDelete = useCallback(async () => {
+    if (isModMutationLocked) {
+      notifyModMutationLocked();
+      setDeleteConfirm({ show: false, mod: null });
+      return;
+    }
     const mod = deleteConfirm.mod;
     setDeleteConfirm({ show: false, mod: null });
     if (!mod) return;
@@ -1282,7 +1310,7 @@ function InstanceMods({
       }
       await loadInstalledMods();
     }
-  }, [instance.id, deleteConfirm.mod, isFileLockedError, loadInstalledMods, onShowNotification]);
+  }, [isModMutationLocked, notifyModMutationLocked, instance.id, deleteConfirm.mod, isFileLockedError, loadInstalledMods, onShowNotification]);
 
   const formatDownloads = useCallback((num) => {
     if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
@@ -1353,6 +1381,10 @@ function InstanceMods({
 
   const handleDeleteSelected = useCallback(() => {
     if (selectedMods.length === 0) return;
+    if (isModMutationLocked) {
+      notifyModMutationLocked();
+      return;
+    }
 
     onShowConfirm({
       title: 'Delete Selected Mods?',
@@ -1398,10 +1430,14 @@ function InstanceMods({
         setLoading(false);
       }
     });
-  }, [selectedMods, instance.id, onShowConfirm, isFileLockedError, loadInstalledMods, onShowNotification]);
+  }, [selectedMods, isModMutationLocked, notifyModMutationLocked, instance.id, onShowConfirm, isFileLockedError, loadInstalledMods, onShowNotification]);
 
   const handleToggleSelected = useCallback(async (enable) => {
     if (selectedMods.length === 0) return;
+    if (isModMutationLocked) {
+      notifyModMutationLocked();
+      return;
+    }
 
     setLoading(true);
     try {
@@ -1419,7 +1455,7 @@ function InstanceMods({
       onShowNotification('Failed to toggle some mods.', 'error');
     }
     setLoading(false);
-  }, [selectedMods, installedMods, instance.id, loadInstalledMods, onShowNotification]);
+  }, [selectedMods, isModMutationLocked, notifyModMutationLocked, installedMods, instance.id, loadInstalledMods, onShowNotification]);
 
   if (instance.mod_loader === 'Vanilla' || !instance.mod_loader) {
     return (
@@ -1439,6 +1475,222 @@ function InstanceMods({
 
   const displayMods = searchResults.filter(matchesAllSelectedCategories);
   const hasAppliedFindFilters = appliedFindQuery.trim().length > 0 || appliedFindCategories.length > 0;
+  const renderConflictModal = () => {
+    if (!showConflictModal) return null;
+
+    const modalContent = (
+      <div
+        className="conflict-modal-overlay"
+        onClick={() => {
+          if (!fixingConflictId && !isFixingAllConflicts) {
+            setShowConflictModal(false);
+          }
+        }}
+      >
+        <div className="conflict-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="conflict-modal-header">
+            <div className="conflict-modal-title">
+              <TriangleAlert size={18} />
+              <div>
+                <h3>Mod Conflict Scanner</h3>
+                <p>Detect duplicates, missing dependencies, and compatibility issues.</p>
+              </div>
+            </div>
+            <div className="conflict-modal-actions">
+              {conflictScan.scanned && conflictScan.issues.some((issue) => !!issue.fix_action) && (
+                <button
+                  className="mod-conflict-fix-all-btn"
+                  onClick={handleFixAllConflicts}
+                  disabled={scanningConflicts || !!fixingConflictId || isFixingAllConflicts}
+                >
+                  {isFixingAllConflicts ? <Loader2 size={14} className="spin" /> : <Check size={14} />}
+                  <span>
+                    {isFixingAllConflicts
+                      ? 'Applying...'
+                      : `Fix All (${conflictScan.issues.filter((issue) => !!issue.fix_action).length})`}
+                  </span>
+                </button>
+              )}
+              <button
+                className={`scan-conflicts-btn ${conflictScan.scanned && conflictScan.issues.length > 0 ? 'has-issues' : ''}`}
+                onClick={() => scanConflicts()}
+                disabled={scanningConflicts || !!fixingConflictId || isFixingAllConflicts}
+              >
+                {scanningConflicts ? <Loader2 size={14} className="spin" /> : <RefreshCcw size={14} />}
+                <span>{scanningConflicts ? 'Scanning...' : conflictScan.scanned ? 'Rescan' : 'Scan Now'}</span>
+              </button>
+              <button
+                className="close-btn-simple"
+                onClick={() => setShowConflictModal(false)}
+                disabled={!!fixingConflictId || isFixingAllConflicts}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          <div className="conflict-modal-body">
+            {!conflictScan.scanned && !scanningConflicts && (
+              <div className="mod-conflicts-empty-state">
+                <TriangleAlert size={22} />
+                <strong>Run your first conflict scan</strong>
+                <p>This checks installed mods for duplicates and dependency or version mismatches.</p>
+              </div>
+            )}
+
+            {scanningConflicts && (
+              <div className="mod-conflicts-empty-state scanning">
+                <Loader2 size={22} className="spin" />
+                <strong>Scanning installed mods...</strong>
+              </div>
+            )}
+
+            {conflictScan.scanned && !scanningConflicts && (
+              <div className={`mod-conflicts-panel ${conflictScan.issues.length > 0 ? 'has-issues' : 'clean'}`}>
+                <div className="mod-conflicts-header">
+                  {conflictScan.issues.length > 0 ? (
+                    <>
+                      <TriangleAlert size={16} />
+                      <strong>{conflictScan.issues.length} conflict{conflictScan.issues.length > 1 ? 's' : ''} found</strong>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck size={16} />
+                      <strong>No conflicts detected</strong>
+                    </>
+                  )}
+                </div>
+
+                {conflictScan.issues.length > 0 && (
+                  <div className="mod-conflicts-list">
+                    {conflictScan.issues.map((issue) => (
+                      <div key={issue.id} className={`mod-conflict-item severity-${issue.severity || 'warning'}`}>
+                        <div className="mod-conflict-main">
+                          <div className="mod-conflict-title-row">
+                            <span className="mod-conflict-title">{issue.title}</span>
+                            <span className="mod-conflict-badge">{issue.severity || 'warning'}</span>
+                          </div>
+                          <p className="mod-conflict-description">{issue.description}</p>
+                          {Array.isArray(issue.affected_files) && issue.affected_files.length > 0 && (
+                            <div className="mod-conflict-files">
+                              {issue.affected_files.map((name) => (
+                                <span key={`${issue.id}-${name}`} className="mod-conflict-file-tag">{name}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        {issue.fix_action && (
+                          <button
+                            className="mod-conflict-fix-btn"
+                            disabled={!!fixingConflictId || isFixingAllConflicts}
+                            onClick={() => handleFixConflict(issue)}
+                          >
+                            {fixingConflictId === issue.id ? <Loader2 size={13} className="spin" /> : null}
+                            <span>
+                              {issue.fix_action === 'disable_duplicates' ? 'Disable Duplicates' : 'Install Dependency'}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+
+    if (typeof document === 'undefined') {
+      return modalContent;
+    }
+
+    const modalHost = resolveModalHost();
+    if (!modalHost) return modalContent;
+    return modalHost ? createPortal(modalContent, modalHost) : modalContent;
+  };
+
+  const renderAddModModal = () => {
+    if (!showAddModal) return null;
+
+    const modalContent = (
+      <div className="add-mod-modal-overlay" onClick={() => !applyingCode && setShowAddModal(false)}>
+        <div className="add-mod-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="add-mod-header">
+            <h2>Add Mod</h2>
+            <button className="close-btn-simple" onClick={() => setShowAddModal(false)}>✕</button>
+          </div>
+          <div className="add-mod-body">
+            {applyingCode ? (
+              <div className="apply-progress-container">
+                <div className="apply-status-text">{applyStatus}</div>
+                <div className="apply-progress-bar-bg">
+                  <div
+                    className="apply-progress-bar-fill"
+                    style={{ width: `${applyProgress}%` }}
+                  />
+                </div>
+                <div className="apply-progress-percent">{Math.round(applyProgress)}%</div>
+              </div>
+            ) : (
+              <>
+                <div className="choice-grid">
+                  <button className="choice-card" onClick={() => {
+                    setShowAddModal(false);
+                    handleImportFile();
+                  }}>
+                    <div className="choice-icon">
+                      <Upload size={24} />
+                    </div>
+                    <span>Add .JAR</span>
+                  </button>
+                  <button className="choice-card" style={{ cursor: 'default', opacity: 1 }}>
+                    <div className="choice-icon" style={{ color: 'var(--accent)' }}>
+                      <Code size={24} />
+                    </div>
+                    <span>Use Code</span>
+                  </button>
+                </div>
+
+                <div className="code-input-container">
+                  <label style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Paste Share Code</label>
+                  <div className="code-input-wrapper">
+                    <input
+                      type="text"
+                      className="code-input"
+                      placeholder="Paste code here..."
+                      value={shareCodeInput}
+                      onChange={(event) => setShareCodeInput(event.target.value)}
+                      disabled={applyingCode}
+                    />
+                    <button
+                      className="apply-btn"
+                      onClick={handleApplyCode}
+                      disabled={applyingCode || !shareCodeInput.trim()}
+                    >
+                      {applyingCode ? '...' : 'Apply'}
+                    </button>
+                  </div>
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
+                    Adding mods from code will automatically download them from Modrinth or CurseForge.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+
+    if (typeof document === 'undefined') {
+      return modalContent;
+    }
+
+    const modalHost = resolveModalHost();
+    if (!modalHost) return modalContent;
+    return createPortal(modalContent, modalHost);
+  };
 
   return (
     <div className="mods-tab">
@@ -1632,6 +1884,8 @@ function InstanceMods({
                           infoTitle="Open project info"
                           deleteTitle="Delete mod"
                           updatingLabel="Updating..."
+                          disableMutatingActions={isModMutationLocked}
+                          mutatingActionsDisabledTitle={modMutationLockedMessage}
                         />
                       );
                     })}
@@ -1674,6 +1928,8 @@ function InstanceMods({
                           infoTitle="Project info unavailable"
                           deleteTitle="Delete mod"
                           updatingLabel="Updating..."
+                          disableMutatingActions={isModMutationLocked}
+                          mutatingActionsDisabledTitle={modMutationLockedMessage}
                         />
                       );
                     })}
@@ -1691,15 +1947,30 @@ function InstanceMods({
                   <button className="clear-selection-btn" onClick={() => setSelectedMods([])}>Deselect all</button>
                 </div>
                 <div className="bulk-btns">
-                  <button className="bulk-action-btn" onClick={() => handleToggleSelected(true)}>
+                  <button
+                    className="bulk-action-btn"
+                    onClick={() => handleToggleSelected(true)}
+                    disabled={isModMutationLocked}
+                    title={isModMutationLocked ? modMutationLockedMessage : 'Enable selected mods'}
+                  >
                     <Play size={13} fill="currentColor" />
                     Enable
                   </button>
-                  <button className="bulk-action-btn" onClick={() => handleToggleSelected(false)}>
+                  <button
+                    className="bulk-action-btn"
+                    onClick={() => handleToggleSelected(false)}
+                    disabled={isModMutationLocked}
+                    title={isModMutationLocked ? modMutationLockedMessage : 'Disable selected mods'}
+                  >
                     <Square size={13} fill="currentColor" />
                     Disable
                   </button>
-                  <button className="bulk-action-btn danger" onClick={handleDeleteSelected}>
+                  <button
+                    className="bulk-action-btn danger"
+                    onClick={handleDeleteSelected}
+                    disabled={isModMutationLocked}
+                    title={isModMutationLocked ? modMutationLockedMessage : 'Delete selected mods'}
+                  >
                     <Trash2 size={13} />
                     Delete
                   </button>
@@ -1929,207 +2200,18 @@ function InstanceMods({
             setVersionModal({ show: false, project: null, projectId: null, updateMod: null });
             handleInstall(projectItem, version, false, updateModItem);
           }}
-          onUninstall={(mod) => {
-            setVersionModal({ show: false, project: null, projectId: null, updateMod: null });
-            handleDelete(mod);
-          }}
+          onUninstall={isModMutationLocked
+            ? undefined
+            : (mod) => {
+              setVersionModal({ show: false, project: null, projectId: null, updateMod: null });
+              handleDelete(mod);
+            }}
         />
       )}
 
-      {showAddModal && (
-        <div className="add-mod-modal-overlay" onClick={() => !applyingCode && setShowAddModal(false)}>
-          <div className="add-mod-modal" onClick={e => e.stopPropagation()}>
-            <div className="add-mod-header">
-              <h2>Add Mod</h2>
-              <button className="close-btn-simple" onClick={() => setShowAddModal(false)}>✕</button>
-            </div>
-            <div className="add-mod-body">
-              {applyingCode ? (
-                <div className="apply-progress-container">
-                  <div className="apply-status-text">{applyStatus}</div>
-                  <div className="apply-progress-bar-bg">
-                    <div
-                      className="apply-progress-bar-fill"
-                      style={{ width: `${applyProgress}%` }}
-                    />
-                  </div>
-                  <div className="apply-progress-percent">{Math.round(applyProgress)}%</div>
-                </div>
-              ) : (
-                <>
-                  <div className="choice-grid">
-                    <button className="choice-card" onClick={() => {
-                      setShowAddModal(false);
-                      handleImportFile();
-                    }}>
-                      <div className="choice-icon">
-                        <Upload size={24} />
-                      </div>
-                      <span>Add .JAR</span>
-                    </button>
-                    <button className="choice-card" onClick={() => {
-                      // Stay in modal but maybe show input
-                    }} style={{ cursor: 'default', opacity: 1 }}>
-                      <div className="choice-icon" style={{ color: 'var(--accent)' }}>
-                        <Code size={24} />
-                      </div>
-                      <span>Use Code</span>
-                    </button>
-                  </div>
+      {renderAddModModal()}
 
-                  <div className="code-input-container">
-                    <label style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Paste Share Code</label>
-                    <div className="code-input-wrapper">
-                      <input
-                        type="text"
-                        className="code-input"
-                        placeholder="Paste code here..."
-                        value={shareCodeInput}
-                        onChange={(e) => setShareCodeInput(e.target.value)}
-                        disabled={applyingCode}
-                      />
-                      <button
-                        className="apply-btn"
-                        onClick={handleApplyCode}
-                        disabled={applyingCode || !shareCodeInput.trim()}
-                      >
-                        {applyingCode ? '...' : 'Apply'}
-                      </button>
-                    </div>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                      Adding mods from code will automatically download them from Modrinth or CurseForge.
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showConflictModal && (
-        <div
-          className="conflict-modal-overlay"
-          onClick={() => {
-            if (!fixingConflictId && !isFixingAllConflicts) {
-              setShowConflictModal(false);
-            }
-          }}
-        >
-          <div className="conflict-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="conflict-modal-header">
-              <div className="conflict-modal-title">
-                <TriangleAlert size={18} />
-                <div>
-                  <h3>Mod Conflict Scanner</h3>
-                  <p>Detect duplicates, missing dependencies, and compatibility issues.</p>
-                </div>
-              </div>
-              <div className="conflict-modal-actions">
-                {conflictScan.scanned && conflictScan.issues.some((issue) => !!issue.fix_action) && (
-                  <button
-                    className="mod-conflict-fix-all-btn"
-                    onClick={handleFixAllConflicts}
-                    disabled={scanningConflicts || !!fixingConflictId || isFixingAllConflicts}
-                  >
-                    {isFixingAllConflicts ? <Loader2 size={14} className="spin" /> : <Check size={14} />}
-                    <span>
-                      {isFixingAllConflicts
-                        ? 'Applying...'
-                        : `Fix All (${conflictScan.issues.filter((issue) => !!issue.fix_action).length})`}
-                    </span>
-                  </button>
-                )}
-                <button
-                  className={`scan-conflicts-btn ${conflictScan.scanned && conflictScan.issues.length > 0 ? 'has-issues' : ''}`}
-                  onClick={() => scanConflicts()}
-                  disabled={scanningConflicts || !!fixingConflictId || isFixingAllConflicts}
-                >
-                  {scanningConflicts ? <Loader2 size={14} className="spin" /> : <RefreshCcw size={14} />}
-                  <span>{scanningConflicts ? 'Scanning...' : conflictScan.scanned ? 'Rescan' : 'Scan Now'}</span>
-                </button>
-                <button
-                  className="close-btn-simple"
-                  onClick={() => setShowConflictModal(false)}
-                  disabled={!!fixingConflictId || isFixingAllConflicts}
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-
-            <div className="conflict-modal-body">
-              {!conflictScan.scanned && !scanningConflicts && (
-                <div className="mod-conflicts-empty-state">
-                  <TriangleAlert size={22} />
-                  <strong>Run your first conflict scan</strong>
-                  <p>This checks installed mods for duplicates and dependency or version mismatches.</p>
-                </div>
-              )}
-
-              {scanningConflicts && (
-                <div className="mod-conflicts-empty-state scanning">
-                  <Loader2 size={22} className="spin" />
-                  <strong>Scanning installed mods...</strong>
-                </div>
-              )}
-
-              {conflictScan.scanned && !scanningConflicts && (
-                <div className={`mod-conflicts-panel ${conflictScan.issues.length > 0 ? 'has-issues' : 'clean'}`}>
-                  <div className="mod-conflicts-header">
-                    {conflictScan.issues.length > 0 ? (
-                      <>
-                        <TriangleAlert size={16} />
-                        <strong>{conflictScan.issues.length} conflict{conflictScan.issues.length > 1 ? 's' : ''} found</strong>
-                      </>
-                    ) : (
-                      <>
-                        <ShieldCheck size={16} />
-                        <strong>No conflicts detected</strong>
-                      </>
-                    )}
-                  </div>
-
-                  {conflictScan.issues.length > 0 && (
-                    <div className="mod-conflicts-list">
-                      {conflictScan.issues.map((issue) => (
-                        <div key={issue.id} className={`mod-conflict-item severity-${issue.severity || 'warning'}`}>
-                          <div className="mod-conflict-main">
-                            <div className="mod-conflict-title-row">
-                              <span className="mod-conflict-title">{issue.title}</span>
-                              <span className="mod-conflict-badge">{issue.severity || 'warning'}</span>
-                            </div>
-                            <p className="mod-conflict-description">{issue.description}</p>
-                            {Array.isArray(issue.affected_files) && issue.affected_files.length > 0 && (
-                              <div className="mod-conflict-files">
-                                {issue.affected_files.map((name) => (
-                                  <span key={`${issue.id}-${name}`} className="mod-conflict-file-tag">{name}</span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                          {issue.fix_action && (
-                            <button
-                              className="mod-conflict-fix-btn"
-                              disabled={!!fixingConflictId || isFixingAllConflicts}
-                              onClick={() => handleFixConflict(issue)}
-                            >
-                              {fixingConflictId === issue.id ? <Loader2 size={13} className="spin" /> : null}
-                              <span>
-                                {issue.fix_action === 'disable_duplicates' ? 'Disable Duplicates' : 'Install Dependency'}
-                              </span>
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {renderConflictModal()}
       </div>
     </div>
   );

@@ -13,9 +13,12 @@
 
 /* Pull wrapper up so the dock box top aligns with the content area border-top */
 .instance-list-wrapper.header-style-center-dock-fold-icons {
-  margin-top: -2px;
+  margin-top: 0;
   overflow: visible;
-  --dock-actions-height: 56px;
+  --dock-panel-height: 56px;
+  --dock-list-offset-height: var(--dock-panel-height);
+  --dock-motion-duration: 380ms;
+  --dock-motion-easing: cubic-bezier(0.34, 1.3, 0.64, 1);
   --dock-border-color: color-mix(in srgb, var(--border) 72%, #ffffff 28%);
   --dock-border-width: 2px;
 }
@@ -27,7 +30,7 @@
 }
 
 .instance-list-wrapper.header-style-center-dock-fold-icons.dock-collapsed {
-  --dock-actions-height: 0px;
+  --dock-list-offset-height: 0px;
 }
 
 .instance-list {
@@ -78,7 +81,7 @@
    The content border-top runs as a horizontal line on both sides of the box.
    The box border (same color) merges into it with smooth top-corner bends. */
 .instance-header.instance-header-style-center-dock-fold-icons {
-  top: 0;
+  top: calc(-1 * var(--dock-border-width, 2px));
   left: 50%;
   right: auto;
   transform: translateX(-50%);
@@ -174,6 +177,13 @@
   display: none !important;
 }
 
+.app.sidebar-variant-original .instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-opening .instance-header-dock-connector,
+.app.sidebar-variant-original .instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-closing .instance-header-dock-connector,
+.app.sidebar-variant-original-slim .instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-opening .instance-header-dock-connector,
+.app.sidebar-variant-original-slim .instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-closing .instance-header-dock-connector {
+  display: block !important;
+}
+
 /* Center dock: centered column, auto-width */
 .instance-header-center-dock {
   display: flex;
@@ -181,6 +191,7 @@
   align-items: center;
   width: fit-content;
   margin: 0 auto;
+  position: relative;
 }
 
 /* Collapsed expand pull-tab: bigger hitbox, small visual pill */
@@ -200,7 +211,7 @@
   content: '';
   position: absolute;
   left: 50%;
-  bottom: 6px;
+  top: 2px;
   width: 32px;
   height: 4px;
   transform: translateX(-50%);
@@ -218,29 +229,54 @@
    the top-edge flicker against the content border-top line */
 .instance-header-center-actions-wrap {
   display: grid;
-  grid-template-rows: 1fr;
-  transition: grid-template-rows 380ms cubic-bezier(0.34, 1.3, 0.64, 1);
+  grid-template-rows: minmax(0, 1fr);
+  position: relative;
+  order: 1;
+  min-height: 0;
+  overflow: hidden;
+  transition: grid-template-rows var(--dock-motion-duration) var(--dock-motion-easing);
 }
 
 .instance-header-center-actions-wrap > * {
   min-height: 0;
-  overflow: visible;
+  overflow: hidden;
+}
+
+.instance-header-center-actions-wrap::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: var(--dock-border-width, 2px);
+  right: var(--dock-border-width, 2px);
+  height: var(--dock-border-width, 2px);
+  background: var(--dock-border-color, rgba(255, 255, 255, 0.18));
+  opacity: 0;
+  pointer-events: none;
+  z-index: 4;
+  transition: opacity 140ms linear;
 }
 
 .instance-header-center-actions-wrap.collapsed {
-  grid-template-rows: 0fr;
+  grid-template-rows: minmax(0, 0fr);
   pointer-events: none;
-  overflow: hidden;
 }
 
-.instance-header-center-actions-wrap.collapsed > * {
-  overflow: hidden;
+.instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-opening .instance-header-center-actions-wrap,
+.instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-closing .instance-header-center-actions-wrap {
+  will-change: grid-template-rows;
+}
+
+.instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-closing .instance-header-center-actions-wrap::before {
+  opacity: 1;
 }
 
 /* The box: no top border — content area border-top acts as the top boundary. */
 .instance-header-center-actions {
   position: relative;
-  min-height: var(--dock-actions-height);
+  min-height: 0;
+  height: auto;
+  margin: 0;
+  box-sizing: border-box;
   padding: 8px 12px;
   border: var(--dock-border-width, 2px) solid var(--dock-border-color, rgba(255, 255, 255, 0.18));
   border-top: none;
@@ -248,7 +284,7 @@
   background: var(--surface);
   justify-content: center;
   opacity: 1;
-  transition: opacity 260ms ease;
+  transition: opacity var(--dock-motion-duration) var(--dock-motion-easing);
 }
 
 .instance-header-center-actions-wrap.collapsed .instance-header-center-actions {
@@ -261,38 +297,25 @@
   filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.5)) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.3));
 }
 
-/* Bottom collapse pull-tab: bigger hitbox, small visual pill */
-.instance-header-center-collapse-tab {
-  width: 100px;
-  height: 28px;
-  position: relative;
-  cursor: pointer;
-  background: transparent;
-  border: none;
-  outline: none;
-  appearance: none;
-  -webkit-appearance: none;
-  -webkit-tap-highlight-color: transparent;
-  padding: 0;
+/* Unified top handle for both open and close states */
+.instance-header-center-unified-toggle {
   display: block;
+  position: relative !important;
+  order: 2;
+  z-index: 5;
+  transform: none !important;
+  margin: 6px 0 0;
+  padding: 0;
 }
 
-.instance-header-center-collapse-tab::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 6px;
-  width: 32px;
-  height: 4px;
-  transform: translateX(-50%);
-  background: rgba(255, 255, 255, 0.22);
-  border-radius: 4px 4px 0 0;
-  transition: background 180ms ease, width 180ms ease;
-}
-
-.instance-header-center-collapse-tab:hover::after {
-  background: rgba(255, 255, 255, 0.44);
-  width: 40px;
+.instance-header-center-toggle {
+  display: block;
+  position: relative !important;
+  order: 2;
+  z-index: 5;
+  transform: none !important;
+  margin: 6px 0 0;
+  padding: 0;
 }
 
 .instance-header-center-actions .header-divider {
@@ -746,55 +769,33 @@
 }
 
 .instance-list-wrapper.header-style-center-dock-fold-icons .instance-list {
-  padding-top: calc(var(--dock-actions-height) + 24px);
+  padding-top: calc(var(--dock-list-offset-height) + 24px);
   box-sizing: border-box;
-  transition: padding-top 320ms cubic-bezier(0.22, 0.8, 0.2, 1);
+  transition: padding-top var(--dock-motion-duration) var(--dock-motion-easing);
 }
 
 .app.sidebar-variant-original .instance-list-wrapper.header-style-center-dock-fold-icons .instance-list,
 .app.sidebar-variant-original-slim .instance-list-wrapper.header-style-center-dock-fold-icons .instance-list {
-  padding-top: calc(var(--dock-actions-height) + 30px);
+  padding-top: calc(var(--dock-list-offset-height) + 30px);
 }
 
-@keyframes centerDockContentOpen {
+@keyframes centerDockContentSync {
   from {
-    transform: translateY(-12px);
-    opacity: 0.92;
-    filter: blur(0.6px);
+    opacity: 0.985;
   }
   to {
-    transform: translateY(0);
     opacity: 1;
-    filter: blur(0);
-  }
-}
-
-@keyframes centerDockContentClose {
-  0% {
-    transform: translateY(0);
-    opacity: 1;
-    filter: blur(0);
-  }
-  55% {
-    transform: translateY(-8px);
-    opacity: 0.95;
-    filter: blur(0.45px);
-  }
-  100% {
-    transform: translateY(0);
-    opacity: 1;
-    filter: blur(0);
   }
 }
 
 .instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-opening .instances-grid,
 .instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-opening .instance-setup-tasks {
-  animation: centerDockContentOpen 360ms cubic-bezier(0.2, 0.82, 0.22, 1) both;
+  animation: centerDockContentSync var(--dock-motion-duration) var(--dock-motion-easing) both;
 }
 
 .instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-closing .instances-grid,
 .instance-list-wrapper.header-style-center-dock-fold-icons.dock-anim-closing .instance-setup-tasks {
-  animation: centerDockContentClose 280ms cubic-bezier(0.32, 0.72, 0.42, 1) both;
+  animation: centerDockContentSync var(--dock-motion-duration) var(--dock-motion-easing) both;
 }
 
 .instance-setup-task-card {

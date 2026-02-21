@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { Trash2, RefreshCcw, Plus, Upload, Loader2, ChevronDown, Check, ListFilterPlus, Settings2, X, Wand2, Copy, Code } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -12,6 +13,7 @@ import useModrinthSearch from '../hooks/useModrinthSearch';
 import { findInstalledProject, matchesSelectedCategories } from '../utils/projectBrowser';
 import { maybeShowCurseForgeBlockedDownloadModal } from '../utils/curseforgeInstallError';
 import { formatInstalledVersionLabel, withVersionPrefix } from '../utils/versionDisplay';
+import { resolveModalHost } from '../utils/modalHost';
 import './FilterModal.css';
 
 const MODRINTH_RESOURCE_PACK_CATEGORIES = [
@@ -1091,6 +1093,82 @@ function InstanceResources({
   }, [shaderPacks, searchQuery, selectedCategories]);
   const isShaderTab = activeSubTab === 'shaders' || activeSubTab === 'find-shaders';
   const isFindTab = activeSubTab === 'find-resourcepacks' || activeSubTab === 'find-shaders';
+  const renderAddResourceModal = () => {
+    if (!showAddModal) return null;
+
+    const modalContent = (
+      <div className="add-mod-modal-overlay" onClick={() => !applyingCode && setShowAddModal(false)}>
+        <div className="add-mod-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="add-mod-header">
+            <h2>{addModalType === 'resourcepack' ? 'Add Resource Pack' : 'Add Shader'}</h2>
+            <button className="close-btn-simple" onClick={() => setShowAddModal(false)}>✕</button>
+          </div>
+          <div className="add-mod-body">
+            {applyingCode ? (
+              <div className="apply-progress-container">
+                <div className="apply-status-text">{applyStatus}</div>
+                <div className="apply-progress-bar-bg">
+                  <div className="apply-progress-bar-fill" style={{ width: `${applyProgress}%` }} />
+                </div>
+                <div className="apply-progress-percent">{Math.round(applyProgress)}%</div>
+              </div>
+            ) : (
+              <>
+                <div className="choice-grid">
+                  <button
+                    className="choice-card"
+                    onClick={() => {
+                      setShowAddModal(false);
+                      handleImportFile(addModalType);
+                    }}
+                  >
+                    <div className="choice-icon">
+                      <Upload size={24} />
+                    </div>
+                    <span>{addModalType === 'resourcepack' ? 'Add .ZIP' : 'Add .ZIP'}</span>
+                  </button>
+                  <button className="choice-card" style={{ cursor: 'default', opacity: 1 }}>
+                    <div className="choice-icon" style={{ color: 'var(--accent)' }}>
+                      <Code size={24} />
+                    </div>
+                    <span>Use Code</span>
+                  </button>
+                </div>
+
+                <div className="code-input-container">
+                  <label style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Paste Share Code</label>
+                  <div className="code-input-wrapper">
+                    <input
+                      type="text"
+                      className="code-input"
+                      placeholder="Paste code here..."
+                      value={shareCodeInput}
+                      onChange={(event) => setShareCodeInput(event.target.value)}
+                      disabled={applyingCode}
+                    />
+                    <button className="apply-btn" onClick={handleApplyCode} disabled={applyingCode || !shareCodeInput.trim()}>
+                      {applyingCode ? '...' : 'Apply'}
+                    </button>
+                  </div>
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
+                    Installs {addModalType === 'resourcepack' ? 'packs' : 'shaders'} from Modrinth and CurseForge.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+
+    if (typeof document === 'undefined') {
+      return modalContent;
+    }
+
+    const modalHost = resolveModalHost();
+    if (!modalHost) return modalContent;
+    return createPortal(modalContent, modalHost);
+  };
 
   return (
     <div className="resources-tab">
@@ -1728,70 +1806,7 @@ function InstanceResources({
         />
       )}
 
-      {showAddModal && (
-        <div className="add-mod-modal-overlay" onClick={() => !applyingCode && setShowAddModal(false)}>
-          <div className="add-mod-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="add-mod-header">
-              <h2>{addModalType === 'resourcepack' ? 'Add Resource Pack' : 'Add Shader'}</h2>
-              <button className="close-btn-simple" onClick={() => setShowAddModal(false)}>✕</button>
-            </div>
-            <div className="add-mod-body">
-              {applyingCode ? (
-                <div className="apply-progress-container">
-                  <div className="apply-status-text">{applyStatus}</div>
-                  <div className="apply-progress-bar-bg">
-                    <div className="apply-progress-bar-fill" style={{ width: `${applyProgress}%` }} />
-                  </div>
-                  <div className="apply-progress-percent">{Math.round(applyProgress)}%</div>
-                </div>
-              ) : (
-                <>
-                  <div className="choice-grid">
-                    <button
-                      className="choice-card"
-                      onClick={() => {
-                        setShowAddModal(false);
-                        handleImportFile(addModalType);
-                      }}
-                    >
-                      <div className="choice-icon">
-                        <Upload size={24} />
-                      </div>
-                      <span>{addModalType === 'resourcepack' ? 'Add .ZIP' : 'Add .ZIP'}</span>
-                    </button>
-                    <button className="choice-card" style={{ cursor: 'default', opacity: 1 }}>
-                      <div className="choice-icon" style={{ color: 'var(--accent)' }}>
-                        <Code size={24} />
-                      </div>
-                      <span>Use Code</span>
-                    </button>
-                  </div>
-
-                  <div className="code-input-container">
-                    <label style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Paste Share Code</label>
-                    <div className="code-input-wrapper">
-                      <input
-                        type="text"
-                        className="code-input"
-                        placeholder="Paste code here..."
-                        value={shareCodeInput}
-                        onChange={(event) => setShareCodeInput(event.target.value)}
-                        disabled={applyingCode}
-                      />
-                      <button className="apply-btn" onClick={handleApplyCode} disabled={applyingCode || !shareCodeInput.trim()}>
-                        {applyingCode ? '...' : 'Apply'}
-                      </button>
-                    </div>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                      Installs {addModalType === 'resourcepack' ? 'packs' : 'shaders'} from Modrinth and CurseForge.
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {renderAddResourceModal()}
 
       {selectedItems.length > 0 && (
         <div className="bulk-actions-wrapper">

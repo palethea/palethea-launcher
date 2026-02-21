@@ -24,6 +24,8 @@ function InstalledContentRow({
   infoTitle = 'Open project info',
   deleteTitle = 'Delete item',
   updatingLabel = 'Updating...',
+  disableMutatingActions = false,
+  mutatingActionsDisabledTitle = 'Action unavailable while instance is running',
 }) {
   const displayName = item.name || item.filename;
   const displayVersion = versionLabel || 'Unknown version';
@@ -102,14 +104,14 @@ function InstalledContentRow({
 
       <div className="item-actions">
         <div
-          className={`item-toggle ${isEnabled ? 'enabled' : ''}`}
+          className={`item-toggle ${isEnabled ? 'enabled' : ''} ${disableMutatingActions ? 'mutation-locked' : ''}`}
           onClick={(event) => {
             event.stopPropagation();
-            if (!isUpdating) {
+            if (!isUpdating && !disableMutatingActions) {
               onToggleEnabled?.(item);
             }
           }}
-          title={isEnabled ? 'Disable item' : 'Enable item'}
+          title={disableMutatingActions ? mutatingActionsDisabledTitle : (isEnabled ? 'Disable item' : 'Enable item')}
         />
         <button
           className="update-btn-simple"
@@ -126,10 +128,12 @@ function InstalledContentRow({
           className="delete-btn-simple"
           onClick={(event) => {
             event.stopPropagation();
-            onDelete?.(item);
+            if (!disableMutatingActions) {
+              onDelete?.(item);
+            }
           }}
-          title={deleteTitle}
-          disabled={isUpdating}
+          title={disableMutatingActions ? mutatingActionsDisabledTitle : deleteTitle}
+          disabled={isUpdating || disableMutatingActions}
         >
           <Trash2 size={16} />
         </button>

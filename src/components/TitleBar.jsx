@@ -45,9 +45,13 @@ function TitleBar({
   isPopout, 
   launcherSettings, 
   runningInstances = {}, 
+  stoppingInstanceIds = [],
+  forceStoppingInstanceIds = [],
   instances = [],
   accounts = [],
   onStopInstance,
+  onForceStopInstance,
+  onStopAllInstances,
   editingInstanceId = null,
   downloadQueue = [],
   downloadHistory = [],
@@ -73,7 +77,28 @@ function TitleBar({
     () => (runningIdsKey ? runningIdsKey.split(',') : []),
     [runningIdsKey]
   );
+  const stoppingInstanceIdSet = useMemo(
+    () => new Set(stoppingInstanceIds),
+    [stoppingInstanceIds]
+  );
+  const forceStoppingInstanceIdSet = useMemo(
+    () => new Set(forceStoppingInstanceIds),
+    [forceStoppingInstanceIds]
+  );
   const hasRunning = runningIds.length > 0;
+  const hasActiveDownloads = useMemo(
+    () => downloadQueue.some((item) => {
+      const status = `${item?.status || ''} ${item?.stageLabel || ''} ${item?.stage || ''}`.toLowerCase();
+      const progress = typeof item?.progress === 'number' ? item.progress : null;
+      return Boolean(
+        item?.trackBackendProgress
+        || status.includes('downloading')
+        || status.includes('installing')
+        || (progress !== null && progress > 0 && progress < 100)
+      );
+    }),
+    [downloadQueue]
+  );
   const accountByUsername = useMemo(() => {
     const map = new Map();
     for (const account of accounts) {
@@ -264,7 +289,7 @@ function TitleBar({
   const renderDownloadQueueControl = (extraClass = '') => (
     <div className={`download-queue-container ${extraClass}`.trim()} ref={downloadRef}>
       <button 
-        className={`download-queue-btn ${showDownloadDropdown ? 'active' : ''}`}
+        className={`download-queue-btn ${hasActiveDownloads ? 'has-active-downloads' : ''} ${showDownloadDropdown ? 'is-open' : ''}`.trim()}
         onClick={toggleDownloadDropdown}
         title="Download Queue"
       >
@@ -429,7 +454,19 @@ function TitleBar({
 
           {showRunningDropdown && (
             <div className={`running-dropdown ${isClosing ? 'closing' : ''}`}>
-              <div className="dropdown-header">Running Instances</div>
+              <div className="dropdown-header">
+                <span>Running Instances</span>
+                <button
+                  type="button"
+                  className="stop-all-instances-btn"
+                  onClick={() => onStopAllInstances?.()}
+                  disabled={!hasRunning}
+                  title="Stop all running instances"
+                >
+                  <Square size={11} fill="currentColor" />
+                  <span>Stop all</span>
+                </button>
+              </div>
               <div className="dropdown-list">
                 {runningIds.length === 0 ? (
                   <div className="dropdown-empty">No instances running</div>
@@ -438,6 +475,16 @@ function TitleBar({
                     const instance = instances.find(i => i.id === id);
                     if (!instance) return null;
                     const info = runningInstances[id];
+                    const isStopping = stoppingInstanceIdSet.has(id);
+                    const isForceStopping = forceStoppingInstanceIdSet.has(id);
+                    const canForceStop = isStopping && typeof onForceStopInstance === 'function';
+                    const stopButtonTitle = isForceStopping
+                      ? 'Force stop in progress'
+                      : canForceStop
+                        ? 'Force stop instance'
+                        : isStopping
+                          ? 'Stopping instance'
+                          : 'Stop instance';
                     const launchUsername = (info?.launch_username || '').trim();
                     const launchAccount = launchUsername ? (accountByUsername.get(launchUsername.toLowerCase()) || null) : null;
                     const accountHeadUrl = getAccountHeadUrl(launchAccount);
@@ -494,11 +541,22 @@ function TitleBar({
                           </div>
                         </div>
                         <button 
-                          className="stop-instance-btn"
-                          onClick={() => onStopInstance(id)}
-                          title="Stop instance"
+                          className={`stop-instance-btn ${isStopping ? 'is-stopping' : ''} ${isForceStopping ? 'is-force-stopping' : ''}`}
+                          onClick={() => {
+                            if (isForceStopping) return;
+                            if (canForceStop) {
+                              onForceStopInstance?.(id);
+                              return;
+                            }
+                            onStopInstance?.(id);
+                          }}
+                          disabled={isForceStopping || (isStopping && !canForceStop)}
+                          title={stopButtonTitle}
+                          aria-label={stopButtonTitle}
                         >
-                          <Square size={14} fill="currentColor" />
+                          {canForceStop || isForceStopping
+                            ? <X size={14} />
+                            : <Square size={14} fill="currentColor" />}
                         </button>
                       </div>
                     );

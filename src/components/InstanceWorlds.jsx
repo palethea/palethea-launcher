@@ -11,6 +11,7 @@ import FilterModal from './FilterModal';
 import ModVersionModal from './ModVersionModal';
 import useModrinthSearch from '../hooks/useModrinthSearch';
 import { maybeShowCurseForgeBlockedDownloadModal } from '../utils/curseforgeInstallError';
+import { resolveModalHost } from '../utils/modalHost';
 import './ScreenshotContextMenu.css';
 
 const CURSEFORGE_WORLD_CATEGORIES = [
@@ -780,6 +781,108 @@ function InstanceWorlds({
     }
   };
 
+  const renderAddWorldModal = () => {
+    if (!showAddWorldModal) return null;
+
+    const modalContent = (
+      <ConfirmModal
+        isOpen={showAddWorldModal}
+        title="Add World"
+        message="Choose what you want to import. You can import world folders directly or extract .zip backups automatically."
+        confirmText="Import Folder"
+        extraConfirmText="Import .zip"
+        cancelText="Cancel"
+        variant="secondary"
+        actionLayout="flat"
+        onConfirm={() => handleImportWorld('folder')}
+        onExtraConfirm={() => handleImportWorld('zip')}
+        onCancel={() => setShowAddWorldModal(false)}
+      />
+    );
+
+    if (typeof document === 'undefined') {
+      return modalContent;
+    }
+
+    const modalHost = resolveModalHost();
+    if (!modalHost) return modalContent;
+    return createPortal(modalContent, modalHost);
+  };
+
+  const renderAddDatapackModal = () => {
+    if (!showAddDatapackModal) return null;
+
+    const modalContent = (
+      <div className="add-mod-modal-overlay" onClick={() => !applyingDatapackCode && setShowAddDatapackModal(false)}>
+        <div className="add-mod-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="add-mod-header">
+            <h2>Add Datapack</h2>
+            <button className="close-btn-simple" onClick={() => setShowAddDatapackModal(false)}>✕</button>
+          </div>
+          <div className="add-mod-body">
+            {applyingDatapackCode ? (
+              <div className="apply-progress-container">
+                <div className="apply-status-text">{datapackApplyStatus}</div>
+                <div className="apply-progress-bar-bg">
+                  <div className="apply-progress-bar-fill" style={{ width: `${datapackApplyProgress}%` }} />
+                </div>
+                <div className="apply-progress-percent">{Math.round(datapackApplyProgress)}%</div>
+              </div>
+            ) : (
+              <>
+                <div className="choice-grid">
+                  <button className="choice-card" onClick={() => {
+                    setShowAddDatapackModal(false);
+                    handleImportDatapackFile();
+                  }}>
+                    <div className="choice-icon">
+                      <Upload size={24} />
+                    </div>
+                    <span>Add .ZIP</span>
+                  </button>
+                  <button className="choice-card" style={{ cursor: 'default', opacity: 1 }}>
+                    <div className="choice-icon" style={{ color: 'var(--accent)' }}>
+                      <Code size={24} />
+                    </div>
+                    <span>Use Code</span>
+                  </button>
+                </div>
+
+                <div className="code-input-container">
+                  <label style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Paste Share Code</label>
+                  <div className="code-input-wrapper">
+                    <input
+                      type="text"
+                      className="code-input"
+                      placeholder="Paste code here..."
+                      value={datapackShareCodeInput}
+                      onChange={(event) => setDatapackShareCodeInput(event.target.value)}
+                      disabled={applyingDatapackCode}
+                    />
+                    <button className="apply-btn" onClick={handleApplyDatapackCode} disabled={applyingDatapackCode || !datapackShareCodeInput.trim()}>
+                      {applyingDatapackCode ? <Loader2 size={14} className="spin" /> : 'Apply'}
+                    </button>
+                  </div>
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
+                    Installs datapacks from Modrinth and CurseForge.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+
+    if (typeof document === 'undefined') {
+      return modalContent;
+    }
+
+    const modalHost = resolveModalHost();
+    if (!modalHost) return modalContent;
+    return createPortal(modalContent, modalHost);
+  };
+
   return (
     <div className="worlds-tab">
       <div className={`sub-tabs-row ${isScrolled ? 'scrolled' : ''}`}>
@@ -1206,81 +1309,9 @@ function InstanceWorlds({
         onCancel={() => setDeleteConfirm({ show: false, world: null })}
       />
 
-      <ConfirmModal
-        isOpen={showAddWorldModal}
-        title="Add World"
-        message="Choose what you want to import. You can import world folders directly or extract .zip backups automatically."
-        confirmText="Import Folder"
-        extraConfirmText="Import .zip"
-        cancelText="Cancel"
-        variant="secondary"
-        actionLayout="flat"
-        onConfirm={() => handleImportWorld('folder')}
-        onExtraConfirm={() => handleImportWorld('zip')}
-        onCancel={() => setShowAddWorldModal(false)}
-      />
+      {renderAddWorldModal()}
 
-      {showAddDatapackModal && (
-        <div className="add-mod-modal-overlay" onClick={() => !applyingDatapackCode && setShowAddDatapackModal(false)}>
-          <div className="add-mod-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="add-mod-header">
-              <h2>Add Datapack</h2>
-              <button className="close-btn-simple" onClick={() => setShowAddDatapackModal(false)}>✕</button>
-            </div>
-            <div className="add-mod-body">
-              {applyingDatapackCode ? (
-                <div className="apply-progress-container">
-                  <div className="apply-status-text">{datapackApplyStatus}</div>
-                  <div className="apply-progress-bar-bg">
-                    <div className="apply-progress-bar-fill" style={{ width: `${datapackApplyProgress}%` }} />
-                  </div>
-                  <div className="apply-progress-percent">{Math.round(datapackApplyProgress)}%</div>
-                </div>
-              ) : (
-                <>
-                  <div className="choice-grid">
-                    <button className="choice-card" onClick={() => {
-                      setShowAddDatapackModal(false);
-                      handleImportDatapackFile();
-                    }}>
-                      <div className="choice-icon">
-                        <Upload size={24} />
-                      </div>
-                      <span>Add .ZIP</span>
-                    </button>
-                    <button className="choice-card" style={{ cursor: 'default', opacity: 1 }}>
-                      <div className="choice-icon" style={{ color: 'var(--accent)' }}>
-                        <Code size={24} />
-                      </div>
-                      <span>Use Code</span>
-                    </button>
-                  </div>
-
-                  <div className="code-input-container">
-                    <label style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Paste Share Code</label>
-                    <div className="code-input-wrapper">
-                      <input
-                        type="text"
-                        className="code-input"
-                        placeholder="Paste code here..."
-                        value={datapackShareCodeInput}
-                        onChange={(event) => setDatapackShareCodeInput(event.target.value)}
-                        disabled={applyingDatapackCode}
-                      />
-                      <button className="apply-btn" onClick={handleApplyDatapackCode} disabled={applyingDatapackCode || !datapackShareCodeInput.trim()}>
-                        {applyingDatapackCode ? <Loader2 size={14} className="spin" /> : 'Apply'}
-                      </button>
-                    </div>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                      Installs datapacks from Modrinth and CurseForge.
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {renderAddDatapackModal()}
 
       <ConfirmModal
         isOpen={deleteSelectedConfirmOpen}

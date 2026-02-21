@@ -19,6 +19,7 @@ const CATEGORY_LIST_UPDATED_EVENT = 'instance-category-list-updated';
 const OPEN_CATEGORY_MANAGER_EVENT = 'open-instance-category-manager';
 const INSTANCE_HEADER_DOCK_OPEN_KEY = 'instance_header_center_dock_open';
 const INSTANCE_HEADER_STYLE_CACHE_KEY = 'instance_header_style_cache';
+const CENTER_DOCK_ANIMATION_MS = 380;
 const SORT_OPTIONS = new Set(['name', 'age', 'playtime']);
 const toCategoryKey = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
 
@@ -1319,7 +1320,7 @@ function InstanceList({
     dockAnimationTimerRef.current = window.setTimeout(() => {
       setDockAnimationState('');
       dockAnimationTimerRef.current = null;
-    }, nextExpanded ? 360 : 300);
+    }, CENTER_DOCK_ANIMATION_MS);
   }, [isCenterDockExpanded, setCenterDockExpanded]);
 
   const handleOpenModpackInfo = useCallback((event, instance) => {
@@ -1393,6 +1394,12 @@ function InstanceList({
     ? 'glass-top-icons'
     : normalizedInstanceHeaderStyle;
   const isCenterDockHeaderStyle = instanceHeaderStyle === 'center-dock-fold-icons';
+  const isDockClosingAnimation = dockAnimationState === 'dock-anim-closing';
+  const isCenterDockVisuallyExpanded = isCenterDockExpanded;
+  const isCenterDockActionsExpanded = isCenterDockExpanded;
+  const centerDockToggleLabel = isCenterDockExpanded || isDockClosingAnimation
+    ? 'Collapse instance controls'
+    : 'Expand instance controls';
   const isIconHeaderStyle = instanceHeaderStyle === 'glass-bottom-icons' || instanceHeaderStyle === 'glass-top-icons';
   const openHeaderDropdownUpwards = !isCenterDockHeaderStyle && (instanceHeaderStyle === 'glass-bottom' || instanceHeaderStyle === 'glass-bottom-icons');
   const renderInstanceCard = (instance, enterIndex) => {
@@ -1862,11 +1869,11 @@ function InstanceList({
   );
 
   return (
-    <div className={`instance-list-wrapper ${viewMode === 'list' ? 'list-mode' : 'grid-mode'} header-style-${instanceHeaderStyle} ${isCenterDockHeaderStyle ? (isCenterDockExpanded ? 'dock-open' : 'dock-collapsed') : ''} ${dockAnimationState} ${isEntering ? 'is-entering' : ''}`}>
+    <div className={`instance-list-wrapper ${viewMode === 'list' ? 'list-mode' : 'grid-mode'} header-style-${instanceHeaderStyle} ${isCenterDockHeaderStyle ? (isCenterDockVisuallyExpanded ? 'dock-open' : 'dock-collapsed') : ''} ${dockAnimationState} ${isEntering ? 'is-entering' : ''}`}>
       {instances.length > 0 && (
         <>
           {isCenterDockHeaderStyle && (
-            <div className={`instance-header-dock-connector ${isCenterDockExpanded ? 'expanded' : 'collapsed'}`} aria-hidden="true">
+            <div className={`instance-header-dock-connector ${(isCenterDockExpanded || isDockClosingAnimation) ? 'expanded' : 'collapsed'}`} aria-hidden="true">
               <span className="instance-header-dock-line instance-header-dock-line-left" />
               <span className="instance-header-dock-notch instance-header-dock-notch-left" />
               <span className="instance-header-dock-notch-bottom" />
@@ -1877,28 +1884,17 @@ function InstanceList({
           <div className={`instance-header instance-header-style-${instanceHeaderStyle}`}>
             {isCenterDockHeaderStyle ? (
               <div className={`instance-header-center-dock ${isCenterDockExpanded ? 'expanded' : 'collapsed'}`}>
-                {!isCenterDockExpanded && (
-                  <button
-                    type="button"
-                    className="instance-header-center-toggle collapsed"
-                    title="Expand instance controls"
-                    aria-label="Expand instance controls"
-                    aria-expanded={false}
-                    onClick={toggleCenterDockExpanded}
-                  />
-                )}
-                <div className={`instance-header-center-actions-wrap ${isCenterDockExpanded ? 'expanded' : 'collapsed'}`}>
+                <div className={`instance-header-center-actions-wrap ${isCenterDockActionsExpanded ? 'expanded' : 'collapsed'}`}>
                   {renderIconHeaderActions('instance-header-center-actions')}
                 </div>
-                {isCenterDockExpanded && (
-                  <button
-                    type="button"
-                    className="instance-header-center-collapse-tab"
-                    title="Collapse instance controls"
-                    aria-label="Collapse instance controls"
-                    onClick={toggleCenterDockExpanded}
-                  />
-                )}
+                <button
+                  type="button"
+                  className="instance-header-center-toggle collapsed instance-header-center-unified-toggle"
+                  title={centerDockToggleLabel}
+                  aria-label={centerDockToggleLabel}
+                  aria-expanded={isCenterDockExpanded}
+                  onClick={toggleCenterDockExpanded}
+                />
               </div>
             ) : isIconHeaderStyle ? (
               renderIconHeaderActions()

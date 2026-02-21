@@ -133,6 +133,16 @@
 .sidebar.sidebar-style-compact .nav-icon {
   width: 22px;
   height: 22px;
+  transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: center;
+}
+
+.sidebar.sidebar-style-compact .nav-item:hover .nav-icon {
+  transform: scale(1.14);
+}
+
+.sidebar.sidebar-style-compact .nav-item.active .nav-icon {
+  transform: scale(1.1);
 }
 
 .sidebar.sidebar-style-compact .nav-label {
@@ -184,6 +194,13 @@
   width: 34px;
   height: 34px;
   border-radius: 8px;
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.2s ease;
+}
+
+.sidebar.sidebar-style-compact .account-viewer.compact:hover .user-avatar,
+.sidebar.sidebar-style-compact .account-viewer.compact.expanded .user-avatar {
+  transform: scale(1.12);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24);
 }
 
 .user-avatar {

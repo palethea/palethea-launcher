@@ -490,7 +490,7 @@ fn refresh_tray_menu(app: &AppHandle) {
     }
 }
 
-fn stop_running_instance(instance_id: &str, app_handle: &AppHandle) -> Result<String, String> {
+fn stop_running_instance(instance_id: &str, app_handle: &AppHandle, force_immediately: bool) -> Result<String, String> {
     let process_info = {
         let processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
         processes.get(instance_id).cloned()
@@ -498,7 +498,16 @@ fn stop_running_instance(instance_id: &str, app_handle: &AppHandle) -> Result<St
 
     match process_info {
         Some(info) => {
-            let forced = stop_pid_with_fallback(info.pid)?;
+            let forced = if force_immediately {
+                if instances::is_process_running(info.pid) {
+                    terminate_pid(info.pid)?;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                stop_pid_with_fallback(info.pid)?
+            };
 
             {
                 let mut processes = RUNNING_PROCESSES.lock().map_err(|_| "Process state corrupted")?;
@@ -509,7 +518,9 @@ fn stop_running_instance(instance_id: &str, app_handle: &AppHandle) -> Result<St
             refresh_tray_menu(app_handle);
             let _ = app_handle.emit("refresh-instances", ());
 
-            if forced {
+            if force_immediately {
+                Ok(format!("Force-stopped instance {}", instance_id))
+            } else if forced {
                 Ok(format!("Instance {} did not close gracefully, so it was force-stopped", instance_id))
             } else {
                 Ok(format!("Stopped instance {}", instance_id))
@@ -2884,7 +2895,19 @@ async fn kill_game(
     app_handle: AppHandle,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        stop_running_instance(&instance_id, &app_handle)
+        stop_running_instance(&instance_id, &app_handle, false)
+    })
+    .await
+    .map_err(|e| format!("Failed to join stop task: {}", e))?
+}
+
+#[tauri::command]
+async fn force_kill_game(
+    instance_id: String,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        stop_running_instance(&instance_id, &app_handle, true)
     })
     .await
     .map_err(|e| format!("Failed to join stop task: {}", e))?
@@ -6174,6 +6197,56 @@ fn open_instance_screenshot(_app: AppHandle, instance_id: String, filename: Stri
 }
 
 #[tauri::command]
+fn save_instance_edited_screenshot(
+    instance_id: String,
+    original_filename: String,
+    png_base64: String,
+) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose};
+
+    let instance = instances::get_instance(&instance_id)?;
+    let screenshots_dir = files::get_screenshots_dir(&instance);
+    fs::create_dir_all(&screenshots_dir)
+        .map_err(|e| format!("Failed to create screenshots directory: {}", e))?;
+
+    let encoded = png_base64
+        .strip_prefix("data:image/png;base64,")
+        .unwrap_or(&png_base64);
+    let image_bytes = general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|e| format!("Failed to decode image data: {}", e))?;
+
+    let safe_original = Path::new(&original_filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("screenshot.png");
+    let stem = Path::new(safe_original)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("screenshot");
+    let extension = Path::new(safe_original)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| !ext.is_empty())
+        .unwrap_or("png");
+
+    let mut candidate_name = format!("{}_edited.{}", stem, extension);
+    let mut candidate_path = screenshots_dir.join(&candidate_name);
+    let mut suffix = 2usize;
+    while candidate_path.exists() {
+        candidate_name = format!("{}_edited_{}.{}", stem, suffix, extension);
+        candidate_path = screenshots_dir.join(&candidate_name);
+        suffix += 1;
+    }
+
+    fs::write(&candidate_path, image_bytes)
+        .map_err(|e| format!("Failed to save edited screenshot: {}", e))?;
+
+    Ok(candidate_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn get_instance_log(instance_id: String) -> Result<String, String> {
     let instance = instances::get_instance(&instance_id)?;
     files::get_latest_log(&instance)
@@ -6734,7 +6807,7 @@ pub fn run() {
                             show_main_window(app);
                             let _ = app.emit("tray-launch-instance", instance_id.to_string());
                         } else if let Some(instance_id) = id.strip_prefix(TRAY_STOP_PREFIX) {
-                            let _ = stop_running_instance(instance_id, app);
+                            let _ = stop_running_instance(instance_id, app, false);
                         }
                     })
                     .on_tray_icon_event(|tray, event| {
@@ -6878,6 +6951,7 @@ pub fn run() {
             // Launch commands
             launch_instance,
             kill_game,
+            force_kill_game,
             get_running_instances,
             check_java,
             // Settings commands
@@ -6970,6 +7044,7 @@ pub fn run() {
             delete_instance_screenshot,
             rename_instance_screenshot,
             open_instance_screenshot,
+            save_instance_edited_screenshot,
             get_instance_log,
             clear_instance_log,
             get_instance_servers,
